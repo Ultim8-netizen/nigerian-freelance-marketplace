@@ -1,4 +1,4 @@
-/ src/components/cloudinary/ProfileImageUploader.tsx
+// src/components/cloudinary/ProfileImageUploader.tsx
 // Specialized uploader for profile pictures with cropping
 
 'use client';

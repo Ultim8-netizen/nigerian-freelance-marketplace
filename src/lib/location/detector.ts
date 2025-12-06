@@ -1,6 +1,8 @@
 // src/lib/location/detector.ts
 // Browser-based location detection
 
+import { NIGERIAN_STATES, type NigerianState } from '@/types/location.types';
+
 interface GeoLocationResult {
   state: NigerianState | null;
   city: string | null;
@@ -51,6 +53,7 @@ export async function detectBrowserLocation(): Promise<GeoLocationResult> {
     );
   });
 }
+
 /**
  * Reverse geocode coordinates to Nigerian location
  * Using free Nominatim API (OpenStreetMap)

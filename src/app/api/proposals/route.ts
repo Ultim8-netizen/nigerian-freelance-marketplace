@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { proposalSchema } from '@/lib/validations';
+import { z } from 'zod';  
 
 export async function POST(request: NextRequest) {
   try {

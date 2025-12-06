@@ -6,6 +6,8 @@ import { redirect } from 'next/navigation';
 import { Card } from '@/components/ui/card';
 import { formatCurrency } from '@/lib/utils';
 import { DollarSign, Package, Clock, Star } from 'lucide-react';
+import Link from 'next/link';
+import { Button } from '@/components/ui/button';
 
 export default async function FreelancerDashboard() {
   const supabase = createClient();
