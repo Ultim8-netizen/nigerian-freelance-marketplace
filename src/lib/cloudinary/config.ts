@@ -86,6 +86,6 @@ export function getOptimizedImageUrl(
 
 export const cloudinaryConfig = {
   cloudName: CLOUDINARY_CLOUD_NAME,
-  uploadPreset: process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || 'ml_default',
+  uploadPreset: process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || 'marketplace_unsigned',
   apiKey: process.env.NEXT_PUBLIC_CLOUDINARY_API_KEY || '',
 };
