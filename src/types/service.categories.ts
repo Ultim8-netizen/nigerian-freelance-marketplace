@@ -1,4 +1,4 @@
-// src/types/service-categories.ts
+// src/types/service.categories.ts
 // Service categories tailored for Nigerian university students
 
 export const SERVICE_CATEGORIES = {
