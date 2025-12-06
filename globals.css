@@ -1,0 +1,9 @@
+.typing-animation {
+  display: inline-block;
+  width: 0ch;
+  animation:
+    typing 2.5s steps(12) infinite alternate,
+    blink 0.7s infinite;
+  white-space: nowrap;
+  overflow: hidden;
+}
