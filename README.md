@@ -1,4 +1,6 @@
-# 🇳🇬 Nigerian Freelance Marketplace
+# ⚡ F9 - Hustle Forward
+
+Nigeria's Premier Student Freelance Marketplace
 
 A comprehensive freelance marketplace connecting Nigerian students and professionals with clients. Built with Next.js 14+, Supabase, and Flutterwave.
 
