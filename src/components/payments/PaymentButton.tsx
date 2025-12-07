@@ -1,10 +1,11 @@
 // src/components/payments/PaymentButton.tsx
-// Flutterwave payment using inline script (modern approach)
+// Fixed: Uses only client-safe config
 
 'use client';
 
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
+import { flutterwaveClientConfig } from '@/lib/flutterwave/client-config';
 
 interface PaymentButtonProps {
   orderId: string;
@@ -33,6 +34,7 @@ export function PaymentButton({
 }: PaymentButtonProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isScriptLoaded, setIsScriptLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     // Load Flutterwave script
@@ -40,10 +42,10 @@ export function PaymentButton({
     script.src = 'https://checkout.flutterwave.com/v3.js';
     script.async = true;
     script.onload = () => setIsScriptLoaded(true);
+    script.onerror = () => setError('Failed to load payment system');
     document.body.appendChild(script);
 
     return () => {
-      // Cleanup
       if (document.body.contains(script)) {
         document.body.removeChild(script);
       }
@@ -52,20 +54,34 @@ export function PaymentButton({
 
   const handlePayment = async () => {
     if (!isScriptLoaded) {
-      alert('Payment system is loading. Please try again in a moment.');
+      setError('Payment system is loading. Please try again.');
       return;
     }
 
     setIsLoading(true);
+    setError(null);
 
     try {
-      // Generate unique transaction reference
-      const txRef = `TX-${Date.now()}-${orderId.slice(0, 8)}`;
+      // Call API to get payment link (server-side generation)
+      const response = await fetch('/api/payments/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: orderId,
+          redirect_url: `${window.location.origin}/payment/callback`,
+        }),
+      });
 
-      // Make payment
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error || 'Payment initialization failed');
+      }
+
+      // Use inline checkout with client-safe public key
       window.FlutterwaveCheckout({
-        public_key: process.env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY!,
-        tx_ref: txRef,
+        public_key: flutterwaveClientConfig.publicKey,
+        tx_ref: result.data.tx_ref,
         amount: amount,
         currency: 'NGN',
         payment_options: 'card,banktransfer,ussd,mobilemoney',
@@ -77,11 +93,9 @@ export function PaymentButton({
         customizations: {
           title: 'Nigerian Freelance Marketplace',
           description: 'Payment for freelance services',
-          logo: `${process.env.NEXT_PUBLIC_APP_URL}/logo.png`,
+          logo: `${window.location.origin}/logo.png`,
         },
         callback: async (response: any) => {
-          console.log('Payment response:', response);
-          
           if (response.status === 'successful') {
             // Verify payment on backend
             try {
@@ -94,19 +108,21 @@ export function PaymentButton({
                 }),
               });
 
-              const result = await verifyResponse.json();
-              
-              if (result.success) {
+              const verifyResult = await verifyResponse.json();
+
+              if (verifyResult.success) {
                 onSuccess();
               } else {
-                alert('Payment verification failed. Please contact support.');
+                setError('Payment verification failed. Contact support.');
               }
             } catch (error) {
               console.error('Verification error:', error);
-              alert('Payment verification failed. Please contact support.');
+              setError('Payment verification failed. Contact support.');
             }
+          } else {
+            setError('Payment was not successful');
           }
-          
+
           setIsLoading(false);
         },
         onclose: () => {
@@ -114,20 +130,32 @@ export function PaymentButton({
           onClose?.();
         },
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Payment error:', error);
+      setError(error.message || 'Payment failed');
       setIsLoading(false);
-      alert('Payment failed. Please try again.');
     }
   };
 
   return (
-    <Button
-      onClick={handlePayment}
-      disabled={isLoading || !isScriptLoaded}
-      className="w-full"
-    >
-      {isLoading ? 'Processing...' : !isScriptLoaded ? 'Loading...' : 'Pay Now'}
-    </Button>
+    <div className="space-y-3">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded text-sm">
+          {error}
+        </div>
+      )}
+
+      <Button
+        onClick={handlePayment}
+        disabled={isLoading || !isScriptLoaded}
+        className="w-full"
+      >
+        {isLoading
+          ? 'Processing...'
+          : !isScriptLoaded
+          ? 'Loading...'
+          : `Pay ₦${amount.toLocaleString()}`}
+      </Button>
+    </div>
   );
 }
