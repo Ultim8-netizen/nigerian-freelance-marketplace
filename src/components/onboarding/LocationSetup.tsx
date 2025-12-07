@@ -1,5 +1,5 @@
 // src/components/onboarding/LocationSetup.tsx
-// Onboarding step for new users to set location (improved)
+// Onboarding step for new users to set location (with complete button)
 
 'use client';
 
@@ -9,7 +9,7 @@ import { LocationSelector } from '@/components/location/LocationSelector';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { type UserLocation } from '@/types/location.types';
-import { MapPin, Users, Briefcase, Shield, Loader2 } from 'lucide-react';
+import { MapPin, Users, Briefcase, Shield, Loader2, CheckCircle } from 'lucide-react';
 
 export function LocationSetupStep() {
   const router = useRouter();
@@ -18,25 +18,43 @@ export function LocationSetupStep() {
   const [isSkipping, setIsSkipping] = useState(false);
   const [error, setError] = useState('');
 
-  const handleLocationSet = async (loc: UserLocation) => {
+  const handleLocationSelect = (loc: UserLocation) => {
     setLocation(loc);
     setError('');
+  };
+
+  const handleComplete = async () => {
+    if (!location) {
+      setError('Please select a location first');
+      return;
+    }
+
     setIsSaving(true);
+    setError('');
 
     try {
+      // Save location
       const response = await fetch('/api/profile/location', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(loc),
+        body: JSON.stringify(location),
       });
 
       const result = await response.json();
 
       if (response.ok) {
-        // Small delay for better UX
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        router.push('/dashboard');
-        router.refresh();
+        // Mark onboarding as complete
+        const completeResponse = await fetch('/api/profile/complete-onboarding', {
+          method: 'POST',
+        });
+
+        if (completeResponse.ok) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          router.push('/dashboard');
+          router.refresh();
+        } else {
+          setError('Failed to complete onboarding');
+        }
       } else {
         setError(result.error || 'Failed to save location');
       }
@@ -50,10 +68,27 @@ export function LocationSetupStep() {
 
   const handleSkip = async () => {
     setIsSkipping(true);
-    // Continue to dashboard without setting location
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    router.push('/dashboard');
-    router.refresh();
+    setError('');
+
+    try {
+      // Mark onboarding as complete even when skipping
+      const completeResponse = await fetch('/api/profile/complete-onboarding', {
+        method: 'POST',
+      });
+
+      if (completeResponse.ok) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        router.push('/dashboard');
+        router.refresh();
+      } else {
+        setError('Failed to continue. Please try again.');
+        setIsSkipping(false);
+      }
+    } catch (error) {
+      console.error('Failed to skip onboarding:', error);
+      setError('Something went wrong. Please try again.');
+      setIsSkipping(false);
+    }
   };
 
   return (
@@ -79,9 +114,47 @@ export function LocationSetupStep() {
           )}
 
           <LocationSelector 
-            onLocationSet={handleLocationSet}
-            isLoading={isSaving}
+            onLocationSet={handleLocationSelect}
+            isLoading={false}
           />
+
+          {/* Location Preview */}
+          {location && (
+            <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+              <div className="flex items-center gap-2 text-green-800">
+                <CheckCircle className="w-5 h-5" />
+                <div>
+                  <p className="font-medium">Location Selected</p>
+                  <p className="text-sm">
+                    {location.city}, {location.state}
+                    {location.campus && ` • ${location.campus}`}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Complete Button */}
+          <div className="mt-6">
+            <Button
+              onClick={handleComplete}
+              disabled={!location || isSaving || isSkipping}
+              className="w-full bg-blue-600 hover:bg-blue-700"
+              size="lg"
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  Completing Setup...
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="w-5 h-5 mr-2" />
+                  Complete Setup
+                </>
+              )}
+            </Button>
+          </div>
 
           {/* Skip Option */}
           <div className="mt-6 pt-6 border-t text-center">

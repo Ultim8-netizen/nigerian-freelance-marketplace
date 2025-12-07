@@ -44,10 +44,13 @@ export async function GET(request: NextRequest) {
 
     // Text search
     if (search) {
-      query = query.or(
-        `title.ilike.%${search}%,description.ilike.%${search}%,category.ilike.%${search}%`
-      );
-    }
+  query = query.or(`title.ilike.%${search}%,description.ilike.%${search}%`)
+  // Split into separate safe queries
+  const searchTerm = `%${search}%`;
+  query = query.or(
+    `title.ilike.${searchTerm},description.ilike.${searchTerm},category.ilike.${searchTerm}`
+  );
+}
 
     // Category filter
     if (category) {

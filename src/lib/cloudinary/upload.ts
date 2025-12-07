@@ -1,5 +1,5 @@
 // src/lib/cloudinary/upload.ts
-// Client-side Cloudinary upload utilities
+// Client-side Cloudinary upload utilities with signed uploads
 
 import { cloudinaryConfig } from './config';
 
@@ -15,6 +15,13 @@ interface UploadResult {
 interface ValidationResult {
   valid: boolean;
   error?: string;
+}
+
+interface SignatureResponse {
+  signature: string;
+  timestamp: number;
+  cloudName: string;
+  apiKey: string;
 }
 
 /**
@@ -43,21 +50,39 @@ export function validateImage(file: File): ValidationResult {
 }
 
 /**
- * Upload image to Cloudinary
- * Uses unsigned upload with upload preset
+ * Upload image to Cloudinary using signed upload
+ * More secure than unsigned uploads as signature is generated server-side
  */
 export async function uploadImage(
   file: File,
   folder: string = 'marketplace'
 ): Promise<UploadResult> {
+  // Get signature from server
+  const signatureResponse = await fetch('/api/cloudinary/signature', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder }),
+  });
+
+  if (!signatureResponse.ok) {
+    const errorData = await signatureResponse.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Failed to get upload signature');
+  }
+
+  const { signature, timestamp, cloudName, apiKey }: SignatureResponse = 
+    await signatureResponse.json();
+
+  // Prepare signed upload
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('upload_preset', cloudinaryConfig.uploadPreset);
+  formData.append('signature', signature);
+  formData.append('timestamp', timestamp.toString());
+  formData.append('api_key', apiKey);
   formData.append('folder', folder);
 
   try {
     const response = await fetch(
-      `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/image/upload`,
+      `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
       {
         method: 'POST',
         body: formData,
@@ -86,7 +111,7 @@ export async function uploadImage(
 }
 
 /**
- * Upload multiple images
+ * Upload multiple images with signed uploads
  */
 export async function uploadMultipleImages(
   files: File[],
@@ -115,6 +140,7 @@ export function base64ToFile(base64: string, filename: string): File {
 
 /**
  * Compress image before upload (client-side)
+ * Reduces file size and dimensions for faster uploads
  */
 export async function compressImage(
   file: File,
@@ -134,7 +160,7 @@ export async function compressImage(
         let width = img.width;
         let height = img.height;
         
-        // Calculate new dimensions
+        // Calculate new dimensions while maintaining aspect ratio
         if (width > maxWidth) {
           height = (height * maxWidth) / width;
           width = maxWidth;
