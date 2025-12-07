@@ -1,32 +1,28 @@
+// ============================================================================
 // src/app/api/services/route.ts
-// Services API with flexible category support
+// Enhanced services API with advanced filtering
+// ============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { serviceSchema } from '@/lib/validations';
+import { rateLimit } from '@/lib/rate-limit';
 import { z } from 'zod';
 
-// Validation schema
-const serviceSchema = z.object({
-  title: z.string().min(10).max(100),
-  description: z.string().min(50).max(2000),
-  category: z.string().min(2).max(100), // Allow any category string
-  base_price: z.number().min(100),
-  delivery_days: z.number().int().min(1).max(90),
-  images: z.array(z.string().url()).min(1).max(5),
-  service_location: z.string().nullable().optional(),
-});
-
+// GET - Browse services with advanced filtering
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const category = searchParams.get('category');
-    const search = searchParams.get('search'); // For searching titles/descriptions
+    const search = searchParams.get('search');
     const minPrice = searchParams.get('min_price');
     const maxPrice = searchParams.get('max_price');
     const state = searchParams.get('state');
     const city = searchParams.get('city');
+    const verified = searchParams.get('verified_only') === 'true';
+    const sortBy = searchParams.get('sort_by') || 'created_at';
     const page = parseInt(searchParams.get('page') || '1');
-    const perPage = parseInt(searchParams.get('per_page') || '20');
+    const perPage = Math.min(parseInt(searchParams.get('per_page') || '20'), 50);
 
     const supabase = createClient();
 
@@ -39,17 +35,21 @@ export async function GET(request: NextRequest) {
           full_name,
           profile_image_url,
           freelancer_rating,
-          total_jobs_completed
+          total_jobs_completed,
+          identity_verified,
+          student_verified
         )
       `, { count: 'exact' })
       .eq('is_active', true);
 
-    // Text search across title and description
+    // Text search
     if (search) {
-      query = query.or(`title.ilike.%${search}%,description.ilike.%${search}%,category.ilike.%${search}%`);
+      query = query.or(
+        `title.ilike.%${search}%,description.ilike.%${search}%,category.ilike.%${search}%`
+      );
     }
 
-    // Category filter (exact match or partial match for flexibility)
+    // Category filter
     if (category) {
       query = query.ilike('category', `%${category}%`);
     }
@@ -62,28 +62,41 @@ export async function GET(request: NextRequest) {
       query = query.lte('base_price', parseFloat(maxPrice));
     }
 
-    // Location filtering (for proximity, not requirement)
+    // Location filters
     if (state) {
       query = query.ilike('service_location', `%${state}%`);
     }
-
-    if (city && state) {
+    if (city) {
       query = query.ilike('service_location', `%${city}%`);
     }
+
+    // Verified freelancers only
+    if (verified) {
+      query = query.eq('freelancer.identity_verified', true);
+    }
+
+    // Sorting
+    const sortMap: Record<string, string> = {
+      'price_low': 'base_price',
+      'price_high': 'base_price',
+      'rating': 'freelancer.freelancer_rating',
+      'popular': 'orders_count',
+      'recent': 'created_at',
+    };
+    
+    const sortColumn = sortMap[sortBy] || 'created_at';
+    const ascending = sortBy !== 'price_high' && sortBy !== 'rating' && sortBy !== 'popular';
+    
+    query = query.order(sortColumn, { ascending });
 
     // Pagination
     const from = (page - 1) * perPage;
     const to = from + perPage - 1;
 
-    const { data, error, count } = await query
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    const { data, error, count } = await query.range(from, to);
 
     if (error) {
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 500 }
-      );
+      throw error;
     }
 
     return NextResponse.json({
@@ -95,23 +108,28 @@ export async function GET(request: NextRequest) {
         total: count || 0,
         total_pages: Math.ceil((count || 0) / perPage),
       },
+      filters: {
+        category,
+        search,
+        price_range: { min: minPrice, max: maxPrice },
+        location: { state, city },
+        verified_only: verified,
+        sort_by: sortBy,
+      },
     });
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Services fetch error:', error);
     return NextResponse.json(
-      { success: false, error: 'Internal server error' },
+      { success: false, error: 'Failed to fetch services' },
       { status: 500 }
     );
   }
 }
 
+// POST - Create service (authenticated)
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const validatedData = serviceSchema.parse(body);
-
     const supabase = createClient();
-    
-    // Get current user
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     
     if (authError || !user) {
@@ -121,17 +139,60 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify user has a profile
-    const { data: profile, error: profileError } = await supabase
+    // Rate limiting (10 services per hour)
+    if (!rateLimit(`create_service:${user.id}`, 10, 3600000)) {
+      return NextResponse.json(
+        { success: false, error: 'Too many service creations. Please try again later.' },
+        { status: 429 }
+      );
+    }
+
+    // Verify user is allowed to create services
+    const { data: profile } = await supabase
       .from('profiles')
-      .select('id, account_type')
+      .select('user_type, account_status')
       .eq('id', user.id)
       .single();
 
-    if (profileError || !profile) {
+    if (!profile) {
       return NextResponse.json(
         { success: false, error: 'Profile not found' },
         { status: 404 }
+      );
+    }
+
+    if (profile.account_status !== 'active') {
+      return NextResponse.json(
+        { success: false, error: 'Account is suspended or banned' },
+        { status: 403 }
+      );
+    }
+
+    if (profile.user_type === 'client') {
+      return NextResponse.json(
+        { success: false, error: 'Only freelancers can create services' },
+        { status: 403 }
+      );
+    }
+
+    // Validate request body
+    const body = await request.json();
+    const validatedData = serviceSchema.parse(body);
+
+    // Check service limit (max 20 active services per user)
+    const { count: serviceCount } = await supabase
+      .from('services')
+      .select('*', { count: 'exact', head: true })
+      .eq('freelancer_id', user.id)
+      .eq('is_active', true);
+
+    if (serviceCount && serviceCount >= 20) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Maximum active services limit reached (20). Please deactivate some services first.' 
+        },
+        { status: 400 }
       );
     }
 
@@ -145,18 +206,17 @@ export async function POST(request: NextRequest) {
         category: validatedData.category,
         base_price: validatedData.base_price,
         delivery_days: validatedData.delivery_days,
-        images: validatedData.images,
+        images: validatedData.images || [],
         service_location: validatedData.service_location,
         is_active: true,
+        views_count: 0,
+        orders_count: 0,
       })
       .select()
       .single();
 
     if (error) {
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 500 }
-      );
+      throw error;
     }
 
     return NextResponse.json({
@@ -170,7 +230,7 @@ export async function POST(request: NextRequest) {
         { 
           success: false, 
           error: error.errors[0].message,
-          details: error.errors 
+          details: error.errors,
         },
         { status: 400 }
       );
@@ -178,7 +238,7 @@ export async function POST(request: NextRequest) {
 
     console.error('Service creation error:', error);
     return NextResponse.json(
-      { success: false, error: 'Internal server error' },
+      { success: false, error: 'Failed to create service' },
       { status: 500 }
     );
   }

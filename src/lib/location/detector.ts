@@ -67,7 +67,7 @@ async function reverseGeocode(
       `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&zoom=10`,
       {
         headers: {
-          'User-Agent': 'NigerianFreelanceMarketplace/1.0',
+          'User-Agent': 'F9Marketplace/1.0',
         },
       }
     );

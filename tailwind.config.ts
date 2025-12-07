@@ -11,7 +11,7 @@ const config: Config = {
       keyframes: {
         typing: {
           '0%': { width: '0ch' },
-          '100%': { width: '12ch' }   // "freelance9ja" = 12 characters
+          '100%': { width: '12ch' }   // "F9" = 12 characters
         },
         blink: {
           '0%, 50%': { borderColor: 'transparent' },

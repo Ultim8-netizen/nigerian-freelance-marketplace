@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
         name: order.client.full_name,
       },
       customizations: {
-        title: process.env.NEXT_PUBLIC_APP_NAME || 'NigerianFreelance',
+        title: process.env.NEXT_PUBLIC_APP_NAME || 'F9',
         description: order.title,
         logo: `${process.env.NEXT_PUBLIC_APP_URL}/logo.png`,
       },

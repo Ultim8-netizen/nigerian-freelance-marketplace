@@ -189,7 +189,7 @@ export default async function ClientDashboard() {
       {/* Getting Started Guide (for new users) */}
       {(!activeJobs || activeJobs.length === 0) && (!ongoingOrders || ongoingOrders.length === 0) && (
         <Card className="p-8 bg-gradient-to-r from-blue-50 to-indigo-50">
-          <h2 className="text-2xl font-bold mb-4">Get Started with NigerianFreelance</h2>
+          <h2 className="text-2xl font-bold mb-4">Get Started with F9</h2>
           <div className="grid md:grid-cols-2 gap-6">
             <div>
               <h3 className="font-semibold mb-2 flex items-center gap-2">
