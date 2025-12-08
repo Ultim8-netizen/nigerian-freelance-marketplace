@@ -5,13 +5,14 @@ import "./globals.css";
 import { QueryProvider } from "@/components/providers/QueryProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { ToastProvider } from "@/components/providers/ToastProvider";
+import { UserProvider } from "@/contexts/UserContext";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { BRAND } from "@/lib/branding";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
-  display: "swap", // Performance optimization
+  display: "swap",
   preload: true,
 });
 
@@ -22,6 +23,7 @@ const geistMono = Geist_Mono({
   preload: true,
 });
 
+// Generate metadata using BRAND constants
 export const metadata: Metadata = {
   title: {
     default: BRAND.META_TITLE,
@@ -29,15 +31,15 @@ export const metadata: Metadata = {
   },
   description: BRAND.META_DESCRIPTION,
   keywords: BRAND.META_KEYWORDS,
-  authors: [{ name: BRAND.NAME }],
+  authors: [{ name: BRAND.LEGAL_NAME }],
   creator: BRAND.NAME,
-  metadataBase: new URL(BRAND.BASE_URL || 'https://nigerianfreelance.com'),
+  metadataBase: new URL(BRAND.APP_URL),
   
   openGraph: {
     type: 'website',
     locale: 'en_NG',
-    url: BRAND.BASE_URL,
-    siteName: BRAND.NAME,
+    url: BRAND.APP_URL,
+    siteName: BRAND.FULL_NAME,
     title: BRAND.META_TITLE,
     description: BRAND.META_DESCRIPTION,
     images: [
@@ -75,6 +77,11 @@ export const metadata: Metadata = {
     // Add when available
     // google: 'your-google-verification-code',
   },
+  
+  other: {
+    'contact:email': BRAND.SUPPORT_EMAIL,
+    'contact:legal': BRAND.LEGAL_EMAIL,
+  },
 };
 
 export default function RootLayout({
@@ -93,9 +100,13 @@ export default function RootLayout({
         <link rel="icon" href="/favicon.ico" sizes="any" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         
-        {/* Theme color for mobile browsers */}
-        <meta name="theme-color" content="#10b981" media="(prefers-color-scheme: light)" />
-        <meta name="theme-color" content="#059669" media="(prefers-color-scheme: dark)" />
+        {/* Theme color for mobile browsers - F9 brand colors */}
+        <meta name="theme-color" content={BRAND.COLORS.PRIMARY} media="(prefers-color-scheme: light)" />
+        <meta name="theme-color" content={BRAND.COLORS.SECONDARY} media="(prefers-color-scheme: dark)" />
+        
+        {/* Additional SEO */}
+        <link rel="canonical" href={BRAND.APP_URL} />
+        <meta name="format-detection" content="telephone=no" />
       </head>
       
       <body
@@ -108,27 +119,30 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <QueryProvider>
-            {/* Top progress bar for page transitions */}
-            <ProgressBar />
-            
-            {/* Main content with smooth transitions */}
-            <div className="relative flex min-h-screen flex-col">
-              {children}
-            </div>
-            
-            {/* Toast notifications */}
-            <ToastProvider />
+            {/* UserProvider will fetch user/profile data internally */}
+            <UserProvider user={null} profile={null}>
+              {/* Top progress bar for page transitions */}
+              <ProgressBar />
+              
+              {/* Main content with smooth transitions */}
+              <div className="relative flex min-h-screen flex-col">
+                {children}
+              </div>
+              
+              {/* Toast notifications */}
+              <ToastProvider />
+            </UserProvider>
           </QueryProvider>
         </ThemeProvider>
         
-        {/* Scroll to top button functionality */}
+        {/* Scroll to top button functionality with F9 branding */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               // Smooth scroll behavior
               document.documentElement.style.scrollBehavior = 'smooth';
               
-              // Add scroll progress indicator
+              // Add scroll progress indicator with F9 brand gradient
               window.addEventListener('scroll', () => {
                 const winScroll = document.body.scrollTop || document.documentElement.scrollTop;
                 const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
@@ -138,7 +152,7 @@ export default function RootLayout({
                 if (!progressBar) {
                   progressBar = document.createElement('div');
                   progressBar.id = 'scroll-progress';
-                  progressBar.style.cssText = 'position:fixed;top:0;left:0;height:3px;background:linear-gradient(to right,#10b981,#059669);z-index:9999;transition:width 0.1s ease';
+                  progressBar.style.cssText = 'position:fixed;top:0;left:0;height:3px;background:linear-gradient(to right,${BRAND.COLORS.GRADIENT_START},${BRAND.COLORS.GRADIENT_MID},${BRAND.COLORS.GRADIENT_END});z-index:9999;transition:width 0.1s ease';
                   document.body.appendChild(progressBar);
                 }
                 progressBar.style.width = scrolled + '%';

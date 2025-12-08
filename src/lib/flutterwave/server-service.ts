@@ -1,6 +1,7 @@
 // src/lib/flutterwave/server-service.ts
-// SERVER-ONLY: Contains secret key operations
-// NEVER import this in client components!
+// ⚠️ SERVER-ONLY: NEVER import this in client components!
+// Add this comment at the top to prevent accidental client imports:
+// @server-only
 
 import { PaymentData } from './client-config';
 
@@ -8,33 +9,62 @@ import { PaymentData } from './client-config';
 const flutterwaveServerConfig = {
   secretKey: process.env.FLUTTERWAVE_SECRET_KEY || '',
   encryptionKey: process.env.FLUTTERWAVE_ENCRYPTION_KEY || '',
-};
+} as const;
 
 // Validation on server startup
 if (!flutterwaveServerConfig.secretKey) {
-  console.error('FATAL: FLUTTERWAVE_SECRET_KEY not set');
+  throw new Error('FATAL: FLUTTERWAVE_SECRET_KEY not set');
 }
 
 const BASE_URL = 'https://api.flutterwave.com/v3';
 
 export class FlutterwaveServerService {
+  private static async fetchWithRetry(
+    url: string,
+    options: RequestInit,
+    retries = 3
+  ): Promise<Response> {
+    try {
+      const response = await fetch(url, options);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        
+        // Retry on server errors
+        if (response.status >= 500 && retries > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          return this.fetchWithRetry(url, options, retries - 1);
+        }
+        
+        throw new Error(errorData.message || 'Request failed');
+      }
+      
+      return response;
+    } catch (error) {
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return this.fetchWithRetry(url, options, retries - 1);
+      }
+      throw error;
+    }
+  }
+
   /**
    * Initialize payment - SERVER ONLY
+   * Never call this from client components
    */
   static async initializePayment(data: PaymentData) {
-    const response = await fetch(`${BASE_URL}/payments`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${flutterwaveServerConfig.secretKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(data),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || 'Payment initialization failed');
-    }
+    const response = await this.fetchWithRetry(
+      `${BASE_URL}/payments`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${flutterwaveServerConfig.secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      }
+    );
 
     return await response.json();
   }
@@ -43,7 +73,7 @@ export class FlutterwaveServerService {
    * Verify payment - SERVER ONLY
    */
   static async verifyPayment(transactionId: string) {
-    const response = await fetch(
+    const response = await this.fetchWithRetry(
       `${BASE_URL}/transactions/${transactionId}/verify`,
       {
         headers: {
@@ -51,10 +81,6 @@ export class FlutterwaveServerService {
         },
       }
     );
-
-    if (!response.ok) {
-      throw new Error('Payment verification failed');
-    }
 
     return await response.json();
   }
@@ -71,18 +97,17 @@ export class FlutterwaveServerService {
     reference: string;
     beneficiary_name: string;
   }) {
-    const response = await fetch(`${BASE_URL}/transfers`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${flutterwaveServerConfig.secretKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(data),
-    });
-
-    if (!response.ok) {
-      throw new Error('Transfer initiation failed');
-    }
+    const response = await this.fetchWithRetry(
+      `${BASE_URL}/transfers`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${flutterwaveServerConfig.secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      }
+    );
 
     return await response.json();
   }
@@ -90,22 +115,40 @@ export class FlutterwaveServerService {
   /**
    * Verify bank account - SERVER ONLY
    */
-  static async verifyBankAccount(accountNumber: string, bankCode: string) {
-    const response = await fetch(`${BASE_URL}/accounts/resolve`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${flutterwaveServerConfig.secretKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        account_number: accountNumber,
-        account_bank: bankCode,
-      }),
-    });
+  static async verifyBankAccount(
+    accountNumber: string,
+    bankCode: string
+  ) {
+    const response = await this.fetchWithRetry(
+      `${BASE_URL}/accounts/resolve`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${flutterwaveServerConfig.secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          account_number: accountNumber,
+          account_bank: bankCode,
+        }),
+      }
+    );
 
-    if (!response.ok) {
-      throw new Error('Account verification failed');
-    }
+    return await response.json();
+  }
+
+  /**
+   * Get Nigerian banks list - SERVER ONLY (caching handled by caller)
+   */
+  static async getNigerianBanks() {
+    const response = await this.fetchWithRetry(
+      `${BASE_URL}/banks/NG`,
+      {
+        headers: {
+          Authorization: `Bearer ${flutterwaveServerConfig.secretKey}`,
+        },
+      }
+    );
 
     return await response.json();
   }

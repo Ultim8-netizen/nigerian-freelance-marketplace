@@ -4,7 +4,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { ServiceCard } from '@/components/services/ServiceCard';
 import { ServicesFilters } from '@/components/services/ServicesFilters';
-import { SERVICE_CATEGORIES } from '@/types/service-categories';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 
@@ -116,7 +115,7 @@ export default async function ServicesPage({
         {/* Filters Sidebar & Content */}
         <div className="flex flex-col lg:flex-row gap-6">
           {/* Filters Sidebar */}
-          <aside className="lg:w-64 flex-shrink-0">
+          <aside className="lg:w-64 shrink-0">
             <ServicesFilters currentFilters={searchParams} />
           </aside>
 

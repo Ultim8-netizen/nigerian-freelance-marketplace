@@ -46,7 +46,7 @@ export function F9Logo({
       <div 
         className={cn(
           sizeClasses[size],
-          'aspect-square rounded-lg bg-gradient-to-br from-red-600 via-blue-600 to-purple-600',
+          'aspect-square rounded-lg bg-linear-to-br from-red-600 via-blue-600 to-purple-600',
           'flex items-center justify-center shadow-lg',
           animated && 'hover:scale-110 transition-transform duration-200',
           className
@@ -65,7 +65,7 @@ export function F9Logo({
         <span 
           className={cn(
             textSizes[size],
-            'font-bold bg-gradient-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent',
+            'font-bold bg-linear-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent',
             animated && 'hover:scale-105 transition-transform duration-200'
           )}
         >
@@ -86,7 +86,7 @@ export function F9Logo({
         <div 
           className={cn(
             sizeClasses[size],
-            'aspect-square rounded-lg bg-gradient-to-br from-red-600 via-blue-600 to-purple-600',
+            'aspect-square rounded-lg bg-linear-to-br from-red-600 via-blue-600 to-purple-600',
             'flex items-center justify-center shadow-lg mb-2',
             animated && 'hover:scale-110 transition-transform duration-200'
           )}
@@ -111,7 +111,7 @@ export function F9Logo({
       <div 
         className={cn(
           sizeClasses[size],
-          'aspect-square rounded-lg bg-gradient-to-br from-red-600 via-blue-600 to-purple-600',
+          'aspect-square rounded-lg bg-linear-to-br from-red-600 via-blue-600 to-purple-600',
           'flex items-center justify-center shadow-lg',
           animated && 'hover:scale-110 transition-transform duration-200'
         )}
@@ -139,7 +139,7 @@ export function F9LoadingLogo() {
   return (
     <div className="flex flex-col items-center justify-center">
       <div className="relative">
-        <div className="h-16 w-16 rounded-lg bg-gradient-to-br from-red-600 via-blue-600 to-purple-600 flex items-center justify-center shadow-xl animate-pulse">
+        <div className="h-16 w-16 rounded-lg bg-linear-to-br from-red-600 via-blue-600 to-purple-600 flex items-center justify-center shadow-xl animate-pulse">
           <span className="text-white font-bold text-2xl">
             {BRAND.SHORT_NAME}
           </span>

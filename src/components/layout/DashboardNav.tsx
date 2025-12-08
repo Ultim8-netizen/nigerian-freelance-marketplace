@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Bell, Search, Menu, User, Settings, LogOut, Wallet, X } from 'lucide-react';
+import { Bell, Search, Menu, User, Settings, LogOut, Wallet, X, ShoppingBag } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -137,6 +137,21 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
             >
               <F9Logo variant="full" size="md" animated />
             </Link>
+
+            {/* Quick Nav Links (Desktop) - Added Marketplace */}
+            <nav className="hidden lg:flex items-center gap-1 ml-6">
+              <Link 
+                href="/marketplace"
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all hover:bg-gray-100 dark:hover:bg-gray-800 ${
+                  isActivePage('/marketplace') 
+                    ? 'bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400' 
+                    : 'text-gray-700 dark:text-gray-300'
+                }`}
+              >
+                <ShoppingBag className="h-4 w-4" />
+                <span>Marketplace</span>
+              </Link>
+            </nav>
           </div>
 
           {/* Center Section: Search (Desktop) */}
@@ -160,6 +175,18 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
 
           {/* Right Section: Actions & Profile */}
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Marketplace Quick Access (Mobile/Tablet) */}
+            <Link href="/marketplace" className="lg:hidden">
+              <Button
+                variant={isActivePage('/marketplace') ? 'default' : 'ghost'}
+                size="icon"
+                className="hover:bg-gray-100 dark:hover:bg-gray-800"
+                aria-label="Marketplace"
+              >
+                <ShoppingBag className="h-5 w-5" />
+              </Button>
+            </Link>
+
             {/* Search Icon (Mobile) */}
             <Button
               variant="ghost"
@@ -308,6 +335,15 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                   >
                     <User className="mr-2 h-4 w-4" />
                     Profile
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link 
+                    href="/marketplace" 
+                    className={`cursor-pointer ${isActivePage('/marketplace') ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
+                  >
+                    <ShoppingBag className="mr-2 h-4 w-4" />
+                    Marketplace
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>

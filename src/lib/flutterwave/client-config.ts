@@ -1,13 +1,15 @@
 // src/lib/flutterwave/client-config.ts
 // CLIENT-SAFE: Only public key exposed to browser
+// ✅ THIS FILE IS SAFE FOR CLIENT COMPONENTS
 
 export const flutterwaveClientConfig = {
   publicKey: process.env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY || '',
-};
+  environment: (process.env.NEXT_PUBLIC_FLUTTERWAVE_ENV as 'production' | 'sandbox') || 'sandbox',
+} as const;
 
-// Validation
-if (!flutterwaveClientConfig.publicKey && typeof window !== 'undefined') {
-  console.error('NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY is not set');
+// Validation - runs in browser
+if (typeof window !== 'undefined' && !flutterwaveClientConfig.publicKey) {
+  console.error('❌ NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY is not set');
 }
 
 export interface PaymentData {
@@ -27,11 +29,7 @@ export interface PaymentData {
   };
 }
 
-// Type for client-side payment initialization
-export interface ClientPaymentInit {
-  orderId: string;
-  amount: number;
-  email: string;
-  phoneNumber: string;
-  fullName: string;
+// Helper function for generating transaction references
+export function generateTxRef(prefix = 'TXN'): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }

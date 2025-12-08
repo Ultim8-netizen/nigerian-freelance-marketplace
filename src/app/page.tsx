@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { F9Logo } from '@/components/brand/F9Logo';
 import { 
   Zap, Shield, Users, TrendingUp, Star, CheckCircle,
-  ArrowRight, Sparkles, Trophy, Target, Rocket
+  ArrowRight, Sparkles, Trophy, Target, Rocket, ShoppingBag
 } from 'lucide-react';
 
 export default function HomePage() {
@@ -174,8 +174,71 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Popular Services */}
+      {/* Student Marketplace Section - NEW */}
       <section className="py-20 bg-white">
+        <div className="container mx-auto px-4">
+          <div className="bg-gradient-to-r from-purple-600 to-pink-600 rounded-2xl p-8 md:p-12 text-white shadow-2xl hover:shadow-purple-500/50 transition-all duration-300 relative overflow-hidden">
+            {/* Decorative Elements */}
+            <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -mr-32 -mt-32" />
+            <div className="absolute bottom-0 left-0 w-48 h-48 bg-white/5 rounded-full -ml-24 -mb-24" />
+            
+            <div className="relative z-10 max-w-4xl mx-auto text-center">
+              <div className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-sm rounded-full px-4 py-2 mb-6">
+                <ShoppingBag className="w-4 h-4" />
+                <span className="text-sm font-semibold">NEW FEATURE</span>
+              </div>
+              
+              <h2 className="text-3xl md:text-4xl font-bold mb-4">
+                🛍️ Student Marketplace
+              </h2>
+              <p className="text-lg md:text-xl mb-8 text-purple-100 max-w-2xl mx-auto">
+                Buy and sell within your university community. From textbooks to tech, laptops to fashion - everything students need!
+              </p>
+              
+              <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                <Link href="/marketplace">
+                  <Button 
+                    size="lg" 
+                    className="bg-white text-purple-600 hover:bg-gray-100 font-semibold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 px-8"
+                  >
+                    <ShoppingBag className="w-5 h-5 mr-2" />
+                    Browse Products
+                  </Button>
+                </Link>
+                <Link href="/marketplace/sell">
+                  <Button 
+                    size="lg" 
+                    variant="outline" 
+                    className="border-2 border-white text-white hover:bg-white/10 hover:border-white/80 font-semibold px-8"
+                  >
+                    <Sparkles className="w-5 h-5 mr-2" />
+                    Start Selling
+                  </Button>
+                </Link>
+              </div>
+
+              {/* Quick Stats */}
+              <div className="flex flex-wrap items-center justify-center gap-8 mt-8 text-purple-100">
+                <div className="flex items-center gap-2">
+                  <ShoppingBag className="w-4 h-4" />
+                  <span className="text-sm">5,000+ Products</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Users className="w-4 h-4" />
+                  <span className="text-sm">Safe Transactions</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Star className="w-4 h-4 fill-purple-100" />
+                  <span className="text-sm">Campus Verified</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Popular Services */}
+      <section className="py-20 bg-gray-50">
         <div className="container mx-auto px-4">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-bold mb-4">
@@ -203,7 +266,7 @@ export default function HomePage() {
             ].map((service) => (
               <div
                 key={service}
-                className="p-4 rounded-lg border-2 border-gray-200 hover:border-red-500 hover:shadow-lg transition-all duration-300 text-center cursor-pointer"
+                className="p-4 rounded-lg border-2 border-gray-200 hover:border-red-500 hover:shadow-lg transition-all duration-300 text-center cursor-pointer bg-white"
               >
                 <span className="text-sm font-medium">{service}</span>
               </div>
