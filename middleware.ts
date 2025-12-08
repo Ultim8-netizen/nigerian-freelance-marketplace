@@ -2,14 +2,13 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/middleware';
 import { createServerClient } from '@supabase/ssr';
+import type { CookieSerializeOptions } from 'cookie';
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  
-  // Update session first
-  let response = await updateSession(request);
-  
-  // Create supabase client for auth check
+
+  const response = await updateSession(request);
+
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -18,37 +17,32 @@ export async function middleware(request: NextRequest) {
         get(name: string) {
           return request.cookies.get(name)?.value;
         },
-        set(name: string, value: string, options: any) {
+        set(name: string, value: string, options: CookieSerializeOptions) {
           response.cookies.set({ name, value, ...options });
         },
-        remove(name: string, options: any) {
+        remove(name: string, options: CookieSerializeOptions) {
           response.cookies.set({ name, value: '', ...options });
         },
       },
     }
   );
 
-  // Check authentication
   const { data: { user } } = await supabase.auth.getUser();
 
-  // Protected routes
   const protectedPaths = ['/dashboard', '/freelancer', '/client', '/api/orders', '/api/services', '/api/payments'];
   const isProtectedPath = protectedPaths.some(path => pathname.startsWith(path));
 
-  // Redirect to login if accessing protected route without auth
   if (isProtectedPath && !user) {
     const redirectUrl = new URL('/login', request.url);
     redirectUrl.searchParams.set('redirect', pathname);
     return NextResponse.redirect(redirectUrl);
   }
 
-  // Redirect to dashboard if accessing auth pages while logged in
   const authPaths = ['/login', '/register'];
   if (authPaths.includes(pathname) && user) {
     return NextResponse.redirect(new URL('/dashboard', request.url));
   }
 
-  // Check onboarding status for dashboard access
   if (pathname.startsWith('/dashboard') && user) {
     const { data: profile } = await supabase
       .from('profiles')
