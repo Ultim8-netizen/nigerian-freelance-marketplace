@@ -2,7 +2,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/middleware';
 import { createServerClient } from '@supabase/ssr';
-import type { CookieSerializeOptions } from 'cookie';
+import type { SerializeOptions } from 'cookie';
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -17,20 +17,24 @@ export async function middleware(request: NextRequest) {
         get(name: string) {
           return request.cookies.get(name)?.value;
         },
-        set(name: string, value: string, options: CookieSerializeOptions) {
-          response.cookies.set({ name, value, ...options });
+        set(name: string, value: string, options?: SerializeOptions) {
+          const opts = { path: '/', ...(options as Record<string, unknown> | undefined) };
+          response.cookies.set({ name, value, ...opts });
         },
-        remove(name: string, options: CookieSerializeOptions) {
-          response.cookies.set({ name, value: '', ...options });
+        remove(name: string, options?: SerializeOptions) {
+          const opts = { path: '/', ...(options as Record<string, unknown> | undefined), maxAge: 0 };
+          response.cookies.set({ name, value: '', ...opts });
         },
       },
     }
   );
 
-  const { data: { user } } = await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
   const protectedPaths = ['/dashboard', '/freelancer', '/client', '/api/orders', '/api/services', '/api/payments'];
-  const isProtectedPath = protectedPaths.some(path => pathname.startsWith(path));
+  const isProtectedPath = protectedPaths.some((path) => pathname.startsWith(path));
 
   if (isProtectedPath && !user) {
     const redirectUrl = new URL('/login', request.url);
@@ -59,7 +63,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-  ],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
 };
