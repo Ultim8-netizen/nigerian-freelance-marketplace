@@ -42,8 +42,9 @@ export function ProfileImageUploader({
       // Upload to profiles folder with specific transformations
       const result = await uploadImage(file, 'marketplace/profiles');
       onUploadComplete(result.url);
-    } catch (err: any) {
-      setError(err.message || 'Upload failed');
+    } catch (err: unknown) {
+  const errorMessage = err instanceof Error ? err.message : 'Upload failed';
+  setError(errorMessage);
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {

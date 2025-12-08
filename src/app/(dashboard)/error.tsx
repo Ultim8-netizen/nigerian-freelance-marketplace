@@ -29,7 +29,7 @@ export default function DashboardError({
         </div>
         <h1 className="text-2xl font-bold mb-2">Dashboard Error</h1>
         <p className="text-gray-600 mb-6">
-          We couldn't load your dashboard. This might be a temporary issue.
+          We couldn&apos;t load your dashboard. This might be a temporary issue.
         </p>
 
         <div className="space-y-3">

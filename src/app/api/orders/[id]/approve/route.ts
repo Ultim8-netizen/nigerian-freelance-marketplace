@@ -13,6 +13,13 @@ const approvalSchema = z.object({
   professionalism_rating: z.number().int().min(1).max(5).optional(),
 });
 
+const revisionSchema = z.object({
+  revision_note: z
+    .string()
+    .min(20, 'Revision note must be at least 20 characters')
+    .max(500, 'Revision note cannot exceed 500 characters'),
+});
+
 /**
  * POST - Approve delivered work and release payment
  * This endpoint atomically:
@@ -112,7 +119,7 @@ export async function POST(
       data: result
     });
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('Approval error:', error);
 
     if (error instanceof z.ZodError) {
@@ -120,7 +127,7 @@ export async function POST(
         { 
           success: false, 
           error: 'Invalid input',
-          details: error.errors[0].message 
+          details: error.issues[0]?.message || 'Validation failed'
         },
         { status: 400 }
       );
@@ -130,7 +137,9 @@ export async function POST(
       { 
         success: false, 
         error: 'Internal server error',
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        details: process.env.NODE_ENV === 'development' && error instanceof Error 
+          ? error.message 
+          : undefined
       },
       { status: 500 }
     );
@@ -158,11 +167,10 @@ export async function PATCH(
 
     const orderId = params.id;
     const body = await request.json();
-    const revisionNote = z
-      .string()
-      .min(20, 'Revision note must be at least 20 characters')
-      .max(500, 'Revision note cannot exceed 500 characters')
-      .parse(body.revision_note);
+    
+    // Validate revision request data
+    const validatedData = revisionSchema.parse(body);
+    const revisionNote = validatedData.revision_note;
 
     // Get order details
     const { data: order, error: orderError } = await supabase
@@ -211,6 +219,8 @@ export async function PATCH(
       .update({
         status: 'revision_requested',
         revision_count: order.revision_count + 1,
+        revision_note: revisionNote,
+        updated_at: new Date().toISOString(),
       })
       .eq('id', orderId);
 
@@ -219,13 +229,29 @@ export async function PATCH(
       throw updateError;
     }
 
-    // Create notification for freelancer
+    // Create notification for freelancer with revision details
     await supabase.from('notifications').insert({
       user_id: order.freelancer_id,
       type: 'revision_requested',
       title: 'Revision Requested',
       message: `Client requested revision for: ${order.title}`,
       link: `/freelancer/orders/${orderId}`,
+      metadata: {
+        revision_count: order.revision_count + 1,
+        max_revisions: order.max_revisions,
+        revision_note: revisionNote,
+      },
+    });
+
+    // Create activity log entry for revision request
+    await supabase.from('order_activities').insert({
+      order_id: orderId,
+      user_id: user.id,
+      action: 'revision_requested',
+      description: `Revision ${order.revision_count + 1} of ${order.max_revisions} requested`,
+      metadata: {
+        revision_note: revisionNote,
+      },
     });
 
     return NextResponse.json({
@@ -234,18 +260,19 @@ export async function PATCH(
       data: {
         revision_count: order.revision_count + 1,
         max_revisions: order.max_revisions,
+        revision_note: revisionNote,
       }
     });
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('Revision request error:', error);
     
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         { 
           success: false, 
-          error: 'Invalid revision note',
-          details: error.errors[0].message 
+          error: 'Invalid input',
+          details: error.issues[0]?.message || 'Validation failed'
         },
         { status: 400 }
       );
@@ -255,7 +282,9 @@ export async function PATCH(
       { 
         success: false, 
         error: 'Failed to request revision',
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        details: process.env.NODE_ENV === 'development' && error instanceof Error 
+          ? error.message 
+          : undefined
       },
       { status: 500 }
     );

@@ -75,7 +75,7 @@ export async function GET(request: NextRequest) {
         total_pages: Math.ceil((count || 0) / perPage),
       },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Jobs fetch error:', error);
     return NextResponse.json(
       { success: false, error: 'Failed to fetch jobs' },

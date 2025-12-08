@@ -160,7 +160,7 @@ export default async function ServicesPage({
                     <span className="font-medium">Active filters:</span>
                     {searchParams.search && (
                       <span className="ml-2">
-                        Search: "{searchParams.search}"
+                        Search: &quot;{searchParams.search}&quot;
                       </span>
                     )}
                     {searchParams.state && (

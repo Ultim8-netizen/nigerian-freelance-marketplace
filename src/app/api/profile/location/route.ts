@@ -66,10 +66,10 @@ export async function PUT(request: NextRequest) {
       success: true,
       message: 'Location updated successfully',
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { success: false, error: error instanceof Error ? error.message : 'An error occurred' },
         { status: 400 }
       );
     }

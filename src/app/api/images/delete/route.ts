@@ -52,10 +52,10 @@ export async function DELETE(request: NextRequest) {
       success: true,
       data: { deleted: deletedCount },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Delete error:', error);
     return NextResponse.json(
-      { success: false, error: error.message || 'Delete failed' },
+      { success: false, error: error instanceof Error ? error.message : 'Delete failed'},
       { status: 500 }
     );
   }

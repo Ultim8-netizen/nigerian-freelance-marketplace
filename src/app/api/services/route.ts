@@ -120,7 +120,7 @@ export async function GET(request: NextRequest) {
         sort_by: sortBy,
       },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Services fetch error:', error);
     return NextResponse.json(
       { success: false, error: 'Failed to fetch services' },
@@ -232,8 +232,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { 
           success: false, 
-          error: error.errors[0].message,
-          details: error.errors,
+          error: error instanceof Error ? error.message : 'An error occurred',
+          details: error instanceof Error ? error.message : 'An error occurred',
         },
         { status: 400 }
       );

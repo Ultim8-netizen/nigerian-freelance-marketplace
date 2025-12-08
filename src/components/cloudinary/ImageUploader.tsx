@@ -56,7 +56,8 @@ export function ImageUploader({
           // Reset expired tracking
           localStorage.removeItem('imageUploadTracking');
         }
-      } catch (e) {
+      } catch (error) {
+        console.error('Failed to load upload tracking:', error);
         localStorage.removeItem('imageUploadTracking');
       }
     }
@@ -181,14 +182,17 @@ export function ImageUploader({
           );
           
           return result.url;
-        } catch (err: any) {
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : 'Upload failed';
+          
           setUploadProgress(prev => 
             prev.map((p, i) => i === index ? { 
               ...p, 
               status: 'error', 
-              error: err.message 
+              error: errorMessage
             } : p)
           );
+          
           throw err;
         }
       });
@@ -208,8 +212,9 @@ export function ImageUploader({
       // Clear progress after delay
       setTimeout(() => setUploadProgress([]), 2000);
       
-    } catch (err: any) {
-      setError(err.message || 'Upload failed');
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Upload failed';
+      setError(errorMessage);
       setTimeout(() => setError(null), 5000);
     } finally {
       setIsUploading(false);
@@ -323,7 +328,7 @@ export function ImageUploader({
               <p className="text-sm text-gray-500 mb-3">
                 JPG, PNG, or WebP. Max 5MB each.
               </p>
-              <div className="flex items-center justify-center gap-4 text-xs text-gray-500">
+              <div className="flex items-center justify-center gap-4 text-xs text-gray-500 mb-4">
                 <span>{images.length}/{maxImages} images</span>
                 <span>•</span>
                 <span>{uploadCount}/{maxUploadsPerHour} uploads used</span>
@@ -334,6 +339,22 @@ export function ImageUploader({
                   </>
                 )}
               </div>
+              {canUpload && (
+                <Button 
+                  type="button"
+                  variant="outline" 
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={!canUpload}
+                  className="mx-auto"
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  Browse Files
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -350,7 +371,7 @@ export function ImageUploader({
       {/* Error Message */}
       {error && (
         <div className="p-3 bg-red-50 border border-red-200 rounded-md flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
           <p className="text-sm text-red-600">{error}</p>
         </div>
       )}
@@ -466,7 +487,7 @@ export function ImageUploader({
       {/* Rate Limit Warning */}
       {uploadCount >= maxUploadsPerHour * 0.8 && uploadCount < maxUploadsPerHour && (
         <div className="p-3 bg-orange-50 border border-orange-200 rounded-md flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-orange-600 flex-shrink-0" />
+          <AlertCircle className="w-4 h-4 text-orange-600 shrink-0" />
           <p className="text-sm text-orange-600">
             Approaching upload limit: {uploadCount}/{maxUploadsPerHour} used
             {timeRemaining && ` (resets in ${timeRemaining})`}

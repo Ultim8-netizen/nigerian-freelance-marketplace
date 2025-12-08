@@ -66,7 +66,7 @@ export async function GET(
       success: true,
       data: service,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Service fetch error:', error);
     return NextResponse.json(
       { success: false, error: 'Failed to fetch service' },
@@ -141,7 +141,7 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { success: false, error: error instanceof Error ? error.message : 'An error occurred' },
         { status: 400 }
       );
     }
@@ -221,7 +221,7 @@ export async function DELETE(
       success: true,
       message: 'Service deleted successfully',
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Service deletion error:', error);
     return NextResponse.json(
       { success: false, error: 'Failed to delete service' },

@@ -23,7 +23,12 @@ export default function LoginPage() {
     resolver: zodResolver(loginSchema),
   });
 
-  const onSubmit = async (data: any) => {
+interface LoginFormData {
+  email: string;
+  password: string;
+}
+
+  const onSubmit = async (data: LoginFormData) => {
     setIsLoading(true);
     setError(null);
 
@@ -38,8 +43,8 @@ export default function LoginPage() {
       } else {
         router.push('/client/dashboard');
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setIsLoading(false);
     }
@@ -95,7 +100,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center mt-6 text-gray-600">
-          Don't have an account?{' '}
+          Don&apos;t have an account?{' '}
           <Link href="/register" className="text-blue-600 hover:underline">
             Sign up
           </Link>

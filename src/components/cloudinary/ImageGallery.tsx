@@ -1,10 +1,6 @@
-// ============================================================================
-// src/components/cloudinary/ImageGallery.tsx
-// Gallery component with lightbox for service/portfolio images
-
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { getCardImageUrl, getFullImageUrl } from '@/lib/cloudinary/config';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -20,13 +16,24 @@ export function ImageGallery({ images, alt }: ImageGalleryProps) {
 
   const openLightbox = (index: number) => {
     setSelectedIndex(index);
-    document.body.style.overflow = 'hidden';
   };
 
   const closeLightbox = () => {
     setSelectedIndex(null);
-    document.body.style.overflow = 'unset';
   };
+
+  // Handle body overflow as a side effect
+  useEffect(() => {
+    if (selectedIndex !== null) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = 'unset';
+    }
+
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, [selectedIndex]);
 
   const goToPrevious = () => {
     if (selectedIndex === null) return;

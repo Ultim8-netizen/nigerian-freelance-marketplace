@@ -79,10 +79,10 @@ export async function POST(request: NextRequest) {
       data: { transaction, order },
       message: 'Payment verified successfully',
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Payment verification error:', error);
     return NextResponse.json(
-      { success: false, error: error.message || 'Payment verification failed' },
+      { success: false, error: error instanceof Error ? error.message : 'An error occurred' },
       { status: 500 }
     );
   }

@@ -10,9 +10,13 @@ export function ProgressBar() {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    setIsLoading(true);
-    const timeout = setTimeout(() => setIsLoading(false), 500);
-    return () => clearTimeout(timeout);
+    const start = setTimeout(() => setIsLoading(true), 0);
+    const stop = setTimeout(() => setIsLoading(false), 500);
+
+    return () => {
+      clearTimeout(start);
+      clearTimeout(stop);
+    };
   }, [pathname, searchParams]);
 
   if (!isLoading) return null;

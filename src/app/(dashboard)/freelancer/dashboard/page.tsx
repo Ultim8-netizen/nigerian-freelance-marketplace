@@ -38,7 +38,7 @@ export default async function FreelancerDashboard() {
     .in('status', ['awaiting_delivery', 'delivered']);
 
   // Get total services
-  const { count: servicesCount } = await supabase
+  const { count: _servicesCount } = await supabase
     .from('services')
     .select('*', { count: 'exact', head: true })
     .eq('freelancer_id', user.id)

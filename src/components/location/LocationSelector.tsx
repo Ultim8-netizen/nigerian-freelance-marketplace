@@ -3,7 +3,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -96,7 +96,7 @@ export function LocationSelector({
   const handleManualSubmit = () => {
     if (!selectedState) return;
     if (isStudent && !selectedUniversity && availableUniversities.length > 0) {
-      setDetectionError('Please select your university or uncheck "I\'m a student"');
+      setDetectionError('Please select your university or uncheck &quot;I&apos;m a student&quot;');
       return;
     }
 
@@ -151,7 +151,7 @@ export function LocationSelector({
         {/* Detection Error */}
         {detectionError && (
           <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded text-sm flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>{detectionError}</span>
           </div>
         )}
@@ -175,7 +175,7 @@ export function LocationSelector({
             <label htmlFor="is-student" className="flex items-center gap-2 cursor-pointer flex-1">
               <School className="w-5 h-5 text-gray-600" />
               <div>
-                <div className="font-medium">I'm a student</div>
+                <div className="font-medium">I&apos;m a student</div>
                 <div className="text-xs text-gray-500">
                   Connect with your campus community
                 </div>
@@ -302,7 +302,7 @@ export function LocationSelector({
           {selectedState && (
             <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
               <div className="flex items-start gap-3">
-                <MapPin className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                <MapPin className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium text-blue-900 mb-1">
                     Your location will show as:
@@ -318,7 +318,7 @@ export function LocationSelector({
                   </p>
                   {!selectedCity && !customCity && !selectedUniversity && (
                     <p className="text-xs text-blue-600 mt-1">
-                      Just "{selectedState}" - very general
+                      Just &quot;{selectedState}&quot; - very general
                     </p>
                   )}
                 </div>

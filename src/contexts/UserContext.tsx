@@ -1,8 +1,8 @@
 // src/contexts/UserContext.tsx
 'use client';
 
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { User } from '@supabase/supabase-js';
+import { createContext, useContext, useEffect, useState, ReactNode, useCallback } from 'react';
+import { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 
 interface Profile {
@@ -49,35 +49,17 @@ export function UserProvider({
   const [isLoading, setIsLoading] = useState(false);
   const supabase = createClient();
 
-  // Listen for auth changes
-  useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setUser(session?.user ?? null);
-        
-        if (session?.user) {
-          await refreshProfile();
-        } else {
-          setProfile(null);
-        }
-      }
-    );
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, []);
-
   // Refresh profile data from database
-  const refreshProfile = async () => {
-    if (!user?.id) return;
+  const refreshProfile = useCallback(async () => {
+    const currentUser = user || (await supabase.auth.getUser()).data.user;
+    if (!currentUser?.id) return;
 
     setIsLoading(true);
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', user.id)
+        .eq('id', currentUser.id)
         .single();
 
       if (error) throw error;
@@ -87,10 +69,10 @@ export function UserProvider({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user, supabase]);
 
   // Update profile
-  const updateProfile = async (updates: Partial<Profile>) => {
+  const updateProfile = useCallback(async (updates: Partial<Profile>) => {
     if (!user?.id) return;
 
     setIsLoading(true);
@@ -110,7 +92,26 @@ export function UserProvider({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user, supabase]);
+
+  // Listen for auth changes
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event: AuthChangeEvent, session: Session | null) => {
+        setUser(session?.user ?? null);
+        
+        if (session?.user) {
+          await refreshProfile();
+        } else {
+          setProfile(null);
+        }
+      }
+    );
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [supabase.auth, refreshProfile]);
 
   return (
     <UserContext.Provider

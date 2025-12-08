@@ -4,7 +4,6 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { F9Logo } from '@/components/brand/F9Logo';
-import { BRAND } from '@/lib/branding';
 import { 
   Zap, Shield, Users, TrendingUp, Star, CheckCircle,
   ArrowRight, Sparkles, Trophy, Target, Rocket
@@ -14,7 +13,7 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-white">
       {/* Hero Section - DRAMATIC */}
-      <section className="relative overflow-hidden bg-gradient-to-br from-red-600 via-blue-600 to-purple-600">
+      <section className="relative overflow-hidden bg-linear-to-br from-red-600 via-blue-600 to-purple-600">
         {/* Animated Background Pattern */}
         <div className="absolute inset-0 opacity-10">
           <div className="absolute inset-0" style={{
@@ -29,14 +28,14 @@ export default function HomePage() {
               <div className="inline-flex items-center gap-3 bg-white/10 backdrop-blur-sm rounded-full px-6 py-3 border border-white/20">
                 <Zap className="w-5 h-5 text-yellow-300 animate-pulse" />
                 <span className="text-white font-semibold">
-                  Nigeria's #1 Student Marketplace
+                  Nigeria&apos;s #1 Student Marketplace
                 </span>
               </div>
             </div>
 
             {/* Main Headline */}
             <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
-              <span className="inline-block bg-gradient-to-r from-red-400 via-blue-400 to-purple-400 bg-clip-text text-transparent">
+              <span className="inline-block bg-linear-to-r from-red-400 via-blue-400 to-purple-400 bg-clip-text text-transparent">
                 F9
               </span>
               <br />
@@ -57,7 +56,7 @@ export default function HomePage() {
               <Link href="/register">
                 <Button 
                   size="lg" 
-                  className="text-lg px-8 py-6 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-bold shadow-2xl hover:shadow-red-500/50 transition-all duration-300 hover:scale-105"
+                  className="text-lg px-8 py-6 bg-linear-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-bold shadow-2xl hover:shadow-red-500/50 transition-all duration-300 hover:scale-105"
                 >
                   <Rocket className="w-5 h-5 mr-2" />
                   Start Hustling - Free
@@ -107,7 +106,7 @@ export default function HomePage() {
         <div className="container mx-auto px-4">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-bold mb-4">
-              Why <span className="bg-gradient-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">F9</span>?
+              Why <span className="bg-linear-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">F9</span>?
             </h2>
             <p className="text-xl text-gray-600 max-w-2xl mx-auto">
               We understand the Nigerian hustle. Built by students, for students.
@@ -126,6 +125,7 @@ export default function HomePage() {
               title="Verified Students"
               description="Connect with talented students from UNILAG, UI, OAU, ABU, UNN and 100+ universities across Nigeria."
               highlight="NIN & Student ID verified"
+              verified
             />
             <ValueCard
               icon={<TrendingUp className="w-12 h-12 text-purple-600" />}
@@ -138,11 +138,11 @@ export default function HomePage() {
       </section>
 
       {/* How It Works */}
-      <section className="py-20 bg-gradient-to-b from-gray-50 to-white">
+      <section className="py-20 bg-linear-to-b from-gray-50 to-white">
         <div className="container mx-auto px-4">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-bold mb-4">
-              Start in <span className="bg-gradient-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">3 Steps</span>
+              Start in <span className="bg-linear-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">3 Steps</span>
             </h2>
             <p className="text-xl text-gray-600">
               Your journey to financial freedom begins here
@@ -179,10 +179,10 @@ export default function HomePage() {
         <div className="container mx-auto px-4">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-bold mb-4">
-              Popular on <span className="bg-gradient-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">F9</span>
+              Popular on <span className="bg-linear-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">F9</span>
             </h2>
             <p className="text-xl text-gray-600">
-              From assignments to apps, we've got you covered
+              From assignments to apps, we&apos;ve got you covered
             </p>
           </div>
 
@@ -222,11 +222,11 @@ export default function HomePage() {
       </section>
 
       {/* Testimonials */}
-      <section className="py-20 bg-gradient-to-br from-red-50 via-blue-50 to-purple-50">
+      <section className="py-20 bg-linear-to-br from-red-50 via-blue-50 to-purple-50">
         <div className="container mx-auto px-4">
           <div className="text-center mb-16">
             <h2 className="text-4xl font-bold mb-4">
-              Students Trust <span className="bg-gradient-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">F9</span>
+              Students Trust <span className="bg-linear-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">F9</span>
             </h2>
             <p className="text-xl text-gray-600">
               Real stories from real hustlers
@@ -257,7 +257,7 @@ export default function HomePage() {
       </section>
 
       {/* Final CTA */}
-      <section className="py-20 bg-gradient-to-br from-red-600 via-blue-600 to-purple-600 text-white relative overflow-hidden">
+      <section className="py-20 bg-linear-to-br from-red-600 via-blue-600 to-purple-600 text-white relative overflow-hidden">
         <div className="absolute inset-0 opacity-10">
           <div className="absolute inset-0" style={{
             backgroundImage: `url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z' fill='%23ffffff' fill-opacity='1' fill-rule='evenodd'/%3E%3C/svg%3E")`,
@@ -326,16 +326,19 @@ function ValueCard({
   icon, 
   title, 
   description, 
-  highlight 
+  highlight,
+  verified = false
 }: { 
   icon: React.ReactNode; 
   title: string; 
   description: string;
   highlight: string;
+  verified?: boolean;
 }) {
   return (
     <div className="relative p-8 rounded-2xl border-2 border-gray-200 hover:border-red-500 hover:shadow-2xl transition-all duration-300 group bg-white">
-      <div className="absolute top-4 right-4 text-xs font-semibold text-green-600 bg-green-50 px-3 py-1 rounded-full">
+      <div className="absolute top-4 right-4 text-xs font-semibold text-green-600 bg-green-50 px-3 py-1 rounded-full flex items-center gap-1">
+        {verified && <CheckCircle className="w-3 h-3" />}
         {highlight}
       </div>
       <div className="mb-4 transform group-hover:scale-110 transition-transform duration-300">
@@ -362,7 +365,7 @@ function StepCard({
     <div className="relative">
       <div className="flex flex-col items-center text-center">
         <div className="relative mb-6">
-          <div className="w-20 h-20 rounded-full bg-gradient-to-br from-red-600 via-blue-600 to-purple-600 flex items-center justify-center text-white font-bold text-2xl shadow-xl">
+          <div className="w-20 h-20 rounded-full bg-linear-to-br from-red-600 via-blue-600 to-purple-600 flex items-center justify-center text-white font-bold text-2xl shadow-xl">
             {number}
           </div>
           <div className="absolute -bottom-2 -right-2 bg-white rounded-full p-2 shadow-lg">
@@ -373,7 +376,7 @@ function StepCard({
         <p className="text-gray-600">{description}</p>
       </div>
       {number < 3 && (
-        <div className="hidden md:block absolute top-10 left-full w-full h-0.5 bg-gradient-to-r from-red-600 via-blue-600 to-purple-600 opacity-30" />
+        <div className="hidden md:block absolute top-10 left-full w-full h-0.5 bg-linear-to-r from-red-600 via-blue-600 to-purple-600 opacity-30" />
       )}
     </div>
   );
@@ -397,9 +400,9 @@ function TestimonialCard({
           <Star key={i} className="w-5 h-5 text-yellow-400 fill-yellow-400" />
         ))}
       </div>
-      <p className="text-gray-700 italic mb-6 leading-relaxed">"{quote}"</p>
+      <p className="text-gray-700 italic mb-6 leading-relaxed">&quot;{quote}&quot;</p>
       <div className="flex items-center gap-3">
-        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white font-bold">
+        <div className="w-12 h-12 rounded-full bg-linear-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white font-bold">
           {author.charAt(0)}
         </div>
         <div>

@@ -11,7 +11,6 @@ import {
   MessageSquare,
   User,
   Menu,
-  X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
@@ -20,12 +19,13 @@ interface DashboardMobileMenuProps {
   userType?: 'freelancer' | 'client' | 'both';
 }
 
-export function DashboardMobileMenu({ userType = 'both' }: DashboardMobileMenuProps) {
+export function DashboardMobileMenu({ userType: _userType = 'both' }: DashboardMobileMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const pathname = usePathname();
 
   // Close menu on route change
   useEffect(() => {
+    //eslint-disable-next-line react-hooks/set-state-in-effect
     setIsOpen(false);
   }, [pathname]);
 

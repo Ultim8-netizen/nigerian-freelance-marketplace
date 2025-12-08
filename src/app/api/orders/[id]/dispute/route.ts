@@ -132,7 +132,7 @@ export async function POST(
       message:
         'Dispute raised successfully. Our team will review within 48 hours.',
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Dispute error:', error);
 
     if (error instanceof z.ZodError) {

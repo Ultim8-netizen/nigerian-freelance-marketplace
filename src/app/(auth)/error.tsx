@@ -29,7 +29,7 @@ export default function AuthError({
         </div>
         <h1 className="text-2xl font-bold mb-2">Authentication Error</h1>
         <p className="text-gray-600 mb-6">
-          We couldn't complete your authentication request.
+          We couldn&apos;t complete your authentication request.
         </p>
 
         <div className="space-y-3">

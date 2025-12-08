@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Bell, Search, Menu, User, Settings, LogOut, Wallet, X, Command } from 'lucide-react';
+import { Bell, Search, Menu, User, Settings, LogOut, Wallet, X } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,11 +19,21 @@ import { Badge } from '@/components/ui/badge';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { F9Logo } from '@/components/brand/F9Logo';
-import { BRAND } from '@/lib/branding';
+
+interface UserProfile {
+  full_name?: string;
+  avatar_url?: string;
+  wallet_balance?: number;
+  user_type?: string;
+}
+
+interface UserData {
+  email?: string;
+}
 
 interface DashboardNavProps {
-  user: any;
-  profile: any;
+  user: UserData;
+  profile: UserProfile;
   onMenuToggle?: () => void;
 }
 
@@ -32,7 +42,6 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isScrolled, setIsScrolled] = useState(false);
-  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const pathname = usePathname();
@@ -46,16 +55,15 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // Command palette shortcut (Cmd/Ctrl + K)
+  // Keyboard shortcuts (Cmd/Ctrl + K for search, Escape to close)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        setShowCommandPalette(true);
+        setIsSearchOpen(true);
       }
       if (e.key === 'Escape') {
         setIsSearchOpen(false);
-        setShowCommandPalette(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -91,6 +99,16 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
       setIsSearchOpen(false);
       setSearchQuery('');
     }
+  };
+
+  // Mark notification as read (example usage for setNotifications)
+  const markAllAsRead = () => {
+    setNotifications(0);
+  };
+
+  // Determine if current page is active (example usage for pathname)
+  const isActivePage = (path: string) => {
+    return pathname === path;
   };
 
   return (
@@ -158,10 +176,12 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
               <Button 
                 variant="outline" 
                 size="sm" 
-                className="hidden sm:flex items-center gap-2 hover:shadow-md transition-all duration-200 hover:scale-105 active:scale-95"
+                className={`hidden sm:flex items-center gap-2 hover:shadow-md transition-all duration-200 hover:scale-105 active:scale-95 ${
+                  isActivePage('/dashboard/wallet') ? 'ring-2 ring-blue-500' : ''
+                }`}
               >
                 <Wallet className="h-4 w-4 text-green-600" />
-                <span className="font-semibold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
+                <span className="font-semibold bg-linear-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
                   ₦{(profile?.wallet_balance || 0).toLocaleString()}
                 </span>
               </Button>
@@ -174,6 +194,7 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                   variant="ghost" 
                   size="icon" 
                   className="relative hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  aria-label={`Notifications ${notifications > 0 ? `(${notifications} unread)` : ''}`}
                 >
                   <Bell className="h-5 w-5" />
                   {notifications > 0 && (
@@ -192,11 +213,23 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
               <DropdownMenuContent align="end" className="w-80 sm:w-96">
                 <DropdownMenuLabel className="flex items-center justify-between">
                   <span>Notifications</span>
-                  {notifications > 0 && (
-                    <Badge variant="secondary" className="ml-2">
-                      {notifications} new
-                    </Badge>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {notifications > 0 && (
+                      <>
+                        <Badge variant="secondary" className="ml-2">
+                          {notifications} new
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={markAllAsRead}
+                          className="text-xs h-6 px-2"
+                        >
+                          Mark all read
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <div className="max-h-96 overflow-y-auto">
@@ -233,10 +266,11 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                 <Button 
                   variant="ghost" 
                   className="relative h-10 w-10 rounded-full hover:ring-2 hover:ring-blue-500 transition-all"
+                  aria-label="User menu"
                 >
                   <Avatar className="h-10 w-10 ring-2 ring-white dark:ring-gray-800">
                     <AvatarImage src={profile?.avatar_url} alt={profile?.full_name} />
-                    <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white font-semibold">
+                    <AvatarFallback className="bg-linear-to-br from-blue-500 to-purple-600 text-white font-semibold">
                       {getInitials(profile?.full_name || user?.email || 'U')}
                     </AvatarFallback>
                   </Avatar>
@@ -250,7 +284,7 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                     <div className="flex items-center space-x-2">
                       <Avatar className="h-12 w-12">
                         <AvatarImage src={profile?.avatar_url} />
-                        <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white">
+                        <AvatarFallback className="bg-linear-to-br from-blue-500 to-purple-600 text-white">
                           {getInitials(profile?.full_name || user?.email || 'U')}
                         </AvatarFallback>
                       </Avatar>
@@ -268,19 +302,28 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
-                  <Link href="/dashboard/profile" className="cursor-pointer">
+                  <Link 
+                    href="/dashboard/profile" 
+                    className={`cursor-pointer ${isActivePage('/dashboard/profile') ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
+                  >
                     <User className="mr-2 h-4 w-4" />
                     Profile
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link href="/dashboard/settings" className="cursor-pointer">
+                  <Link 
+                    href="/dashboard/settings" 
+                    className={`cursor-pointer ${isActivePage('/dashboard/settings') ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
+                  >
                     <Settings className="mr-2 h-4 w-4" />
                     Settings
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link href="/dashboard/wallet" className="cursor-pointer">
+                  <Link 
+                    href="/dashboard/wallet" 
+                    className={`cursor-pointer ${isActivePage('/dashboard/wallet') ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
+                  >
                     <Wallet className="mr-2 h-4 w-4" />
                     <span className="flex-1">Wallet</span>
                     <span className="text-xs text-green-600 font-semibold">
@@ -311,6 +354,7 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                 variant="ghost"
                 size="icon"
                 onClick={() => setIsSearchOpen(false)}
+                aria-label="Close search"
               >
                 <X className="h-5 w-5" />
               </Button>

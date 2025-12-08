@@ -1,18 +1,76 @@
 // ============================================================================
-// src/components/ui/spinner.tsx
-// Premium typing loader: "F9▌"
+// Visually smoother F9 Premium Spinner
 // ============================================================================
 
-// F9SpinnerPro.tsx
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { cn } from "@/lib/utils";
 
+// ============================================================================
+// Compact Inline Spinner (for buttons, etc.)
+// ============================================================================
+export function Spinner({ className }: { className?: string }) {
+  const dotColors = ["#3B82F6", "#EF4444", "#A855F7"];
+  const [activeDot, setActiveDot] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setActiveDot(prev => (prev + 1) % 3);
+    }, 400);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <motion.span
+      animate={{ rotate: 360 }}
+      transition={{
+        duration: 1.5,
+        repeat: Infinity,
+        ease: "linear",
+      }}
+      className={cn("inline-flex items-center justify-center", className)}
+    >
+      <svg
+        className="w-full h-full"
+        viewBox="0 0 24 24"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <motion.circle
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeDasharray="60"
+          strokeDashoffset="20"
+          strokeLinecap="round"
+          animate={{
+            stroke: dotColors[activeDot],
+          }}
+          transition={{
+            duration: 0.4,
+            ease: "easeInOut",
+          }}
+        />
+      </svg>
+    </motion.span>
+  );
+}
+
+// ============================================================================
+// Full-screen F9 Premium Spinner
+// ============================================================================
 export default function F9SpinnerPro() {
-  const dotColors = ["#3B82F6", "#EF4444", "#A855F7"]; // blue, red, purple
-  const totalCyclesForTagline = 3; // wait 3 cycles before showing tagline
+  const dotColors = ["#3B82F6", "#EF4444", "#A855F7"];
+  const totalCyclesForTagline = 3;
+
   const [activeDot, setActiveDot] = useState(0);
   const [cycleCount, setCycleCount] = useState(0);
-  const [showTagline, setShowTagline] = useState(false);
+
+  // Derived: avoids setState inside effect
+  const showTagline = cycleCount >= totalCyclesForTagline;
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -21,43 +79,76 @@ export default function F9SpinnerPro() {
         if (next === 0) setCycleCount(c => c + 1);
         return next;
       });
-    }, 400); // speed of leapfrogging
+    }, 400);
 
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    if (cycleCount >= totalCyclesForTagline) {
-      setShowTagline(true);
-    }
-  }, [cycleCount]);
+  // Slight oscillating scale on the whole F9 block
+  const pulseVariants = {
+    animate: {
+      scale: [1, 1.06, 1],
+      transition: {
+        duration: 1.2,
+        repeat: Infinity,
+        ease: "easeInOut",
+      },
+    },
+  };
 
-  // Tagline variants for looping fade
   const taglineVariants = {
     hidden: { opacity: 0 },
-    visible: { 
-      opacity: 1, 
-      transition: { duration: 1, repeat: Infinity, repeatType: "mirror", ease: "easeInOut" }
+    visible: {
+      opacity: 1,
+      transition: {
+        duration: 1.2,
+        repeat: Infinity,
+        repeatType: "mirror" as const,
+        ease: "easeInOut",
+      },
     },
   };
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
-      {/* F9 Spinner */}
-      <div className="text-6xl font-bold font-mono flex items-center space-x-2">
-        <span>
+      <motion.div
+        variants={pulseVariants}
+        animate="animate"
+        className="text-6xl font-bold font-mono flex items-center space-x-2"
+      >
+        <span className="flex items-center">
           F9
-          <span
-            style={{ color: dotColors[activeDot] }}
+          <motion.span
+            key={activeDot}
+            initial={{ opacity: 0 }}
+            animate={{
+              opacity: 1,
+              color: dotColors[activeDot],
+            }}
+            transition={{
+              duration: 0.35,
+              ease: "easeInOut",
+            }}
             className="ml-1"
           >
             •
-          </span>
+          </motion.span>
         </span>
-        <span className="animate-blink">|</span>
-      </div>
 
-      {/* Tagline revealed after cycles */}
+        {/* Smooth blinking using framer-motion instead of CSS */}
+        <motion.span
+          animate={{ opacity: [1, 0.2, 1] }}
+          transition={{
+            duration: 0.9,
+            repeat: Infinity,
+            repeatType: "loop" as const,
+            ease: "easeInOut",
+          }}
+        >
+          |
+        </motion.span>
+      </motion.div>
+
       <AnimatePresence>
         {showTagline && (
           <motion.div

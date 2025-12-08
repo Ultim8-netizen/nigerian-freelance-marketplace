@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
         tx_ref: txRef,
       },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Payment initiation error:', error);
 
     if (error instanceof z.ZodError) {
