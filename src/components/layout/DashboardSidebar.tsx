@@ -90,6 +90,12 @@ export function DashboardSidebar({ userType = 'both' }: DashboardSidebarProps) {
       badge: null,
     },
     {
+      title: 'Marketplace',
+      href: '/marketplace',
+      icon: ShoppingBag,
+      badge: 'New',
+    },
+    {
       title: 'Messages',
       href: '/dashboard/messages',
       icon: MessageSquare,
