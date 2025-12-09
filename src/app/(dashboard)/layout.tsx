@@ -8,22 +8,24 @@ import { DashboardSidebar } from '@/components/layout/DashboardSidebar';
 import { DashboardMobileMenu } from '@/components/layout/DashboardMobileMenu';
 import { UserProvider } from '@/contexts/UserContext';
 import { Toaster } from '@/components/ui/toaster';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AlertCircle, Wifi, WifiOff } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
+import {
+  SessionExpiryWarning,
+  DashboardBreadcrumb,
+  ScrollToTop,
+  OfflineIndicator,
+  KeyboardShortcutsHelper,
+} from '@/components/layout/DashboardUtilities';
 
 /**
  * Dashboard Layout Component with Enhanced Features
  * 
- * Features:
+ * This is a Server Component that handles:
  * - Server-side authentication with error handling
  * - Responsive sidebar with collapse state persistence
  * - User context provider for client components
  * - Loading states with enhanced skeletons
  * - Profile completion status check
- * - Session expiry warnings
- * - Offline detection support
- * - Breadcrumb navigation support
- * - Page transition animations
  */
 
 interface DashboardLayoutProps {
@@ -40,7 +42,7 @@ export default async function DashboardLayout({
   
   if (authError || !user) {
     // Store intended destination for post-login redirect
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const currentPath = cookieStore.get('redirect-after-login')?.value;
     
     redirect(`/login?redirect=${encodeURIComponent(currentPath || '/dashboard')}`);
@@ -74,34 +76,33 @@ export default async function DashboardLayout({
   );
 
   // Get sidebar collapse preference from cookies
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   const sidebarCollapsed = cookieStore.get('sidebar-collapsed')?.value === 'true';
-
-  // Get user's unread notification count
-  const unreadCount = profile?.notifications?.[0]?.count || 0;
 
   return (
     <UserProvider user={user} profile={profile}>
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
-        {/* Session Expiry Warning */}
+        {/* Session Expiry Warning - Client Component */}
         <SessionExpiryWarning />
 
         {/* Profile Completion Alert */}
         {needsProfileUpdate && (
           <div className="bg-yellow-50 dark:bg-yellow-900/20 border-b border-yellow-200 dark:border-yellow-800">
             <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-3">
-              <Alert variant="warning" className="border-0 bg-transparent">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  Your profile is incomplete. 
-                  <a 
-                    href="/dashboard/settings/profile" 
-                    className="ml-2 font-medium underline hover:no-underline"
-                  >
-                    Complete your profile
-                  </a>
-                </AlertDescription>
-              </Alert>
+              <div className="flex items-start space-x-3 p-3 rounded-lg border border-yellow-300 dark:border-yellow-700 bg-yellow-100 dark:bg-yellow-900/30">
+                <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-sm text-yellow-800 dark:text-yellow-200">
+                    Your profile is incomplete. 
+                    <a 
+                      href="/dashboard/settings/profile" 
+                      className="ml-2 font-medium underline hover:no-underline"
+                    >
+                      Complete your profile
+                    </a>
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -110,14 +111,13 @@ export default async function DashboardLayout({
         <DashboardNav 
           user={user} 
           profile={profile}
-          unreadCount={unreadCount}
         />
 
         <div className="flex relative">
           {/* Desktop Sidebar */}
           <aside 
             className={`
-              hidden lg:flex lg:flex-shrink-0 
+              hidden lg:flex lg:shrink-0 
               transition-all duration-300 ease-in-out
               ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-64'}
             `}
@@ -125,7 +125,6 @@ export default async function DashboardLayout({
             <div className="flex flex-col w-full border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
               <DashboardSidebar 
                 userType={profile?.user_type}
-                collapsed={sidebarCollapsed}
               />
             </div>
           </aside>
@@ -133,7 +132,6 @@ export default async function DashboardLayout({
           {/* Mobile Menu */}
           <DashboardMobileMenu 
             userType={profile?.user_type}
-            unreadCount={unreadCount}
           />
 
           {/* Main Content Area with Page Transitions */}
@@ -145,7 +143,7 @@ export default async function DashboardLayout({
             `}
           >
             <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-              {/* Breadcrumb Area */}
+              {/* Breadcrumb Area - Client Component */}
               <div className="mb-6">
                 <Suspense fallback={<BreadcrumbSkeleton />}>
                   <DashboardBreadcrumb />
@@ -160,7 +158,7 @@ export default async function DashboardLayout({
               </Suspense>
             </div>
 
-            {/* Scroll to Top Button */}
+            {/* Scroll to Top Button - Client Component */}
             <ScrollToTop />
           </main>
         </div>
@@ -168,10 +166,10 @@ export default async function DashboardLayout({
         {/* Global Toast Notifications */}
         <Toaster />
 
-        {/* Offline Indicator */}
+        {/* Offline Indicator - Client Component */}
         <OfflineIndicator />
 
-        {/* Keyboard Shortcuts Helper */}
+        {/* Keyboard Shortcuts Helper - Client Component */}
         <KeyboardShortcutsHelper />
       </div>
     </UserProvider>
@@ -179,7 +177,7 @@ export default async function DashboardLayout({
 }
 
 // ============================================================================
-// LOADING SKELETONS
+// LOADING SKELETONS (Server Components)
 // ============================================================================
 
 /**
@@ -191,7 +189,7 @@ function DashboardLoadingSkeleton() {
       {/* Header skeleton with shimmer */}
       <div className="relative overflow-hidden">
         <div className="h-8 bg-gray-200 dark:bg-gray-700 rounded w-1/3" />
-        <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+        <div className="absolute inset-0 -translate-x-full animate-shimmer bg-linear-to-r from-transparent via-white/20 to-transparent" />
       </div>
       
       {/* Stats cards skeleton */}
@@ -206,7 +204,7 @@ function DashboardLoadingSkeleton() {
               <div className="h-8 bg-gray-200 dark:bg-gray-700 rounded w-1/2" />
               <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-3/4" />
             </div>
-            <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+            <div className="absolute inset-0 -translate-x-full animate-shimmer bg-linear-to-r from-transparent via-white/10 to-transparent" />
           </div>
         ))}
       </div>
@@ -226,7 +224,7 @@ function DashboardLoadingSkeleton() {
                 ))}
               </div>
             </div>
-            <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+            <div className="absolute inset-0 -translate-x-full animate-shimmer bg-linear-to-r from-transparent via-white/10 to-transparent" />
           </div>
         ))}
       </div>
@@ -245,48 +243,6 @@ function BreadcrumbSkeleton() {
       <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-24" />
     </div>
   );
-}
-
-// ============================================================================
-// UTILITY COMPONENTS
-// ============================================================================
-
-/**
- * Session expiry warning component
- */
-function SessionExpiryWarning() {
-  // This would check session expiry time and show warning
-  // Implementation depends on your auth system
-  return null;
-}
-
-/**
- * Breadcrumb navigation component
- */
-function DashboardBreadcrumb() {
-  // Implementation would use pathname to generate breadcrumbs
-  return null;
-}
-
-/**
- * Scroll to top button
- */
-function ScrollToTop() {
-  return null; // Client component implementation needed
-}
-
-/**
- * Offline indicator
- */
-function OfflineIndicator() {
-  return null; // Client component implementation needed
-}
-
-/**
- * Keyboard shortcuts helper
- */
-function KeyboardShortcutsHelper() {
-  return null; // Client component implementation needed
 }
 
 // ============================================================================
