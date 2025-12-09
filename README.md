@@ -1,319 +1,174 @@
-# ⚡ F9 - Hustle Forward
+Nigerian Freelance Marketplace(F9)
 
-Nigeria's Premier Student Freelance Marketplace
+A modern, full-stack freelance marketplace designed specifically for Nigeria’s unique digital, economic, and infrastructural landscape. The platform connects freelancers and clients across diverse skill categories while addressing local challenges such as unreliable addresses, payment frictions, onboarding barriers, and service discovery in an informal economy.
 
-A comprehensive freelance marketplace connecting Nigerian students and professionals with clients. Built with Next.js 14+, Supabase, and Flutterwave.
+Overview
 
-## ✨ Features
+This project provides a scalable foundation for a localized Nigerian freelance ecosystem. It combines a marketplace workflow with supporting tools and utilities that improve trust, visibility, communication, and job completion efficiency. The platform focuses on simplicity at the early stage while remaining extensible for advanced features.
 
-- 🎓 **Student-Focused**: Tailored for Nigerian university students
-- 💰 **Secure Payments**: Escrow system with Flutterwave integration
-- 📍 **Location-Based**: Find services and opportunities near you
-- 🔒 **Identity Verification**: NIN and student ID verification
-- ⭐ **Rating System**: Build your reputation
-- 💬 **Real-time Messaging**: Communicate with clients/freelancers
-- 🎨 **Service Packages**: Offer tiered services (basic, standard, premium)
-- 🏆 **Job Bidding**: Freelancers can bid on posted jobs
-- 🛡️ **Dispute Resolution**: Protected transactions with admin mediation
+Core Features
+1. User Accounts & Profiles
 
-## 🚀 Tech Stack
+Freelancers and clients have distinct but flexible roles.
 
-- **Framework**: Next.js 14+ (App Router)
-- **Database**: Supabase (PostgreSQL)
-- **Auth**: Supabase Auth
-- **Payments**: Flutterwave
-- **Storage**: Cloudinary
-- **State Management**: TanStack Query (React Query)
-- **Styling**: Tailwind CSS
-- **Forms**: React Hook Form + Zod
-- **TypeScript**: Full type safety
+Profiles include skills, ratings, portfolios, and verification levels.
 
-## 📋 Prerequisites
+Designed to support future KYC integrations.
 
-- Node.js 18+ and npm 9+
-- Supabase account
-- Cloudinary account
-- Flutterwave account (test mode for development)
+2. Job Posting & Bidding
 
-## 🛠️ Installation
+Clients can publish job listings with budgets, deadlines, and descriptions.
 
-### 1. Clone the repository
+Freelancers submit proposals directly from their dashboards.
 
-```bash
-git clone https://github.com/yourusername/nigerian-freelance-marketplace.git
-cd nigerian-freelance-marketplace
-```
+Status transitions: Open → In-Progress → Review → Completed → Closed.
 
-### 2. Install dependencies
+3. Messaging & Communication
 
-```bash
-npm install
-```
+Real-time or near-real-time direct messaging for negotiation and project updates.
 
-### 3. Set up environment variables
+Initially lightweight, expandable to file sharing and voice notes.
 
-```bash
-cp .env.example .env.local
-```
+4. Category & Skill Organization
 
-Edit `.env.local` with your actual credentials (see `.env.example` for details).
+Structured browsing of jobs by categories (design, writing, tech, repairs, etc.).
 
-### 4. Set up Supabase
+Flexible enough to incorporate informal and non-tech Nigerian skill sectors.
 
-1. Create a new Supabase project at https://supabase.com
-2. Run the database schema:
-   - Go to SQL Editor in Supabase Dashboard
-   - Copy and paste the entire content from the schema file provided in the documents
-   - Execute the SQL
+5. Ratings & Reviews
 
-3. Set up Row Level Security (RLS):
-   - The schema already includes RLS policies
-   - Verify they're enabled in Authentication → Policies
+After job completion, clients can rate freelancers.
 
-4. Create storage bucket for images:
-```sql
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('profile-images', 'profile-images', true);
+Review data contributes to ranking and trust signals.
 
-CREATE POLICY "Public read access"
-ON storage.objects FOR SELECT
-USING (bucket_id = 'profile-images');
-```
+6. Dashboard & Activity Management
 
-### 5. Set up Cloudinary
+Separate dashboards for clients and freelancers.
 
-1. Go to https://cloudinary.com/console
-2. Get your Cloud Name, API Key, and API Secret
-3. Create an unsigned upload preset:
-   - Settings → Upload → Add upload preset
-   - Name: `marketplace_unsigned`
-   - Signing Mode: **Unsigned**
-   - Folder: `marketplace`
-   - Apply these transformations:
-     - Auto format (`f_auto`)
-     - Auto quality (`q_auto:good`)
-     - Max dimensions: 1920x1920
+Track jobs, proposals, finances, messages, and notifications.
 
-### 6. Set up Flutterwave
+7. Location-Aware Service Discovery (Optional Future Feature)
 
-1. Sign up at https://flutterwave.com
-2. Get test API keys from Dashboard → Settings → API
-3. Use test keys (start with `FLWPUBK_TEST-`)
-4. For production, use live keys (start with `FLWPUBK-`)
+Lightweight location validation (no heavy real-time tracking).
 
-### 7. Run the development server
+Users can add descriptive location info (e.g., local landmarks).
 
-```bash
+Designed for integration with the Descriptive-to-Geospatial Translation Framework (DGTF) for better discovery of informal areas.
+
+8. Payment Architecture (Future)
+
+Designed for later implementation of escrow-based systems.
+
+Support for Nigerian gateways: Paystack, Flutterwave, etc.
+
+Secure ledger and transaction logs prepared for expansion.
+
+Technology Stack
+Frontend
+
+Next.js 14 / React 18
+
+TypeScript
+
+TailwindCSS
+
+Modular UI components (Select, Spinner, ProgressBar, etc.)
+
+Backend & API
+
+Next.js server actions
+
+Supabase for authentication and database
+
+Middleware for cookies, sessions, and protected routes
+
+Database
+
+PostgreSQL (Supabase)
+
+Tables for users, jobs, proposals, reviews, messages, and notifications
+
+State & Utilities
+
+Custom hooks
+
+Loading indicators
+
+Validation rules
+
+Reusable UI primitives
+
+Project Structure
+/src
+  /app
+    /api
+    /dashboard
+    /auth
+    ...
+  /components
+    /ui
+      spinner.tsx
+      select.tsx
+      progressbar.tsx
+      ...
+  /lib
+    supabase.ts
+    utils.ts
+  /types
+  /hooks
+  /styles
+
+Installation & Setup
+Requirements
+
+Node.js
+
+npm or yarn
+
+Supabase project with API keys
+
+Environment variables (.env.local)
+
+Setup Steps
+
+Clone repository
+
+Install dependencies
+
+Configure environment variables
+
+Run dev server:
+
 npm run dev
-```
 
-Open [http://localhost:3000](http://localhost:3000)
+Goals & Philosophy
 
-## 📁 Project Structure
+The project aims to:
 
-```
-src/
-├── app/
-│   ├── (auth)/              # Authentication pages
-│   ├── (dashboard)/         # Dashboard pages
-│   ├── api/                 # API routes
-│   └── ...
-├── components/
-│   ├── auth/               # Auth components
-│   ├── services/           # Service components
-│   ├── orders/             # Order components
-│   ├── ui/                 # UI components
-│   └── ...
-├── hooks/                  # React Query hooks
-├── lib/
-│   ├── supabase/          # Supabase client
-│   ├── flutterwave/       # Payment integration
-│   ├── cloudinary/        # Image upload
-│   └── ...
-├── types/                 # TypeScript types
-└── store/                # (Deprecated - using React Query now)
-```
+Provide a fast, lightweight, and locally-relevant freelance platform.
 
-## 🔑 Key Files
+Support both digital and non-digital Nigerian work sectors.
 
-- `src/lib/query-client.ts` - React Query configuration
-- `src/hooks/useAuth.query.ts` - Authentication hooks
-- `src/app/api/orders/` - Order management APIs
-- `src/app/api/payments/` - Payment processing APIs
-- Database schema in provided documents
+Gradually integrate advanced features without bloating the initial experience.
 
-## 🧪 Testing
+Tackle challenges like informal addresses, trust gaps, and payment failures.
 
-```bash
-# Type checking
-npm run type-check
+Build a reliable, modular foundation for long-term expansion.
 
-# Linting
-npm run lint
+Future Enhancements
 
-# Run tests
-npm test
+Full DGTF-powered descriptive-location mapping
 
-# Build test
-npm run build
-```
+Advanced search and filtering
 
-## 🚀 Deployment
+Full escrow payment system
 
-### Vercel (Recommended)
+Mobile app versions
 
-1. Push your code to GitHub
-2. Import project in Vercel
-3. Add environment variables from `.env.local`
-4. Deploy!
+Real-time activity feeds
 
-### Environment Variables for Production
+AI-assisted proposal generation
 
-Set these in Vercel:
-- All variables from `.env.local`
-- Change `NEXT_PUBLIC_APP_URL` to your production domain
-- Use Flutterwave **live** keys (not test keys)
-- Set `NODE_ENV=production`
+Verification and reputation scoring
 
-### Post-Deployment
-
-1. Test payment flow with real cards
-2. Set up monitoring (Sentry recommended)
-3. Configure custom domain
-4. Enable Supabase Auth email templates
-5. Set up cron job for:
-   - Processing pending clearances (daily)
-   - Sending reminder emails
-
-## 📊 Database Maintenance
-
-### Run Pending Clearances (Cron Job)
-
-```sql
--- Run this daily to release funds from escrow after 7 days
-SELECT process_pending_clearances();
-```
-
-Set up in Vercel Cron or use Supabase Database Webhooks.
-
-### Backup Database
-
-```bash
-# Using Supabase CLI
-supabase db dump -f backup.sql
-```
-
-## 🔒 Security Checklist
-
-- [x] Environment variables secured
-- [x] RLS policies enabled
-- [x] Rate limiting implemented
-- [x] Input sanitization (DOMPurify)
-- [x] CSRF protection
-- [x] Password requirements enforced
-- [x] Secure payment flow
-- [ ] SSL certificate (automatic with Vercel)
-- [ ] Security headers configured
-- [ ] Regular security audits
-
-## 🐛 Common Issues
-
-### "localStorage is not defined"
-Only access in `useEffect` or with `typeof window !== 'undefined'` check.
-
-### Payment initialization fails
-- Check Flutterwave keys are correct
-- Verify you're using test keys for development
-- Check secret key is NOT in client-side code
-
-### Images not uploading
-- Verify Cloudinary unsigned preset is enabled
-- Check cloud name and upload preset match
-- Ensure file size is under 5MB
-
-### Database connection errors
-- Check Supabase URL and keys
-- Verify RLS policies allow the operation
-- Check user is authenticated
-
-## 📚 Documentation
-
-- [Implementation Guide](./IMPLEMENTATION_GUIDE.md) - Detailed setup instructions
-- [API Documentation](./API.md) - API endpoints reference
-- [Database Schema](./SCHEMA.md) - Database structure
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Code Style
-
-- Use TypeScript for all new code
-- Follow existing naming conventions
-- Write meaningful commit messages
-- Add comments for complex logic
-
-## 📝 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- Next.js team for the amazing framework
-- Supabase for backend infrastructure
-- Flutterwave for payment processing
-- Cloudinary for image management
-- All contributors
-
-## 📧 Support
-
-- Email: support@nigerianfreelance.com
-- GitHub Issues: [Create an issue](https://github.com/yourusername/nigerian-freelance-marketplace/issues)
-- Documentation: [View docs](https://docs.nigerianfreelance.com)
-
-## 🗺️ Roadmap
-
-### Phase 1 (Current)
-- [x] Basic user authentication
-- [x] Service listings
-- [x] Job postings
-- [x] Order management
-- [x] Payment integration
-- [x] Escrow system
-
-### Phase 2 (Next)
-- [ ] Real-time messaging
-- [ ] Advanced search
-- [ ] Email notifications
-- [ ] SMS verification
-- [ ] Mobile app (React Native)
-
-### Phase 3 (Future)
-- [ ] Video calls
-- [ ] Team accounts
-- [ ] Subscription plans
-- [ ] Affiliate program
-- [ ] API for third-party integrations
-
-## 📈 Performance
-
-- Lighthouse Score: 95+ (target)
-- First Contentful Paint: <1.5s
-- Time to Interactive: <3s
-- Cumulative Layout Shift: <0.1
-
-## 🌍 Browser Support
-
-- Chrome (latest)
-- Firefox (latest)
-- Safari (latest)
-- Edge (latest)
-- Mobile browsers (iOS Safari, Chrome Mobile)
-
----
-
-**Made with ❤️ for Nigerian students and freelancers**
+Offline-friendly modes

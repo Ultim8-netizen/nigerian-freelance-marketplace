@@ -19,7 +19,7 @@ export function SessionExpiryWarning() {
       localStorage.setItem('session-start', Date.now().toString());
     }
 
-    // Check session expiry (example: 30 minutes = 1800 seconds)
+    // Check session expiry (30 minutes session duration)
     const checkSessionExpiry = () => {
       if (typeof window === 'undefined') return;
 
@@ -34,7 +34,7 @@ export function SessionExpiryWarning() {
           setShowWarning(true);
           setTimeLeft(Math.floor(remaining / 1000));
         } else if (remaining <= 0) {
-          // Session expired, could redirect to login
+          // Session expired - could redirect to login here
           setShowWarning(false);
         } else {
           setShowWarning(false);
@@ -61,21 +61,24 @@ export function SessionExpiryWarning() {
   const seconds = timeLeft % 60;
 
   return (
-    <div className="bg-orange-50 dark:bg-orange-900/20 border-b border-orange-200 dark:border-orange-800">
-      <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <AlertCircle className="h-4 w-4 text-orange-600 dark:text-orange-400" />
-            <p className="text-sm text-orange-800 dark:text-orange-200">
+    <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-top">
+      <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 rounded-lg shadow-lg p-4 max-w-sm">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <h4 className="font-semibold text-yellow-900 dark:text-yellow-100 mb-1">
+              Session Expiring Soon
+            </h4>
+            <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-3">
               Your session will expire in {minutes}:{seconds.toString().padStart(2, '0')}
             </p>
+            <button
+              onClick={handleExtendSession}
+              className="w-full px-4 py-2 text-sm font-medium text-white bg-yellow-600 hover:bg-yellow-700 dark:bg-yellow-500 dark:hover:bg-yellow-600 rounded-md transition-colors"
+            >
+              Stay Logged In
+            </button>
           </div>
-          <button
-            onClick={handleExtendSession}
-            className="text-sm font-medium text-orange-600 dark:text-orange-400 hover:underline"
-          >
-            Extend Session
-          </button>
         </div>
       </div>
     </div>
@@ -93,7 +96,13 @@ export function DashboardBreadcrumb() {
   // This avoids the cascading render issue of useState + useEffect
   const breadcrumbs = useMemo(() => {
     if (!pathname) return [];
-    return pathname.split('/').filter(Boolean);
+    return pathname
+      .split('/')
+      .filter(Boolean)
+      .map(segment => ({
+        label: segment.charAt(0).toUpperCase() + segment.slice(1).replace(/-/g, ' '),
+        path: segment,
+      }));
   }, [pathname]);
 
   if (breadcrumbs.length === 0) return null;
@@ -102,15 +111,15 @@ export function DashboardBreadcrumb() {
     <nav className="flex items-center space-x-2 text-sm" aria-label="Breadcrumb">
       {breadcrumbs.map((crumb, index) => (
         <div key={index} className="flex items-center space-x-2">
-          {index > 0 && <span className="text-gray-400">/</span>}
+          {index > 0 && <span className="text-gray-400 dark:text-gray-600">/</span>}
           <span 
             className={`capitalize ${
               index === breadcrumbs.length - 1
                 ? 'text-gray-900 dark:text-gray-100 font-medium'
-                : 'text-gray-500 dark:text-gray-400'
+                : 'text-gray-600 dark:text-gray-400'
             }`}
           >
-            {crumb.replace(/-/g, ' ')}
+            {crumb.label}
           </span>
         </div>
       ))}
@@ -153,7 +162,7 @@ export function ScrollToTop() {
   return (
     <button
       onClick={scrollToTop}
-      className="fixed bottom-8 right-8 z-50 p-3 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-all duration-200 hover:scale-110 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+      className="fixed bottom-8 right-8 z-40 p-3 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-all duration-200 hover:scale-110 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:bg-blue-500 dark:hover:bg-blue-600"
       aria-label="Scroll to top"
     >
       <ArrowUp className="h-5 w-5" />
@@ -193,10 +202,12 @@ export function OfflineIndicator() {
   if (isOnline) return null;
 
   return (
-    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 animate-slide-up">
-      <div className="flex items-center space-x-2 bg-red-600 text-white px-4 py-2 rounded-full shadow-lg">
-        <WifiOff className="h-4 w-4" />
-        <span className="text-sm font-medium">You are offline</span>
+    <div className="fixed bottom-0 left-0 right-0 z-50 bg-red-600 text-white p-3 shadow-lg">
+      <div className="container mx-auto flex items-center justify-center gap-2">
+        <WifiOff className="w-5 h-5" />
+        <span className="font-medium text-sm sm:text-base">
+          You are currently offline. Some features may not work.
+        </span>
       </div>
     </div>
   );
@@ -244,18 +255,24 @@ export function KeyboardShortcutsHelper() {
     <div 
       className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
       onClick={() => setIsOpen(false)}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="shortcuts-title"
     >
       <div 
         className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+          <h3 
+            id="shortcuts-title"
+            className="text-xl font-bold text-gray-900 dark:text-gray-100"
+          >
             Keyboard Shortcuts
           </h3>
           <button
             onClick={() => setIsOpen(false)}
-            className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-xl leading-none"
+            className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
             aria-label="Close"
           >
             ×
@@ -263,7 +280,7 @@ export function KeyboardShortcutsHelper() {
         </div>
         <div className="space-y-3">
           {shortcuts.map((shortcut, index) => (
-            <div key={index} className="flex items-center justify-between">
+            <div key={index} className="flex items-center justify-between py-2">
               <span className="text-sm text-gray-600 dark:text-gray-300">
                 {shortcut.description}
               </span>
@@ -271,7 +288,7 @@ export function KeyboardShortcutsHelper() {
                 {shortcut.keys.map((key, i) => (
                   <kbd
                     key={i}
-                    className="px-2 py-1 text-xs font-semibold text-gray-800 dark:text-gray-200 bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded"
+                    className="px-2 py-1 text-xs font-semibold text-gray-800 dark:text-gray-200 bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded shadow-sm"
                   >
                     {key}
                   </kbd>
@@ -280,9 +297,9 @@ export function KeyboardShortcutsHelper() {
             </div>
           ))}
         </div>
-        <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
           <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
-            Press <kbd className="px-1 py-0.5 text-xs bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded">Esc</kbd> or click outside to close
+            Press <kbd className="px-1.5 py-0.5 text-xs bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded">Esc</kbd> or click outside to close
           </p>
         </div>
       </div>
