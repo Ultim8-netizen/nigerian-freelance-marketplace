@@ -1,15 +1,18 @@
+// ============================================================================
 // src/lib/flutterwave/client-config.ts
 // CLIENT-SAFE: Only public key exposed to browser
-// ✅ THIS FILE IS SAFE FOR CLIENT COMPONENTS
+// ============================================================================
+
+import { clientEnv } from '@/lib/env';
 
 export const flutterwaveClientConfig = {
-  publicKey: process.env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY || '',
-  environment: (process.env.NEXT_PUBLIC_FLUTTERWAVE_ENV as 'production' | 'sandbox') || 'sandbox',
+  publicKey: clientEnv.FLUTTERWAVE_PUBLIC_KEY,
+  environment: process.env.NODE_ENV === 'production' ? 'production' : 'sandbox',
 } as const;
 
-// Validation - runs in browser
+// Validation - runs ONLY in the browser
 if (typeof window !== 'undefined' && !flutterwaveClientConfig.publicKey) {
-  console.error('❌ NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY is not set');
+  console.error('❌ FLUTTERWAVE_PUBLIC_KEY is missing in clientEnv');
 }
 
 export interface PaymentData {
