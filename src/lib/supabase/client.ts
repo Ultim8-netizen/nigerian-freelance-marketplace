@@ -1,13 +1,12 @@
-// ============================================================================
-// src/lib/supabase/client.ts
+// src/lib/supabase/client.ts - FIXED VERSION
 // Client-side Supabase instance for browser operations
 // ============================================================================
 
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
-import { env } from '@/lib/env';
+import { clientEnv } from '@/lib/env'; // ✅ FIXED: Use clientEnv instead of env
 
-const supabaseUrl = env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseUrl = clientEnv.SUPABASE_URL;
+const supabaseAnonKey = clientEnv.SUPABASE_ANON_KEY;
 
 export function createClient() {
   return createSupabaseClient(supabaseUrl, supabaseAnonKey, {

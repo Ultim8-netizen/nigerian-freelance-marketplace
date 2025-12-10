@@ -1473,3 +1473,59 @@ CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
 CREATE INDEX idx_audit_logs_action ON audit_logs(action);
 CREATE INDEX idx_audit_logs_created ON audit_logs(created_at DESC);
 
+-- Add verification fields to profiles table
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS nin_verification_status TEXT CHECK (nin_verification_status IN ('not_started', 'pending', 'approved', 'rejected')) DEFAULT 'not_started';
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS nin_verification_date TIMESTAMPTZ;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS nin_last_four TEXT; -- Last 4 digits for display
+
+-- Create NIN verification requests table
+CREATE TABLE IF NOT EXISTS nin_verification_requests (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  nin TEXT NOT NULL,
+  amount_paid NUMERIC(10, 2) NOT NULL DEFAULT 150,
+  transaction_ref TEXT UNIQUE NOT NULL,
+  youverify_request_id TEXT,
+  verification_status TEXT CHECK (verification_status IN ('pending', 'processing', 'approved', 'rejected', 'failed')) DEFAULT 'pending',
+  verification_response JSONB,
+  rejection_reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  verified_at TIMESTAMPTZ
+);
+
+-- Indexes
+CREATE INDEX idx_nin_verification_user ON nin_verification_requests(user_id);
+CREATE INDEX idx_nin_verification_status ON nin_verification_requests(verification_status);
+CREATE INDEX idx_nin_verification_transaction ON nin_verification_requests(transaction_ref);
+
+-- RLS Policies
+ALTER TABLE nin_verification_requests ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own verification requests"
+  ON nin_verification_requests FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can create own verification requests"
+  ON nin_verification_requests FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+-- Trigger for updated_at
+CREATE TRIGGER update_nin_verification_updated_at
+  BEFORE UPDATE ON nin_verification_requests
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+-- Add verification earnings to admin tracking (optional)
+CREATE TABLE IF NOT EXISTS platform_revenue (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  revenue_type TEXT NOT NULL CHECK (revenue_type IN ('platform_fee', 'nin_verification', 'premium_feature')),
+  amount NUMERIC(10, 2) NOT NULL,
+  source_user_id UUID REFERENCES profiles(id),
+  transaction_ref TEXT,
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_platform_revenue_type ON platform_revenue(revenue_type);
+CREATE INDEX idx_platform_revenue_date ON platform_revenue(created_at DESC);

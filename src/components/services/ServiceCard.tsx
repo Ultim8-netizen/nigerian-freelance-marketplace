@@ -1,6 +1,4 @@
-// src/components/services/ServiceCard.tsx
-// Individual service display card
-
+// src/components/services/ServiceCard.tsx (enhanced version)
 'use client';
 
 import Link from 'next/link';
@@ -8,13 +6,23 @@ import Image from 'next/image';
 import { Service } from '@/types/database.types';
 import { formatCurrency, getInitials } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
-import { Star, Clock, User } from 'lucide-react';
+import { VerifiedIcon } from '@/components/verification/VerifiedBadge';
+import { Star, Clock } from 'lucide-react';
 
 interface ServiceCardProps {
-  service: Service;
+  service: Service & {
+    freelancer?: {
+      id: string;
+      full_name: string;
+      profile_image_url?: string;
+      freelancer_rating: number;
+      total_jobs_completed: number;
+      nin_verified?: boolean;
+    };
+  };
 }
 
-export function ServiceCard({ service }: ServiceCardProps) {
+export function EnhancedServiceCard({ service }: ServiceCardProps) {
   const freelancer = service.freelancer;
   const imageUrl = service.images?.[0] || '/placeholder-service.png';
 
@@ -31,6 +39,7 @@ export function ServiceCard({ service }: ServiceCardProps) {
         </div>
 
         <div className="p-4">
+          {/* Freelancer Info with Verification */}
           <div className="flex items-center gap-2 mb-2">
             {freelancer?.profile_image_url ? (
               <Image
@@ -45,9 +54,12 @@ export function ServiceCard({ service }: ServiceCardProps) {
                 {getInitials(freelancer?.full_name || 'U')}
               </div>
             )}
-            <span className="text-sm text-gray-600">
-              {freelancer?.full_name}
-            </span>
+            <div className="flex items-center gap-1">
+              <span className="text-sm text-gray-600">
+                {freelancer?.full_name}
+              </span>
+              {freelancer?.nin_verified && <VerifiedIcon size={14} />}
+            </div>
           </div>
 
           <h3 className="font-semibold text-lg mb-2 line-clamp-2">
