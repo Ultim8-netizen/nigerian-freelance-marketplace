@@ -1416,4 +1416,60 @@ CREATE POLICY "Users can update their own profile"
   ON profiles FOR UPDATE
   USING (auth.uid() = id);
 
-  
+  -- Artifact Storage Table
+CREATE TABLE IF NOT EXISTS artifact_storage (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  shared BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, key, shared)
+);
+
+CREATE INDEX idx_artifact_storage_user ON artifact_storage(user_id);
+CREATE INDEX idx_artifact_storage_key ON artifact_storage(key);
+CREATE INDEX idx_artifact_storage_shared ON artifact_storage(shared);
+
+-- RLS Policies
+ALTER TABLE artifact_storage ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can manage own storage"
+  ON artifact_storage FOR ALL
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Anyone can read shared storage"
+  ON artifact_storage FOR SELECT
+  USING (shared = true);
+
+  CREATE TABLE webhook_logs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  provider TEXT NOT NULL,
+  event TEXT NOT NULL,
+  verified BOOLEAN NOT NULL,
+  payload JSONB NOT NULL,
+  received_at TIMESTAMPTZ NOT NULL,
+  processed_at TIMESTAMPTZ,
+  error TEXT
+);
+
+CREATE INDEX idx_webhook_logs_provider ON webhook_logs(provider);
+CREATE INDEX idx_webhook_logs_received ON webhook_logs(received_at DESC);
+
+CREATE TABLE audit_logs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES profiles(id),
+  action TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  resource_id UUID,
+  ip_address INET,
+  user_agent TEXT,
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
+CREATE INDEX idx_audit_logs_action ON audit_logs(action);
+CREATE INDEX idx_audit_logs_created ON audit_logs(created_at DESC);
+

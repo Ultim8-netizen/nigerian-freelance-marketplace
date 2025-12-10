@@ -3,6 +3,7 @@
 // Add this comment at the top to prevent accidental client imports:
 // @server-only
 
+import 'server-only';
 import { PaymentData } from './client-config';
 
 // Server-side configuration - ONLY used in API routes

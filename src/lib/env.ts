@@ -1,117 +1,84 @@
-// src/lib/env.ts
-// Runtime environment variable validation
+// src/lib/env.ts - FIXED VERSION
+// Runtime environment variable validation with proper Next.js conventions
 
-interface EnvConfig {
-  // Supabase
-  NEXT_PUBLIC_SUPABASE_URL: string;
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: string;
-  SUPABASE_SERVICE_ROLE_KEY: string;
+import { z } from 'zod';
+
+// Define schema for runtime validation
+const envSchema = z.object({
+  // Public (client-side) variables
+  NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
+  NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY: z.string().min(1),
+  NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME: z.string().min(1),
+  NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET: z.string().min(1),
+  NEXT_PUBLIC_APP_URL: z.string().url(),
+  NEXT_PUBLIC_APP_NAME: z.string().min(1),
   
-  // Flutterwave
-  NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY: string;
-  FLUTTERWAVE_SECRET_KEY: string;
-  FLUTTERWAVE_ENCRYPTION_KEY: string;
+  // Server-only variables (optional for client)
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  FLUTTERWAVE_SECRET_KEY: z.string().min(1).optional(),
+  FLUTTERWAVE_ENCRYPTION_KEY: z.string().min(1).optional(),
+  CLOUDINARY_API_KEY: z.string().min(1).optional(),
+  CLOUDINARY_API_SECRET: z.string().min(1).optional(),
   
-  // Cloudinary
-  NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME: string;
-  CLOUDINARY_API_KEY: string;
-  CLOUDINARY_API_SECRET: string;
-  NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET: string;
-  
-  // App
-  NEXT_PUBLIC_APP_URL: string;
-  NEXT_PUBLIC_APP_NAME: string;
-  NODE_ENV: 'development' | 'production' | 'test';
-}
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+});
 
 /**
- * Validates that all required environment variables are present
+ * Validates environment variables at runtime
+ * Call this in API routes or server components
  */
-export function validateEnv(): EnvConfig {
-  const errors: string[] = [];
-
-  // Required variables
-  const required: (keyof EnvConfig)[] = [
-    'NEXT_PUBLIC_SUPABASE_URL',
-    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-    'SUPABASE_SERVICE_ROLE_KEY',
-    'NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY',
-    'FLUTTERWAVE_SECRET_KEY',
-    'NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME',
-    'CLOUDINARY_API_KEY',
-    'CLOUDINARY_API_SECRET',
-    'NEXT_PUBLIC_APP_URL',
-  ];
-
-  // Check each required variable
-  required.forEach((key) => {
-    const value = process.env[key];
-    if (!value || value.trim().length === 0) {
-      errors.push(`Missing required environment variable: ${key}`);
-    }
-  });
-
-  // Validate Supabase URL format
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (supabaseUrl && !supabaseUrl.startsWith('https://')) {
-    errors.push('NEXT_PUBLIC_SUPABASE_URL must start with https://');
+export function validateServerEnv() {
+  const parsed = envSchema.safeParse(process.env);
+  
+  if (!parsed.success) {
+    console.error('❌ Invalid environment variables:', parsed.error.flatten().fieldErrors);
+    throw new Error(
+      'Invalid environment variables. Check .env.local against .env.example'
+    );
   }
-
-  // Validate App URL format
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  if (appUrl && !appUrl.startsWith('http')) {
-    errors.push('NEXT_PUBLIC_APP_URL must be a valid URL');
-  }
-
-  // If errors exist, throw with helpful message
-  if (errors.length > 0) {
-    const errorMessage = [
-      '❌ Environment Variable Validation Failed:',
-      '',
-      ...errors.map(e => `  • ${e}`),
-      '',
-      '📝 Copy .env.example to .env.local and fill in all values',
-    ].join('\n');
-
-    throw new Error(errorMessage);
-  }
-
-  // Return typed config
-  return {
-    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY: process.env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY!,
-    FLUTTERWAVE_SECRET_KEY: process.env.FLUTTERWAVE_SECRET_KEY!,
-    FLUTTERWAVE_ENCRYPTION_KEY: process.env.FLUTTERWAVE_ENCRYPTION_KEY!,
-    NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME!,
-    CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY!,
-    CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET!,
-    NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET: process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || 'marketplace_unsigned',
-    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL!,
-    NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME || 'F9',
-    NODE_ENV: (process.env.NODE_ENV as any) || 'development',
-  };
+  
+  return parsed.data;
 }
-
-/**
- * Validated environment config
- * Use this instead of process.env for type safety
- */
-export const env = validateEnv();
 
 /**
  * Client-safe environment variables
- * Only includes NEXT_PUBLIC_* variables
+ * Use this in client components
  */
 export const clientEnv = {
-  SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL,
-  SUPABASE_ANON_KEY: env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-  FLUTTERWAVE_PUBLIC_KEY: env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY,
-  CLOUDINARY_CLOUD_NAME: env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
-  CLOUDINARY_UPLOAD_PRESET: env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET,
-  APP_URL: env.NEXT_PUBLIC_APP_URL,
-  APP_NAME: env.NEXT_PUBLIC_APP_NAME,
-  IS_PRODUCTION: env.NODE_ENV === 'production',
-  IS_DEVELOPMENT: env.NODE_ENV === 'development',
+  SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  FLUTTERWAVE_PUBLIC_KEY: process.env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY!,
+  CLOUDINARY_CLOUD_NAME: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME!,
+  CLOUDINARY_UPLOAD_PRESET: process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET!,
+  APP_URL: process.env.NEXT_PUBLIC_APP_URL!,
+  APP_NAME: process.env.NEXT_PUBLIC_APP_NAME || 'F9',
+  IS_PRODUCTION: process.env.NODE_ENV === 'production',
+  IS_DEVELOPMENT: process.env.NODE_ENV === 'development',
 } as const;
+
+/**
+ * Server-only environment variables
+ * NEVER import this in client components
+ */
+export const serverEnv = {
+  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  FLUTTERWAVE_SECRET_KEY: process.env.FLUTTERWAVE_SECRET_KEY!,
+  FLUTTERWAVE_ENCRYPTION_KEY: process.env.FLUTTERWAVE_ENCRYPTION_KEY!,
+  CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY!,
+  CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET!,
+} as const;
+
+// Validate on server startup (in API routes)
+if (typeof window === 'undefined') {
+  try {
+    validateServerEnv();
+    console.log('✅ Environment variables validated');
+  } catch (error) {
+    console.error('Environment validation failed:', error);
+    // Don't throw in development to allow hot reload
+    if (process.env.NODE_ENV === 'production') {
+      throw error;
+    }
+  }
+}

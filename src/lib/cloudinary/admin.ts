@@ -2,6 +2,7 @@
 // src/lib/cloudinary/admin.ts
 // Server-side Cloudinary operations (delete, manage)
 
+import 'server-only';
 import { v2 as cloudinary } from 'cloudinary';
 
 // Configure Cloudinary (server-side only)
