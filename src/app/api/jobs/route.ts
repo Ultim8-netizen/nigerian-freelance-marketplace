@@ -1,27 +1,43 @@
-// ============================================================================
 // src/app/api/jobs/route.ts
-// Enhanced jobs API with validation and security
-// ============================================================================
+// PRODUCTION-READY: Enhanced jobs API with comprehensive security
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth, requireRole } from '@/lib/api/middleware';
+import { checkRateLimit } from '@/lib/rate-limit-upstash';
 import { createClient } from '@/lib/supabase/server';
 import { jobSchema } from '@/lib/validations';
-import { rateLimit } from '@/lib/rate-limit';
+import { sanitizeHtml, sanitizeText } from '@/lib/security/sanitize';
+import { containsSqlInjection } from '@/lib/security/sql-injection-check';
+import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
 // GET - Browse jobs with filtering
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const category = searchParams.get('category');
+    
+    // Sanitize and validate inputs
+    const category = sanitizeText(searchParams.get('category') || '');
     const budgetType = searchParams.get('budget_type');
     const status = searchParams.get('status') || 'open';
     const experienceLevel = searchParams.get('experience_level');
     const minBudget = searchParams.get('min_budget');
     const maxBudget = searchParams.get('max_budget');
-    const search = searchParams.get('search');
-    const page = parseInt(searchParams.get('page') || '1');
-    const perPage = Math.min(parseInt(searchParams.get('per_page') || '20'), 50);
+    const search = sanitizeText(searchParams.get('search') || '');
+    const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
+    const perPage = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
+
+    // Security check
+    if (search && containsSqlInjection(search)) {
+      logger.warn('SQL injection attempt in jobs search', { 
+        search, 
+        ip: request.headers.get('x-forwarded-for') 
+      });
+      return NextResponse.json(
+        { success: false, error: 'Invalid search query' },
+        { status: 400 }
+      );
+    }
 
     const supabase = createClient();
 
@@ -43,8 +59,9 @@ export async function GET(request: NextRequest) {
 
     // Search
     if (search) {
+      const searchTerm = `%${search}%`;
       query = query.or(
-        `title.ilike.%${search}%,description.ilike.%${search}%`
+        `title.ilike.${searchTerm},description.ilike.${searchTerm}`
       );
     }
 
@@ -63,7 +80,15 @@ export async function GET(request: NextRequest) {
       .order('created_at', { ascending: false })
       .range(from, to);
 
-    if (error) throw error;
+    if (error) {
+      logger.error('Jobs fetch error', error);
+      throw error;
+    }
+
+    logger.info('Jobs query executed', {
+      filters: { category, search, status },
+      resultCount: data?.length || 0
+    });
 
     return NextResponse.json({
       success: true,
@@ -75,8 +100,8 @@ export async function GET(request: NextRequest) {
         total_pages: Math.ceil((count || 0) / perPage),
       },
     });
-  } catch (error: unknown) {
-    console.error('Jobs fetch error:', error);
+  } catch (error) {
+    logger.error('Jobs GET error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Failed to fetch jobs' },
       { status: 500 }
@@ -84,65 +109,62 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - Create job (clients only)
+// POST - Create job (clients only, rate-limited)
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
+    // 1. Authentication
+    const authResult = await requireAuth(request);
+    if (authResult instanceof NextResponse) return authResult;
+    const { user } = authResult;
 
-    // Rate limiting (5 jobs per day)
-    if (!rateLimit(`create_job:${user.id}`, 5, 86400000)) {
+    // 2. Role check - only clients can post jobs
+    const roleResult = await requireRole(request, ['client', 'both']);
+    if (roleResult instanceof NextResponse) return roleResult;
+
+    // 3. Rate limiting (5 jobs per day)
+    const rateLimitResult = await checkRateLimit('createJob', user.id);
+    if (!rateLimitResult.success) {
+      logger.warn('Rate limit exceeded for job creation', { userId: user.id });
       return NextResponse.json(
-        { success: false, error: 'Maximum daily job postings reached (5). Please try tomorrow.' },
+        { 
+          success: false, 
+          error: 'Maximum daily job postings reached (5). Please try tomorrow.',
+          resetAt: rateLimitResult.reset 
+        },
         { status: 429 }
       );
     }
 
-    // Verify user can post jobs
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('user_type, account_status')
-      .eq('id', user.id)
-      .single();
-
-    if (!profile) {
-      return NextResponse.json(
-        { success: false, error: 'Profile not found' },
-        { status: 404 }
-      );
-    }
-
-    if (profile.account_status !== 'active') {
-      return NextResponse.json(
-        { success: false, error: 'Account is suspended or banned' },
-        { status: 403 }
-      );
-    }
-
-    if (profile.user_type === 'freelancer') {
-      return NextResponse.json(
-        { success: false, error: 'Only clients can post jobs' },
-        { status: 403 }
-      );
-    }
-
-    // Validate request
+    // 4. Parse and sanitize request
     const body = await request.json();
-    const validatedData = jobSchema.parse(body);
+    
+    const sanitizedBody = {
+      ...body,
+      title: sanitizeText(body.title || ''),
+      description: sanitizeHtml(body.description || ''),
+      category: sanitizeText(body.category || ''),
+      skills_required: body.skills_required?.map((skill: string) => sanitizeText(skill)) || [],
+    };
 
-    // Create job
+    // 5. Validate with Zod
+    const validatedData = jobSchema.parse(sanitizedBody);
+
+    const supabase = createClient();
+
+    // 6. Create job
     const { data, error } = await supabase
       .from('jobs')
       .insert({
         client_id: user.id,
-        ...validatedData,
+        title: validatedData.title,
+        description: validatedData.description,
+        category: validatedData.category,
+        budget_type: validatedData.budget_type,
+        budget_min: validatedData.budget_min,
+        budget_max: validatedData.budget_max,
+        experience_level: validatedData.experience_level,
+        deadline: validatedData.deadline,
+        skills_required: validatedData.skills_required,
         status: 'open',
         views_count: 0,
         proposals_count: 0,
@@ -150,7 +172,16 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      logger.error('Job creation failed', error, { userId: user.id });
+      throw error;
+    }
+
+    logger.info('Job created successfully', {
+      jobId: data.id,
+      userId: user.id,
+      category: validatedData.category
+    });
 
     return NextResponse.json({
       success: true,
@@ -159,13 +190,18 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
+      logger.warn('Job validation failed', undefined, { errors: error.errors });
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { 
+          success: false, 
+          error: error.errors[0]?.message || 'Validation failed',
+          details: error.errors 
+        },
         { status: 400 }
       );
     }
 
-    console.error('Job creation error:', error);
+    logger.error('Job creation error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Failed to create job' },
       { status: 500 }

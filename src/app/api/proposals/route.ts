@@ -1,63 +1,56 @@
-// ============================================================================
 // src/app/api/proposals/route.ts
-// Proposal submission with validation
-// ============================================================================
+// PRODUCTION-READY: Secure proposal submission with comprehensive checks
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth, requireRole } from '@/lib/api/middleware';
+import { checkRateLimit } from '@/lib/rate-limit-upstash';
 import { createClient } from '@/lib/supabase/server';
 import { proposalSchema } from '@/lib/validations';
-import { rateLimit } from '@/lib/rate-limit';
+import { sanitizeText, sanitizeHtml, sanitizeUuid, sanitizeUrl } from '@/lib/security/sanitize';
+import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
+    // 1. Authentication
+    const authResult = await requireAuth(request);
+    if (authResult instanceof NextResponse) return authResult;
+    const { user } = authResult;
 
-    // Rate limiting (20 proposals per day)
-    if (!rateLimit(`submit_proposal:${user.id}`, 20, 86400000)) {
+    // 2. Role verification - only freelancers
+    const roleResult = await requireRole(request, ['freelancer', 'both']);
+    if (roleResult instanceof NextResponse) return roleResult;
+
+    // 3. Rate limiting (20 proposals per day)
+    const rateLimitResult = await checkRateLimit('submitProposal', user.id);
+    if (!rateLimitResult.success) {
+      logger.warn('Rate limit exceeded for proposals', { userId: user.id });
       return NextResponse.json(
         { 
           success: false, 
-          error: 'Maximum daily proposals reached (20). Please try tomorrow.' 
+          error: 'Maximum daily proposals reached (20). Please try tomorrow.',
+          resetAt: rateLimitResult.reset 
         },
         { status: 429 }
       );
     }
 
-    // Verify user is freelancer
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('user_type, account_status')
-      .eq('id', user.id)
-      .single();
-
-    if (!profile || profile.account_status !== 'active') {
-      return NextResponse.json(
-        { success: false, error: 'Profile not found or inactive' },
-        { status: 403 }
-      );
-    }
-
-    if (profile.user_type === 'client') {
-      return NextResponse.json(
-        { success: false, error: 'Only freelancers can submit proposals' },
-        { status: 403 }
-      );
-    }
-
-    // Validate request
+    // 4. Parse and sanitize request
     const body = await request.json();
-    const validatedData = proposalSchema.parse(body);
+    
+    const sanitizedBody = {
+      ...body,
+      job_id: sanitizeUuid(body.job_id) || '',
+      cover_letter: sanitizeHtml(body.cover_letter || ''),
+      portfolio_links: body.portfolio_links?.map((link: string) => sanitizeUrl(link)).filter(Boolean) || [],
+    };
 
-    // Check if job exists and is open
+    // 5. Validate with Zod
+    const validatedData = proposalSchema.parse(sanitizedBody);
+
+    const supabase = createClient();
+
+    // 6. Check if job exists and is open
     const { data: job, error: jobError } = await supabase
       .from('jobs')
       .select('id, status, client_id')
@@ -65,6 +58,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (jobError || !job) {
+      logger.warn('Invalid job ID in proposal', { jobId: validatedData.job_id });
       return NextResponse.json(
         { success: false, error: 'Job not found' },
         { status: 404 }
@@ -78,15 +72,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Prevent applying to own jobs
+    // 7. Prevent applying to own jobs
     if (job.client_id === user.id) {
+      logger.warn('User attempted to apply to own job', { userId: user.id, jobId: validatedData.job_id });
       return NextResponse.json(
         { success: false, error: 'You cannot apply to your own job' },
         { status: 400 }
       );
     }
 
-    // Check for duplicate proposals
+    // 8. Check for duplicate proposals
     const { data: existing } = await supabase
       .from('proposals')
       .select('id')
@@ -101,7 +96,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create proposal
+    // 9. Create proposal
     const { data, error } = await supabase
       .from('proposals')
       .insert({
@@ -116,19 +111,27 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      logger.error('Proposal creation failed', error, { userId: user.id });
+      throw error;
+    }
 
-    // Increment proposals count
-    await supabase
-      .rpc('increment_proposals_count', { job_id: validatedData.job_id });
+    // 10. Increment proposals count
+    await supabase.rpc('increment_proposals_count', { job_id: validatedData.job_id });
 
-    // Notify client
+    // 11. Notify client
     await supabase.from('notifications').insert({
       user_id: job.client_id,
       type: 'new_proposal',
       title: 'New Proposal Received',
-      message: `You received a new proposal for your job posting`,
+      message: 'You received a new proposal for your job posting',
       link: `/client/jobs/${validatedData.job_id}`,
+    });
+
+    logger.info('Proposal submitted successfully', {
+      proposalId: data.id,
+      userId: user.id,
+      jobId: validatedData.job_id
     });
 
     return NextResponse.json({
@@ -138,13 +141,18 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
+      logger.warn('Proposal validation failed', undefined, { errors: error.errors });
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { 
+          success: false, 
+          error: error.errors[0]?.message || 'Validation failed',
+          details: error.errors 
+        },
         { status: 400 }
       );
     }
 
-    console.error('Proposal submission error:', error);
+    logger.error('Proposal submission error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Failed to submit proposal' },
       { status: 500 }

@@ -1,28 +1,41 @@
-// ============================================================================
 // src/app/api/services/route.ts
-// Enhanced services API with advanced filtering
-// ============================================================================
+// PRODUCTION-READY: Enhanced services API with full security stack
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth, requireRole } from '@/lib/api/middleware';
+import { checkRateLimit } from '@/lib/rate-limit-upstash';
 import { createClient } from '@/lib/supabase/server';
 import { serviceSchema } from '@/lib/validations';
-import { rateLimit } from '@/lib/rate-limit';
+import { sanitizeHtml, sanitizeText } from '@/lib/security/sanitize';
+import { containsSqlInjection } from '@/lib/security/sql-injection-check';
+import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
 // GET - Browse services with advanced filtering
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const category = searchParams.get('category');
-    const search = searchParams.get('search');
+    
+    // Input validation and sanitization
+    const category = sanitizeText(searchParams.get('category') || '');
+    const search = sanitizeText(searchParams.get('search') || '');
     const minPrice = searchParams.get('min_price');
     const maxPrice = searchParams.get('max_price');
-    const state = searchParams.get('state');
-    const city = searchParams.get('city');
+    const state = sanitizeText(searchParams.get('state') || '');
+    const city = sanitizeText(searchParams.get('city') || '');
     const verified = searchParams.get('verified_only') === 'true';
     const sortBy = searchParams.get('sort_by') || 'created_at';
-    const page = parseInt(searchParams.get('page') || '1');
-    const perPage = Math.min(parseInt(searchParams.get('per_page') || '20'), 50);
+    const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
+    const perPage = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
+
+    // SQL injection check on text inputs
+    if (search && containsSqlInjection(search)) {
+      logger.warn('SQL injection attempt in search', { search, ip: request.headers.get('x-forwarded-for') });
+      return NextResponse.json(
+        { success: false, error: 'Invalid search query' },
+        { status: 400 }
+      );
+    }
 
     const supabase = createClient();
 
@@ -42,41 +55,21 @@ export async function GET(request: NextRequest) {
       `, { count: 'exact' })
       .eq('is_active', true);
 
-    // Text search
+    // Text search with sanitized input
     if (search) {
-  query = query.or(`title.ilike.%${search}%,description.ilike.%${search}%`)
-  // Split into separate safe queries
-  const searchTerm = `%${search}%`;
-  query = query.or(
-    `title.ilike.${searchTerm},description.ilike.${searchTerm},category.ilike.${searchTerm}`
-  );
-}
-
-    // Category filter
-    if (category) {
-      query = query.ilike('category', `%${category}%`);
+      const searchTerm = `%${search}%`;
+      query = query.or(
+        `title.ilike.${searchTerm},description.ilike.${searchTerm},category.ilike.${searchTerm}`
+      );
     }
 
-    // Price filters
-    if (minPrice) {
-      query = query.gte('base_price', parseFloat(minPrice));
-    }
-    if (maxPrice) {
-      query = query.lte('base_price', parseFloat(maxPrice));
-    }
-
-    // Location filters
-    if (state) {
-      query = query.ilike('service_location', `%${state}%`);
-    }
-    if (city) {
-      query = query.ilike('service_location', `%${city}%`);
-    }
-
-    // Verified freelancers only
-    if (verified) {
-      query = query.eq('freelancer.identity_verified', true);
-    }
+    // Filters
+    if (category) query = query.ilike('category', `%${category}%`);
+    if (minPrice) query = query.gte('base_price', parseFloat(minPrice));
+    if (maxPrice) query = query.lte('base_price', parseFloat(maxPrice));
+    if (state) query = query.ilike('service_location', `%${state}%`);
+    if (city) query = query.ilike('service_location', `%${city}%`);
+    if (verified) query = query.eq('freelancer.identity_verified', true);
 
     // Sorting
     const sortMap: Record<string, string> = {
@@ -99,8 +92,15 @@ export async function GET(request: NextRequest) {
     const { data, error, count } = await query.range(from, to);
 
     if (error) {
+      logger.error('Services fetch error', error);
       throw error;
     }
+
+    // Log successful query for analytics
+    logger.info('Services query executed', {
+      filters: { category, search, verified },
+      resultCount: data?.length || 0
+    });
 
     return NextResponse.json({
       success: true,
@@ -120,8 +120,8 @@ export async function GET(request: NextRequest) {
         sort_by: sortBy,
       },
     });
-  } catch (error: unknown) {
-    console.error('Services fetch error:', error);
+  } catch (error) {
+    logger.error('Services GET error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Failed to fetch services' },
       { status: 500 }
@@ -129,60 +129,51 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - Create service (authenticated)
+// POST - Create service (authenticated, rate-limited)
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
+    // 1. Authentication check
+    const authResult = await requireAuth(request);
+    if (authResult instanceof NextResponse) return authResult;
+    const { user } = authResult;
 
-    // Rate limiting (10 services per hour)
-    if (!rateLimit(`create_service:${user.id}`, 10, 3600000)) {
+    // 2. Role verification - only freelancers can create services
+    const roleResult = await requireRole(request, ['freelancer', 'both']);
+    if (roleResult instanceof NextResponse) return roleResult;
+
+    // 3. Rate limiting (10 services per hour)
+    const rateLimitResult = await checkRateLimit('createService', user.id);
+    if (!rateLimitResult.success) {
+      logger.warn('Rate limit exceeded for service creation', { userId: user.id });
       return NextResponse.json(
-        { success: false, error: 'Too many service creations. Please try again later.' },
+        { 
+          success: false, 
+          error: 'Too many service creations. Please try again later.',
+          resetAt: rateLimitResult.reset 
+        },
         { status: 429 }
       );
     }
 
-    // Verify user is allowed to create services
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('user_type, account_status')
-      .eq('id', user.id)
-      .single();
-
-    if (!profile) {
-      return NextResponse.json(
-        { success: false, error: 'Profile not found' },
-        { status: 404 }
-      );
-    }
-
-    if (profile.account_status !== 'active') {
-      return NextResponse.json(
-        { success: false, error: 'Account is suspended or banned' },
-        { status: 403 }
-      );
-    }
-
-    if (profile.user_type === 'client') {
-      return NextResponse.json(
-        { success: false, error: 'Only freelancers can create services' },
-        { status: 403 }
-      );
-    }
-
-    // Validate request body
+    // 4. Parse and validate request body
     const body = await request.json();
-    const validatedData = serviceSchema.parse(body);
+    
+    // Sanitize text inputs
+    const sanitizedBody = {
+      ...body,
+      title: sanitizeText(body.title || ''),
+      description: sanitizeHtml(body.description || ''),
+      category: sanitizeText(body.category || ''),
+      requirements: body.requirements ? sanitizeHtml(body.requirements) : undefined,
+      tags: body.tags?.map((tag: string) => sanitizeText(tag)) || [],
+    };
 
-    // Check service limit (max 20 active services per user)
+    // Validate with Zod schema
+    const validatedData = serviceSchema.parse(sanitizedBody);
+
+    const supabase = createClient();
+
+    // 5. Check service limit (max 20 active services per user)
     const { count: serviceCount } = await supabase
       .from('services')
       .select('*', { count: 'exact', head: true })
@@ -190,6 +181,7 @@ export async function POST(request: NextRequest) {
       .eq('is_active', true);
 
     if (serviceCount && serviceCount >= 20) {
+      logger.warn('Service limit reached', { userId: user.id, count: serviceCount });
       return NextResponse.json(
         { 
           success: false, 
@@ -199,7 +191,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create service
+    // 6. Create service
     const { data, error } = await supabase
       .from('services')
       .insert({
@@ -219,8 +211,16 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
+      logger.error('Service creation failed', error, { userId: user.id });
       throw error;
     }
+
+    // 7. Log successful creation
+    logger.info('Service created successfully', {
+      serviceId: data.id,
+      userId: user.id,
+      category: validatedData.category
+    });
 
     return NextResponse.json({
       success: true,
@@ -229,17 +229,18 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
+      logger.warn('Service validation failed', undefined, { errors: error.errors });
       return NextResponse.json(
         { 
           success: false, 
-          error: error instanceof Error ? error.message : 'An error occurred',
-          details: error instanceof Error ? error.message : 'An error occurred',
+          error: error.errors[0]?.message || 'Validation failed',
+          details: error.errors,
         },
         { status: 400 }
       );
     }
 
-    console.error('Service creation error:', error);
+    logger.error('Service creation error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Failed to create service' },
       { status: 500 }

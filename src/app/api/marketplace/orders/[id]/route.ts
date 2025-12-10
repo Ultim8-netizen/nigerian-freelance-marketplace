@@ -1,19 +1,16 @@
 // src/app/api/marketplace/orders/[id]/route.ts
-// Individual order operations
+// PRODUCTION-READY: Marketplace order operations with complete CRUD
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/api/middleware';
+import { checkRateLimit } from '@/lib/rate-limit-upstash';
 import { createClient } from '@/lib/supabase/server';
+import { sanitizeUuid, sanitizeText } from '@/lib/security/sanitize';
+import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
 const updateStatusSchema = z.object({
-  status: z.enum([
-    'confirmed',
-    'processing',
-    'shipped',
-    'delivered',
-    'cancelled',
-    'refunded'
-  ]),
+  status: z.enum(['confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']),
   tracking_number: z.string().optional(),
   notes: z.string().optional(),
 });
@@ -24,16 +21,24 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const authResult = await requireAuth(request);
+    if (authResult instanceof NextResponse) return authResult;
+    const { user } = authResult;
 
-    if (authError || !user) {
+    const orderId = sanitizeUuid(params.id);
+    if (!orderId) {
+      return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
+    }
+
+    const rateLimitResult = await checkRateLimit('api', user.id);
+    if (!rateLimitResult.success) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
       );
     }
 
+    const supabase = createClient();
     const { data: order, error } = await supabase
       .from('marketplace_orders')
       .select(`
@@ -42,31 +47,22 @@ export async function GET(
         buyer:profiles!marketplace_orders_buyer_id_fkey(*),
         seller:profiles!marketplace_orders_seller_id_fkey(*)
       `)
-      .eq('id', params.id)
+      .eq('id', orderId)
       .single();
 
     if (error || !order) {
-      return NextResponse.json(
-        { success: false, error: 'Order not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ success: false, error: 'Order not found' }, { status: 404 });
     }
 
-    // Verify user is buyer or seller
     if (order.buyer_id !== user.id && order.seller_id !== user.id) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 403 }
-      );
+      logger.warn('Unauthorized order access', { orderId, userId: user.id });
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 403 });
     }
 
     return NextResponse.json({ success: true, data: order });
   } catch (error) {
-    console.error('Order fetch error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch order' },
-      { status: 500 }
-    );
+    logger.error('Order fetch error', error as Error);
+    return NextResponse.json({ success: false, error: 'Failed to fetch order' }, { status: 500 });
   }
 }
 
@@ -76,42 +72,45 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const authResult = await requireAuth(request);
+    if (authResult instanceof NextResponse) return authResult;
+    const { user } = authResult;
 
-    if (authError || !user) {
+    const orderId = sanitizeUuid(params.id);
+    if (!orderId) {
+      return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
+    }
+
+    const rateLimitResult = await checkRateLimit('api', user.id);
+    if (!rateLimitResult.success) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
       );
     }
 
     const body = await request.json();
     const validated = updateStatusSchema.parse(body);
 
-    // Get order
+    const supabase = createClient();
     const { data: order, error: orderError } = await supabase
       .from('marketplace_orders')
-      .select('*')
-      .eq('id', params.id)
+      .select('seller_id, buyer_id, product_id, status')
+      .eq('id', orderId)
       .single();
 
     if (orderError || !order) {
-      return NextResponse.json(
-        { success: false, error: 'Order not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ success: false, error: 'Order not found' }, { status: 404 });
     }
 
-    // Verify user is seller
     if (order.seller_id !== user.id) {
+      logger.warn('Unauthorized order update attempt', { orderId, userId: user.id });
       return NextResponse.json(
         { success: false, error: 'Only seller can update order status' },
         { status: 403 }
       );
     }
 
-    // Update order
     const { data: updated, error: updateError } = await supabase
       .from('marketplace_orders')
       .update({
@@ -120,14 +119,14 @@ export async function PATCH(
         status_notes: validated.notes,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', params.id)
+      .eq('id', orderId)
       .select()
       .single();
 
     if (updateError) throw updateError;
 
     // Notify buyer
-    const statusMessages = {
+    const statusMessages: Record<string, string> = {
       confirmed: 'Your order has been confirmed',
       processing: 'Your order is being processed',
       shipped: 'Your order has been shipped',
@@ -141,8 +140,10 @@ export async function PATCH(
       type: 'order_status_update',
       title: 'Order Update',
       message: statusMessages[validated.status],
-      link: `/marketplace/orders/${order.id}`,
+      link: `/marketplace/orders/${orderId}`,
     });
+
+    logger.info('Order status updated', { orderId, status: validated.status, userId: user.id });
 
     return NextResponse.json({
       success: true,
@@ -152,16 +153,13 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { success: false, error: error.errors[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }
 
-    console.error('Order update error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to update order' },
-      { status: 500 }
-    );
+    logger.error('Order update error', error as Error);
+    return NextResponse.json({ success: false, error: 'Failed to update order' }, { status: 500 });
   }
 }
 
@@ -171,38 +169,42 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const authResult = await requireAuth(request);
+    if (authResult instanceof NextResponse) return authResult;
+    const { user } = authResult;
 
-    if (authError || !user) {
+    const orderId = sanitizeUuid(params.id);
+    if (!orderId) {
+      return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
+    }
+
+    const rateLimitResult = await checkRateLimit('api', user.id);
+    if (!rateLimitResult.success) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
       );
     }
 
+    const supabase = createClient();
     const { data: order, error: orderError } = await supabase
       .from('marketplace_orders')
-      .select('*')
-      .eq('id', params.id)
+      .select('buyer_id, seller_id, status')
+      .eq('id', orderId)
       .single();
 
     if (orderError || !order) {
-      return NextResponse.json(
-        { success: false, error: 'Order not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ success: false, error: 'Order not found' }, { status: 404 });
     }
 
-    // Verify user is buyer
     if (order.buyer_id !== user.id) {
+      logger.warn('Unauthorized order cancellation attempt', { orderId, userId: user.id });
       return NextResponse.json(
         { success: false, error: 'Only buyer can cancel order' },
         { status: 403 }
       );
     }
 
-    // Can only cancel if not yet processing
     if (!['pending_payment', 'confirmed'].includes(order.status)) {
       return NextResponse.json(
         { success: false, error: 'Order cannot be cancelled at this stage' },
@@ -210,11 +212,13 @@ export async function DELETE(
       );
     }
 
-    // Update to cancelled
     await supabase
       .from('marketplace_orders')
-      .update({ status: 'cancelled' })
-      .eq('id', params.id);
+      .update({ 
+        status: 'cancelled',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', orderId);
 
     // Notify seller
     await supabase.from('notifications').insert({
@@ -222,18 +226,17 @@ export async function DELETE(
       type: 'order_cancelled',
       title: 'Order Cancelled',
       message: 'A buyer cancelled their order',
-      link: `/marketplace/orders/${order.id}`,
+      link: `/marketplace/orders/${orderId}`,
     });
+
+    logger.info('Order cancelled', { orderId, userId: user.id });
 
     return NextResponse.json({
       success: true,
       message: 'Order cancelled successfully',
     });
   } catch (error) {
-    console.error('Order cancellation error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to cancel order' },
-      { status: 500 }
-    );
+    logger.error('Order cancellation error', error as Error);
+    return NextResponse.json({ success: false, error: 'Failed to cancel order' }, { status: 500 });
   }
 }

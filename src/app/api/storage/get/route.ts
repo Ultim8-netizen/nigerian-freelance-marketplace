@@ -1,18 +1,17 @@
 // src/app/api/storage/get/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { NextRequest as R, NextResponse as Rs } from 'next/server';
+import { requireAuth as a } from '@/lib/api/middleware';
+import { createClient as c } from '@/lib/supabase/server';
 
-export async function POST(request: NextRequest) {
+export async function POST(request: R) {
   try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const authResult = await a(request);
+    if (authResult instanceof Rs) return authResult;
+    const { user } = authResult;
 
     const { key, shared } = await request.json();
 
+    const supabase = c();
     const { data, error } = await supabase
       .from('artifact_storage')
       .select('*')
@@ -23,8 +22,8 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ key: data.key, value: data.value, shared: data.shared });
+    return Rs.json({ key: data.key, value: data.value, shared: data.shared });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 404 });
+    return Rs.json({ error: error.message }, { status: 404 });
   }
 }

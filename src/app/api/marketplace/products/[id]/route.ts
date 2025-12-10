@@ -1,106 +1,111 @@
 // src/app/api/marketplace/products/[id]/route.ts
 // Individual product operations
 
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-import { z } from 'zod';
+import { NextRequest as Req, NextResponse as Res } from 'next/server';
+import { requireAuth as auth, requireOwnership as ownership } from '@/lib/api/middleware';
+import { checkRateLimit as rateLimit } from '@/lib/rate-limit-upstash';
+import { createClient as client } from '@/lib/supabase/server';
+import { sanitizeUuid as uuid, sanitizeText as text, sanitizeHtml as html } from '@/lib/security/sanitize';
+import { logger as log } from '@/lib/logger';
+import { z as Z } from 'zod';
 
-const updateProductSchema = z.object({
-  title: z.string().min(10).max(200).optional(),
-  description: z.string().min(20).max(2000).optional(),
-  price: z.number().min(100).max(10000000).optional(),
-  images: z.array(z.string()).min(1).max(8).optional(),
-  condition: z.enum(['new', 'like_new', 'used']).optional(),
-  is_active: z.boolean().optional(),
+const updateSchema = Z.object({
+  title: Z.string().min(10).max(200).optional(),
+  description: Z.string().min(20).max(2000).optional(),
+  price: Z.number().min(100).max(10000000).optional(),
+  images: Z.array(Z.string()).min(1).max(8).optional(),
+  condition: Z.enum(['new', 'like_new', 'used']).optional(),
+  is_active: Z.boolean().optional(),
 });
 
 // GET - Get product details
 export async function GET(
-  request: NextRequest,
+  req: Req,
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
+    const productId = uuid(params.id);
+    if (!productId) {
+      return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
+    }
 
+    const ip = req.headers.get('x-forwarded-for') || 'unknown';
+    const rateLimitResult = await rateLimit('api', ip);
+    if (!rateLimitResult.success) {
+      return Res.json(
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
+      );
+    }
+
+    const supabase = client();
     const { data: product, error } = await supabase
       .from('products')
       .select(`
         *,
         seller:profiles!products_seller_id_fkey(
-          id,
-          full_name,
-          profile_image_url,
-          freelancer_rating,
-          total_jobs_completed,
-          identity_verified,
-          created_at
+          id, full_name, profile_image_url,
+          freelancer_rating, total_jobs_completed,
+          identity_verified, created_at, location
         )
       `)
-      .eq('id', params.id)
+      .eq('id', productId)
       .single();
 
     if (error || !product) {
-      return NextResponse.json(
-        { success: false, error: 'Product not found' },
-        { status: 404 }
-      );
+      log.warn('Product not found', { productId });
+      return Res.json({ success: false, error: 'Product not found' }, { status: 404 });
     }
 
-    // Increment view count
-    await supabase
+    // Increment views
+    supabase
       .from('products')
       .update({ views_count: (product.views_count || 0) + 1 })
-      .eq('id', params.id);
+      .eq('id', productId)
+      .then();
 
-    return NextResponse.json({ success: true, data: product });
+    return Res.json({ success: true, data: product });
   } catch (error) {
-    console.error('Product fetch error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch product' },
-      { status: 500 }
-    );
+    log.error('Product fetch error', error as Error);
+    return Res.json({ success: false, error: 'Failed to fetch product' }, { status: 500 });
   }
 }
 
-// PATCH - Update product (seller only)
+// PATCH - Update product
 export async function PATCH(
-  request: NextRequest,
+  req: Req,
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const authResult = await auth(req);
+    if (authResult instanceof Res) return authResult;
+    const { user } = authResult;
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
+    const productId = uuid(params.id);
+    if (!productId) {
+      return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
+    }
+
+    const ownershipResult = await ownership(req, 'products', productId, 'seller_id');
+    if (ownershipResult instanceof Res) return ownershipResult;
+
+    const rateLimitResult = await rateLimit('api', user.id);
+    if (!rateLimitResult.success) {
+      return Res.json(
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
       );
     }
 
-    // Verify ownership
-    const { data: product } = await supabase
-      .from('products')
-      .select('seller_id')
-      .eq('id', params.id)
-      .single();
+    const body = await req.json();
+    const sanitized = {
+      ...body,
+      title: body.title ? text(body.title) : undefined,
+      description: body.description ? html(body.description) : undefined,
+    };
 
-    if (!product) {
-      return NextResponse.json(
-        { success: false, error: 'Product not found' },
-        { status: 404 }
-      );
-    }
-
-    if (product.seller_id !== user.id) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 403 }
-      );
-    }
-
-    const body = await request.json();
-    const validated = updateProductSchema.parse(body);
+    const validated = updateSchema.parse(sanitized);
+    const supabase = client();
 
     const { data: updated, error } = await supabase
       .from('products')
@@ -108,68 +113,64 @@ export async function PATCH(
         ...validated,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', params.id)
+      .eq('id', productId)
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      log.error('Product update failed', error, { productId, userId: user.id });
+      throw error;
+    }
 
-    return NextResponse.json({
+    log.info('Product updated', { productId, userId: user.id });
+
+    return Res.json({
       success: true,
       data: updated,
       message: 'Product updated successfully',
     });
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+    if (error instanceof Z.ZodError) {
+      return Res.json(
+        { success: false, error: error.errors[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }
 
-    console.error('Product update error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to update product' },
-      { status: 500 }
-    );
+    log.error('Product update error', error as Error);
+    return Res.json({ success: false, error: 'Failed to update product' }, { status: 500 });
   }
 }
 
-// DELETE - Delete product (seller only)
+// DELETE - Delete product
 export async function DELETE(
-  request: NextRequest,
+  req: Req,
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const authResult = await auth(req);
+    if (authResult instanceof Res) return authResult;
+    const { user } = authResult;
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
+    const productId = uuid(params.id);
+    if (!productId) {
+      return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
     }
 
-    // Verify ownership
+    const supabase = client();
     const { data: product } = await supabase
       .from('products')
       .select('seller_id, sales_count')
-      .eq('id', params.id)
+      .eq('id', productId)
       .single();
 
     if (!product) {
-      return NextResponse.json(
-        { success: false, error: 'Product not found' },
-        { status: 404 }
-      );
+      return Res.json({ success: false, error: 'Product not found' }, { status: 404 });
     }
 
     if (product.seller_id !== user.id) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 403 }
-      );
+      log.warn('Unauthorized delete attempt', { productId, userId: user.id });
+      return Res.json({ success: false, error: 'Unauthorized' }, { status: 403 });
     }
 
     // Soft delete if has sales
@@ -177,23 +178,16 @@ export async function DELETE(
       await supabase
         .from('products')
         .update({ is_active: false })
-        .eq('id', params.id);
+        .eq('id', productId);
     } else {
-      await supabase
-        .from('products')
-        .delete()
-        .eq('id', params.id);
+      await supabase.from('products').delete().eq('id', productId);
     }
 
-    return NextResponse.json({
-      success: true,
-      message: 'Product deleted successfully',
-    });
+    log.info('Product deleted', { productId, userId: user.id });
+
+    return Res.json({ success: true, message: 'Product deleted successfully' });
   } catch (error) {
-    console.error('Product deletion error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to delete product' },
-      { status: 500 }
-    );
+    log.error('Product deletion error', error as Error);
+    return Res.json({ success: false, error: 'Failed to delete product' }, { status: 500 });
   }
 }

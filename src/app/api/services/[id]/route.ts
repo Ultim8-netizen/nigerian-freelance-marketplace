@@ -1,11 +1,13 @@
-// ============================================================================
 // src/app/api/services/[id]/route.ts
-// Individual service operations
-// ============================================================================
+// PRODUCTION-READY: Individual service operations with full security
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth, requireOwnership } from '@/lib/api/middleware';
+import { checkRateLimit } from '@/lib/rate-limit-upstash';
 import { createClient } from '@/lib/supabase/server';
 import { serviceSchema } from '@/lib/validations';
+import { sanitizeHtml, sanitizeText, sanitizeUuid } from '@/lib/security/sanitize';
+import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
 // GET - Get service details
@@ -14,8 +16,25 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
+    const serviceId = sanitizeUuid(params.id);
+    if (!serviceId) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid service ID' },
+        { status: 400 }
+      );
+    }
+
+    // Rate limiting for reads (more permissive)
+    const ip = request.headers.get('x-forwarded-for') || 'unknown';
+    const rateLimitResult = await checkRateLimit('api', ip);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
+      );
+    }
+
     const supabase = createClient();
-    const serviceId = params.id;
 
     const { data: service, error } = await supabase
       .from('services')
@@ -49,6 +68,7 @@ export async function GET(
       .single();
 
     if (error || !service) {
+      logger.warn('Service not found', { serviceId });
       return NextResponse.json(
         { success: false, error: 'Service not found' },
         { status: 404 }
@@ -62,12 +82,14 @@ export async function GET(
       .eq('id', serviceId)
       .then();
 
+    logger.info('Service viewed', { serviceId, viewCount: service.views_count + 1 });
+
     return NextResponse.json({
       success: true,
       data: service,
     });
-  } catch (error: unknown) {
-    console.error('Service fetch error:', error);
+  } catch (error) {
+    logger.error('Service fetch error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Failed to fetch service' },
       { status: 500 }
@@ -81,44 +103,56 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
+    // 1. Authentication
+    const authResult = await requireAuth(request);
+    if (authResult instanceof NextResponse) return authResult;
+    const { user } = authResult;
+
+    // 2. Validate service ID
+    const serviceId = sanitizeUuid(params.id);
+    if (!serviceId) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
+        { success: false, error: 'Invalid service ID' },
+        { status: 400 }
       );
     }
 
-    const serviceId = params.id;
+    // 3. Ownership verification
+    const ownershipResult = await requireOwnership(
+      request,
+      'services',
+      serviceId,
+      'freelancer_id'
+    );
+    if (ownershipResult instanceof NextResponse) return ownershipResult;
 
-    // Verify ownership
-    const { data: service } = await supabase
-      .from('services')
-      .select('freelancer_id')
-      .eq('id', serviceId)
-      .single();
-
-    if (!service) {
+    // 4. Rate limiting
+    const rateLimitResult = await checkRateLimit('api', user.id);
+    if (!rateLimitResult.success) {
       return NextResponse.json(
-        { success: false, error: 'Service not found' },
-        { status: 404 }
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
       );
     }
 
-    if (service.freelancer_id !== user.id) {
-      return NextResponse.json(
-        { success: false, error: 'You can only edit your own services' },
-        { status: 403 }
-      );
-    }
-
-    // Validate updates
+    // 5. Parse and sanitize updates
     const body = await request.json();
-    const validatedData = serviceSchema.partial().parse(body);
+    
+    const sanitizedBody = {
+      ...body,
+      title: body.title ? sanitizeText(body.title) : undefined,
+      description: body.description ? sanitizeHtml(body.description) : undefined,
+      category: body.category ? sanitizeText(body.category) : undefined,
+      requirements: body.requirements ? sanitizeHtml(body.requirements) : undefined,
+      tags: body.tags?.map((tag: string) => sanitizeText(tag)) || undefined,
+    };
 
-    // Update service
+    // 6. Validate with partial schema
+    const validatedData = serviceSchema.partial().parse(sanitizedBody);
+
+    const supabase = createClient();
+
+    // 7. Update service
     const { data: updatedService, error } = await supabase
       .from('services')
       .update({
@@ -130,8 +164,11 @@ export async function PATCH(
       .single();
 
     if (error) {
+      logger.error('Service update failed', error, { serviceId, userId: user.id });
       throw error;
     }
+
+    logger.info('Service updated', { serviceId, userId: user.id });
 
     return NextResponse.json({
       success: true,
@@ -141,12 +178,12 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error instanceof Error ? error.message : 'An error occurred' },
+        { success: false, error: error.errors[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }
 
-    console.error('Service update error:', error);
+    logger.error('Service update error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Failed to update service' },
       { status: 500 }
@@ -160,19 +197,32 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
+    // 1. Authentication
+    const authResult = await requireAuth(request);
+    if (authResult instanceof NextResponse) return authResult;
+    const { user } = authResult;
+
+    // 2. Validate service ID
+    const serviceId = sanitizeUuid(params.id);
+    if (!serviceId) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
+        { success: false, error: 'Invalid service ID' },
+        { status: 400 }
       );
     }
 
-    const serviceId = params.id;
+    // 3. Rate limiting
+    const rateLimitResult = await checkRateLimit('api', user.id);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
+      );
+    }
 
-    // Verify ownership
+    const supabase = createClient();
+
+    // 4. Verify ownership and get service details
     const { data: service } = await supabase
       .from('services')
       .select('freelancer_id, orders_count')
@@ -187,42 +237,38 @@ export async function DELETE(
     }
 
     if (service.freelancer_id !== user.id) {
+      logger.warn('Unauthorized delete attempt', { serviceId, userId: user.id });
       return NextResponse.json(
         { success: false, error: 'You can only delete your own services' },
         { status: 403 }
       );
     }
 
-    // Don't allow deletion if service has orders
+    // 5. Soft delete if has orders, hard delete otherwise
     if (service.orders_count > 0) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Cannot delete service with existing orders. You can deactivate it instead.' 
-        },
-        { status: 400 }
-      );
-    }
+      await supabase
+        .from('services')
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq('id', serviceId);
+      
+      logger.info('Service soft deleted', { serviceId, userId: user.id });
+    } else {
+      const { error } = await supabase
+        .from('services')
+        .delete()
+        .eq('id', serviceId);
 
-    // Soft delete (deactivate)
-    const { error } = await supabase
-      .from('services')
-      .update({ 
-        is_active: false,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', serviceId);
-
-    if (error) {
-      throw error;
+      if (error) throw error;
+      
+      logger.info('Service hard deleted', { serviceId, userId: user.id });
     }
 
     return NextResponse.json({
       success: true,
       message: 'Service deleted successfully',
     });
-  } catch (error: unknown) {
-    console.error('Service deletion error:', error);
+  } catch (error) {
+    logger.error('Service deletion error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Failed to delete service' },
       { status: 500 }
