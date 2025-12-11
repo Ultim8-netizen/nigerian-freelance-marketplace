@@ -1565,3 +1565,146 @@ SELECT table_name
 FROM information_schema.tables 
 WHERE table_schema = 'public' 
 AND table_name LIKE '%nin%';
+
+-- Add liveness verification fields to profiles
+ALTER TABLE profiles 
+ADD COLUMN IF NOT EXISTS liveness_verified BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS liveness_verified_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS trust_score INTEGER DEFAULT 0,
+ADD COLUMN IF NOT EXISTS trust_level TEXT CHECK (trust_level IN ('new', 'verified', 'trusted', 'top_rated', 'elite')) DEFAULT 'new';
+
+-- Create liveness verification records table
+CREATE TABLE IF NOT EXISTS liveness_verifications (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  
+  -- Video metadata (video stored locally on user device)
+  video_id TEXT NOT NULL, -- Reference to IndexedDB
+  challenges JSONB NOT NULL, -- Array of challenges completed
+  
+  -- Detection results
+  face_detected BOOLEAN NOT NULL,
+  all_challenges_passed BOOLEAN NOT NULL,
+  face_confidence NUMERIC(3, 2),
+  
+  -- Payment info
+  amount_paid NUMERIC(10, 2) DEFAULT 150,
+  transaction_ref TEXT UNIQUE,
+  
+  -- Status
+  verification_status TEXT CHECK (verification_status IN ('pending', 'processing', 'approved', 'rejected', 'failed')) DEFAULT 'pending',
+  rejection_reason TEXT,
+  
+  -- Timestamps
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  verified_at TIMESTAMPTZ
+);
+
+-- Create trust score history table
+CREATE TABLE IF NOT EXISTS trust_score_events (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  
+  event_type TEXT NOT NULL, -- 'liveness_verified', 'order_completed', 'positive_review', etc.
+  score_change INTEGER NOT NULL,
+  previous_score INTEGER NOT NULL,
+  new_score INTEGER NOT NULL,
+  
+  related_entity_type TEXT, -- 'order', 'review', 'verification'
+  related_entity_id UUID,
+  
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_liveness_verifications_user ON liveness_verifications(user_id);
+CREATE INDEX idx_liveness_verifications_status ON liveness_verifications(verification_status);
+CREATE INDEX idx_trust_score_events_user ON trust_score_events(user_id);
+CREATE INDEX idx_trust_score_events_type ON trust_score_events(event_type);
+
+-- RLS Policies
+ALTER TABLE liveness_verifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trust_score_events ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own liveness verifications"
+  ON liveness_verifications FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can create own liveness verifications"
+  ON liveness_verifications FOR INSERT
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users can view own trust score history"
+  ON trust_score_events FOR SELECT
+  USING (user_id = auth.uid());
+
+-- Function to update trust level based on score
+CREATE OR REPLACE FUNCTION update_trust_level()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.trust_score >= 90 THEN
+    NEW.trust_level = 'elite';
+  ELSIF NEW.trust_score >= 70 THEN
+    NEW.trust_level = 'top_rated';
+  ELSIF NEW.trust_score >= 40 THEN
+    NEW.trust_level = 'trusted';
+  ELSIF NEW.trust_score >= 25 THEN
+    NEW.trust_level = 'verified';
+  ELSE
+    NEW.trust_level = 'new';
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger to auto-update trust level
+DROP TRIGGER IF EXISTS update_profile_trust_level ON profiles;
+CREATE TRIGGER update_profile_trust_level
+  BEFORE UPDATE OF trust_score ON profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION update_trust_level();
+
+-- Function to add trust score event
+CREATE OR REPLACE FUNCTION add_trust_score_event(
+  p_user_id UUID,
+  p_event_type TEXT,
+  p_score_change INTEGER,
+  p_related_entity_type TEXT DEFAULT NULL,
+  p_related_entity_id UUID DEFAULT NULL,
+  p_notes TEXT DEFAULT NULL
+)
+RETURNS void AS $$
+DECLARE
+  v_current_score INTEGER;
+  v_new_score INTEGER;
+BEGIN
+  -- Get current score
+  SELECT trust_score INTO v_current_score
+  FROM profiles
+  WHERE id = p_user_id;
+  
+  -- Calculate new score
+  v_new_score := GREATEST(0, v_current_score + p_score_change);
+  
+  -- Update profile
+  UPDATE profiles
+  SET trust_score = v_new_score
+  WHERE id = p_user_id;
+  
+  -- Log event
+  INSERT INTO trust_score_events (
+    user_id, event_type, score_change,
+    previous_score, new_score,
+    related_entity_type, related_entity_id,
+    notes
+  ) VALUES (
+    p_user_id, p_event_type, p_score_change,
+    v_current_score, v_new_score,
+    p_related_entity_type, p_related_entity_id,
+    p_notes
+  );
+END;
+$$ LANGUAGE plpgsql;
