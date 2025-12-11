@@ -20,7 +20,7 @@ interface ProfileHeaderProps {
     freelancer_rating: number;
     total_jobs_completed: number;
     created_at: string;
-    nin_verified?: boolean;
+    liveness_verified?: boolean;
     identity_verified?: boolean;
   };
   isOwnProfile?: boolean;
@@ -52,7 +52,7 @@ export function ProfileHeader({ profile, isOwnProfile = false }: ProfileHeaderPr
             )}
           </div>
           {/* Verified Badge Overlay */}
-          {profile.nin_verified && (
+          {profile.liveness_verified && (
             <div className="absolute -bottom-2 -right-2 w-10 h-10 bg-blue-600 rounded-full border-4 border-white flex items-center justify-center">
               <Shield className="w-5 h-5 text-white" />
             </div>
@@ -65,7 +65,7 @@ export function ProfileHeader({ profile, isOwnProfile = false }: ProfileHeaderPr
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <h1 className="text-2xl font-bold">{profile.full_name}</h1>
-                {profile.nin_verified && <VerifiedBadge variant="compact" />}
+                {profile.liveness_verified && <VerifiedBadge variant="compact" />}
               </div>
               
               <div className="flex flex-wrap gap-2 mb-3">
@@ -76,8 +76,8 @@ export function ProfileHeader({ profile, isOwnProfile = false }: ProfileHeaderPr
               </div>
             </div>
 
-            {isOwnProfile && !profile.nin_verified && (
-              <Link href="/verification/nin">
+            {isOwnProfile && !profile.liveness_verified && (
+              <Link href="/verification/liveness">
                 <Button size="sm" variant="outline" className="border-blue-600 text-blue-600">
                   <Shield className="w-4 h-4 mr-2" />
                   Get Verified
@@ -115,7 +115,7 @@ export function ProfileHeader({ profile, isOwnProfile = false }: ProfileHeaderPr
           </div>
 
           {/* Verification Status Banner */}
-          {profile.nin_verified && (
+          {profile.liveness_verified && (
             <div className="mt-4">
               <ProfileVerifiedBadge />
             </div>

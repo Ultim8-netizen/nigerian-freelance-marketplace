@@ -50,7 +50,7 @@ export function VerifiedBadge({
         <TooltipContent>
           <div className="flex items-center gap-2">
             <CheckCircle className="w-4 h-4 text-blue-500" />
-            <span>NIN Verified User</span>
+            <span>Liveness Verified User</span>
           </div>
         </TooltipContent>
       </Tooltip>
@@ -96,25 +96,25 @@ export function ProfileVerifiedBadge() {
   );
 }
 
-// src/app/verification/nin/page.tsx
+// src/app/verification/liveness/page.tsx
 import { Metadata } from 'next';
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
-import { NINVerificationCard } from '@/components/verification/NINVerificationCard';
+import { LivenessVerificationCard } from '@/components/verification/LivenessVerificationCard';
 import { Card } from '@/components/ui/card';
 import { Shield, Users, TrendingUp, Lock } from 'lucide-react';
 
 export const metadata: Metadata = {
-  title: 'NIN Verification | F9',
+  title: 'Liveness Verification | F9',
   description: 'Verify your identity to build trust and get priority visibility',
 };
 
-export default async function NINVerificationPage() {
+export default async function LivenessVerificationPage() {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect('/login?redirect=/verification/nin');
+    redirect('/login?redirect=/verification/liveness');
   }
 
   return (
@@ -133,7 +133,7 @@ export default async function NINVerificationPage() {
 
         {/* Main Verification Card */}
         <div className="mb-8">
-          <NINVerificationCard />
+          <LivenessVerificationCard />
         </div>
 
         {/* Why Verify Section */}
@@ -186,8 +186,8 @@ export default async function NINVerificationPage() {
               <div>
                 <h3 className="font-semibold mb-1">Your Data is Safe</h3>
                 <p className="text-sm text-gray-600">
-                  We use bank-grade encryption. Only the last 4 digits 
-                  of your NIN are stored.
+                  We use bank-grade encryption for your liveness check. 
+                  Your biometric data is secure.
                 </p>
               </div>
             </div>
@@ -217,16 +217,16 @@ export default async function NINVerificationPage() {
             <div>
               <h3 className="font-semibold mb-1">Why do I need to pay ₦150?</h3>
               <p className="text-sm text-gray-600">
-                The fee covers the cost of verifying your NIN through Youverify's 
-                secure API. We don't make profit from this—it's purely to cover 
+                The fee covers the cost of verifying your identity through our 
+                secure liveness check API. We don't make profit from this—it's purely to cover 
                 the verification service cost.
               </p>
             </div>
             <div>
-              <h3 className="font-semibold mb-1">Is my NIN safe?</h3>
+              <h3 className="font-semibold mb-1">Is my biometric data safe?</h3>
               <p className="text-sm text-gray-600">
                 Absolutely. We use bank-grade encryption and never store your 
-                full NIN. Only the last 4 digits are kept for your reference.
+                biometric data permanently. Only verification status is kept.
               </p>
             </div>
             <div>
@@ -239,7 +239,7 @@ export default async function NINVerificationPage() {
             <div>
               <h3 className="font-semibold mb-1">What if verification fails?</h3>
               <p className="text-sm text-gray-600">
-                If your NIN cannot be verified, you can contact support. We'll 
+                If your liveness check cannot be verified, you can contact support. We'll 
                 investigate and help resolve the issue.
               </p>
             </div>
@@ -250,7 +250,7 @@ export default async function NINVerificationPage() {
   );
 }
 
-// src/app/verification/nin/success/page.tsx
+// src/app/verification/liveness/success/page.tsx
 import { Metadata } from 'next';
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
@@ -274,7 +274,7 @@ export default function VerificationSuccessPage() {
         </h1>
 
         <p className="text-gray-700 mb-6">
-          Your identity has been successfully verified. You now have a 
+          Your identity has been successfully verified through liveness check. You now have a 
           verified badge on your profile that will help you win more clients.
         </p>
 
@@ -317,7 +317,12 @@ export default function VerificationSuccessPage() {
   );
 }
 
-// src/app/verification/nin/failed/page.tsx
+// src/app/verification/liveness/failed/page.tsx
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { AlertCircle } from 'lucide-react';
+import Link from 'next/link';
+
 export default function VerificationFailedPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 flex items-center justify-center p-4">
@@ -331,20 +336,20 @@ export default function VerificationFailedPage() {
         </h1>
 
         <p className="text-gray-700 mb-6">
-          We couldn't verify your NIN. This could be due to:
+          We couldn't verify your identity through liveness check. This could be due to:
         </p>
 
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-left">
           <ul className="text-sm text-red-700 space-y-2">
-            <li>• Incorrect NIN entered</li>
-            <li>• NIN not registered with NIMC</li>
+            <li>• Poor lighting conditions</li>
+            <li>• Camera not detecting face properly</li>
             <li>• Temporary system issues</li>
           </ul>
         </div>
 
         <div className="flex flex-col gap-3">
           <Button asChild size="lg">
-            <Link href="/verification/nin">
+            <Link href="/verification/liveness">
               Try Again
             </Link>
           </Button>

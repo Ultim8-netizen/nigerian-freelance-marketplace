@@ -1529,3 +1529,39 @@ CREATE TABLE IF NOT EXISTS platform_revenue (
 
 CREATE INDEX idx_platform_revenue_type ON platform_revenue(revenue_type);
 CREATE INDEX idx_platform_revenue_date ON platform_revenue(created_at DESC);
+
+-- Remove NIN verification columns from profiles
+ALTER TABLE profiles 
+DROP COLUMN IF EXISTS nin_verified,
+DROP COLUMN IF EXISTS nin_verification_status,
+DROP COLUMN IF EXISTS nin_verification_date,
+DROP COLUMN IF EXISTS nin_last_four;
+
+-- Verification: Check remaining columns
+SELECT column_name, data_type 
+FROM information_schema.columns 
+WHERE table_name = 'profiles' 
+AND column_name LIKE '%nin%';
+-- Should return 0 rows
+
+-- Drop the entire NIN verification requests table
+DROP TABLE IF EXISTS nin_verification_requests CASCADE;
+
+-- Remove NIN revenue tracking from platform_revenue
+-- Option A: Remove NIN entries (if you want to keep other revenue data)
+DELETE FROM platform_revenue 
+WHERE revenue_type = 'nin_verification';
+
+-- Option B: Update the check constraint (if table exists)
+ALTER TABLE platform_revenue 
+DROP CONSTRAINT IF EXISTS platform_revenue_revenue_type_check;
+
+ALTER TABLE platform_revenue 
+ADD CONSTRAINT platform_revenue_revenue_type_check 
+CHECK (revenue_type IN ('platform_fee', 'premium_feature'));
+
+-- Verification: Confirm tables are gone
+SELECT table_name 
+FROM information_schema.tables 
+WHERE table_schema = 'public' 
+AND table_name LIKE '%nin%';

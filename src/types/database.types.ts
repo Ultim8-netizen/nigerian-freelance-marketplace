@@ -19,7 +19,7 @@ export interface Profile {
   university: string | null;
   email_verified: boolean;
   identity_verified: boolean;
-  nin_verified: boolean;
+  liveness_verified: boolean;
   student_verified: boolean;
   freelancer_rating: number;
   client_rating: number;

@@ -58,7 +58,7 @@ export function EnhancedServiceCard({ service }: ServiceCardProps) {
               <span className="text-sm text-gray-600">
                 {freelancer?.full_name}
               </span>
-              {freelancer?.nin_verified && <VerifiedIcon size={14} />}
+              {freelancer?.liveness_verified && <VerifiedIcon size={14} />}
             </div>
           </div>
 
