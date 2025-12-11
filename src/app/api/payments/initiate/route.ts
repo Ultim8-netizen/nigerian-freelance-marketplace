@@ -1,13 +1,12 @@
 // src/app/api/payments/initiate/route.ts
 // PRODUCTION-READY: Secure payment initiation with comprehensive validation
 
-import { NextRequest as NextReq, NextResponse as NextRes } from 'next/server';
-import { requireAuth as reqAuth } from '@/lib/api/middleware';
-import { checkRateLimit as checkLimit } from '@/lib/rate-limit-upstash';
-import { createClient as createSupaClient } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
+import { createClient } from '@/lib/supabase/server';
 import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
-import { sanitizeUuid as sanUuid } from '@/lib/security/sanitize';
-import { logger as log } from '@/lib/logger';
+import { sanitizeUuid } from '@/lib/security/sanitize';
+import { logger } from '@/lib/logger';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 
@@ -16,39 +15,30 @@ const initiateSchema = z.object({
   redirect_url: z.string().url().optional(),
 });
 
-export async function POST(request: NextReq) {
+export async function POST(request: NextRequest) {
   try {
-    // 1. Authentication
-    const authResult = await reqAuth(request);
-    if (authResult instanceof NextRes) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: {
+        key: 'initiatePayment',
+        max: 5,
+        window: 3600000, // 1 hour
+      },
+    });
 
-    // 2. Rate limiting (5 payment initiations per hour)
-    const rateLimitResult = await checkLimit('initiatePayment', user.id);
-    if (!rateLimitResult.success) {
-      log.warn('Payment rate limit exceeded', { userId: user.id });
-      return NextRes.json(
-        { 
-          success: false, 
-          error: 'Too many payment attempts. Please wait.',
-          resetAt: rateLimitResult.reset 
-        },
-        { status: 429 }
-      );
-    }
+    if (error) return error;
 
-    // 3. Validate and sanitize request
     const body = await request.json();
     const sanitizedBody = {
-      order_id: sanUuid(body.order_id) || '',
+      order_id: sanitizeUuid(body.order_id) || '',
       redirect_url: body.redirect_url,
     };
 
     const validatedData = initiateSchema.parse(sanitizedBody);
 
-    const supabase = createSupaClient();
+    const supabase = createClient();
 
-    // 4. Get order details with security checks
+    // Get order details with security checks
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .select('*, client:profiles!orders_client_id_fkey(*)')
@@ -56,34 +46,34 @@ export async function POST(request: NextReq) {
       .single();
 
     if (orderError || !order) {
-      log.warn('Invalid order ID in payment initiation', { orderId: validatedData.order_id });
-      return NextRes.json(
+      logger.warn('Invalid order ID in payment initiation', { orderId: validatedData.order_id });
+      return NextResponse.json(
         { success: false, error: 'Order not found' },
         { status: 404 }
       );
     }
 
-    // 5. Verify user is the client
+    // Verify user is the client
     if (order.client_id !== user.id) {
-      log.warn('Unauthorized payment attempt', { userId: user.id, orderId: validatedData.order_id });
-      return NextRes.json(
+      logger.warn('Unauthorized payment attempt', { userId: user.id, orderId: validatedData.order_id });
+      return NextResponse.json(
         { success: false, error: 'Unauthorized' },
         { status: 403 }
       );
     }
 
-    // 6. Check order status
+    // Check order status
     if (order.status !== 'pending_payment') {
-      return NextRes.json(
+      return NextResponse.json(
         { success: false, error: 'Order already paid or cancelled' },
         { status: 400 }
       );
     }
 
-    // 7. Generate secure transaction reference
+    // Generate secure transaction reference
     const txRef = `TX-${Date.now()}-${uuidv4().slice(0, 8)}`;
 
-    // 8. Initialize Flutterwave payment
+    // Initialize Flutterwave payment
     const paymentData = {
       tx_ref: txRef,
       amount: order.amount,
@@ -105,7 +95,7 @@ export async function POST(request: NextReq) {
 
     const flutterwaveResponse = await FlutterwaveServerService.initializePayment(paymentData);
 
-    // 9. Create transaction record
+    // Create transaction record
     await supabase.from('transactions').insert({
       order_id: order.id,
       transaction_ref: txRef,
@@ -114,14 +104,14 @@ export async function POST(request: NextReq) {
       status: 'pending',
     });
 
-    log.info('Payment initiated successfully', {
+    logger.info('Payment initiated successfully', {
       orderId: order.id,
       userId: user.id,
       txRef,
       amount: order.amount
     });
 
-    return NextRes.json({
+    return NextResponse.json({
       success: true,
       data: {
         payment_link: flutterwaveResponse.data.link,
@@ -130,15 +120,15 @@ export async function POST(request: NextReq) {
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      log.warn('Payment validation failed', undefined, { errors: error.errors });
-      return NextRes.json(
+      logger.warn('Payment validation failed', undefined, { errors: error.errors });
+      return NextResponse.json(
         { success: false, error: 'Invalid request data' },
         { status: 400 }
       );
     }
 
-    log.error('Payment initiation error', error as Error);
-    return NextRes.json(
+    logger.error('Payment initiation error', error as Error);
+    return NextResponse.json(
       { success: false, error: 'Payment initiation failed' },
       { status: 500 }
     );

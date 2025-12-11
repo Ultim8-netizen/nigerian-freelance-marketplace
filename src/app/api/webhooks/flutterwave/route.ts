@@ -167,10 +167,9 @@ async function logWebhook(
       payload: payload,
       notes,
       received_at: new Date().toISOString(),
-      ip_address: null, // You can extract this from request if needed
+      ip_address: null,
     });
   } catch (error) {
     console.error('Failed to log webhook:', error);
-    // Don't throw here - logging failures shouldn't break webhook processing
   }
 }

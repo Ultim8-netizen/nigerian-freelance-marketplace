@@ -2,8 +2,7 @@
 // PRODUCTION-READY: Enhanced jobs API with comprehensive security
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, requireRole } from '@/lib/api/middleware';
-import { checkRateLimit } from '@/lib/rate-limit-upstash';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { jobSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeText } from '@/lib/security/sanitize';
@@ -112,30 +111,19 @@ export async function GET(request: NextRequest) {
 // POST - Create job (clients only, rate-limited)
 export async function POST(request: NextRequest) {
   try {
-    // 1. Authentication
-    const authResult = await requireAuth(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      role: ['client', 'both'],
+      rateLimit: {
+        key: 'createJob',
+        max: 5,
+        window: 86400000, // 24 hours
+      },
+    });
 
-    // 2. Role check - only clients can post jobs
-    const roleResult = await requireRole(request, ['client', 'both']);
-    if (roleResult instanceof NextResponse) return roleResult;
+    if (error) return error;
 
-    // 3. Rate limiting (5 jobs per day)
-    const rateLimitResult = await checkRateLimit('createJob', user.id);
-    if (!rateLimitResult.success) {
-      logger.warn('Rate limit exceeded for job creation', { userId: user.id });
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Maximum daily job postings reached (5). Please try tomorrow.',
-          resetAt: rateLimitResult.reset 
-        },
-        { status: 429 }
-      );
-    }
-
-    // 4. Parse and sanitize request
+    // Parse and sanitize request
     const body = await request.json();
     
     const sanitizedBody = {
@@ -146,13 +134,13 @@ export async function POST(request: NextRequest) {
       skills_required: body.skills_required?.map((skill: string) => sanitizeText(skill)) || [],
     };
 
-    // 5. Validate with Zod
+    // Validate with Zod
     const validatedData = jobSchema.parse(sanitizedBody);
 
     const supabase = createClient();
 
-    // 6. Create job
-    const { data, error } = await supabase
+    // Create job
+    const { data, error: jobError } = await supabase
       .from('jobs')
       .insert({
         client_id: user.id,
@@ -172,9 +160,9 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    if (error) {
-      logger.error('Job creation failed', error, { userId: user.id });
-      throw error;
+    if (jobError) {
+      logger.error('Job creation failed', jobError, { userId: user.id });
+      throw jobError;
     }
 
     logger.info('Job created successfully', {

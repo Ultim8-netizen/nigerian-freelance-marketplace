@@ -2,8 +2,7 @@
 // PRODUCTION-READY: Individual job operations with comprehensive security
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, requireOwnership } from '@/lib/api/middleware';
-import { checkRateLimit } from '@/lib/rate-limit-upstash';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { jobSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeText, sanitizeUuid } from '@/lib/security/sanitize';
@@ -24,19 +23,17 @@ export async function GET(
       );
     }
 
-    // Rate limiting
-    const ip = request.headers.get('x-forwarded-for') || 'unknown';
-    const rateLimitResult = await checkRateLimit('api', ip);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
-    }
+    // Rate limiting for public endpoint
+    const { error } = await applyMiddleware(request, {
+      auth: 'optional',
+      rateLimit: 'api',
+    });
+
+    if (error) return error;
 
     const supabase = createClient();
 
-    const { data: job, error } = await supabase
+    const { data: job, error: jobError } = await supabase
       .from('jobs')
       .select(`
         *,
@@ -69,7 +66,7 @@ export async function GET(
       .eq('id', jobId)
       .single();
 
-    if (error || !job) {
+    if (jobError || !job) {
       logger.warn('Job not found', { jobId });
       return NextResponse.json(
         { success: false, error: 'Job not found' },
@@ -105,12 +102,13 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
-    // 1. Authentication
-    const authResult = await requireAuth(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
 
-    // 2. Validate job ID
+    if (error) return error;
+
     const jobId = sanitizeUuid(params.id);
     if (!jobId) {
       return NextResponse.json(
@@ -119,25 +117,37 @@ export async function PATCH(
       );
     }
 
-    // 3. Ownership verification
-    const ownershipResult = await requireOwnership(
-      request,
-      'jobs',
-      jobId,
-      'client_id'
-    );
-    if (ownershipResult instanceof NextResponse) return ownershipResult;
+    const supabase = createClient();
 
-    // 4. Rate limiting
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
+    // Verify ownership
+    const { data: job } = await supabase
+      .from('jobs')
+      .select('client_id, status')
+      .eq('id', jobId)
+      .single();
+
+    if (!job) {
       return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
+        { success: false, error: 'Job not found' },
+        { status: 404 }
       );
     }
 
-    // 5. Parse and sanitize updates
+    if (job.client_id !== user.id) {
+      logger.warn('Unauthorized job update attempt', { jobId, userId: user.id });
+      return NextResponse.json(
+        { success: false, error: 'You can only update your own jobs' },
+        { status: 403 }
+      );
+    }
+
+    if (job.status === 'in_progress' || job.status === 'completed') {
+      return NextResponse.json(
+        { success: false, error: 'Cannot update job that is in progress or completed' },
+        { status: 400 }
+      );
+    }
+
     const body = await request.json();
     
     const sanitizedBody = {
@@ -148,27 +158,9 @@ export async function PATCH(
       skills_required: body.skills_required?.map((skill: string) => sanitizeText(skill)) || undefined,
     };
 
-    // 6. Validate with partial schema
     const validatedData = jobSchema.partial().parse(sanitizedBody);
 
-    const supabase = createClient();
-
-    // 7. Check if job can be updated (no accepted proposals yet)
-    const { data: jobStatus } = await supabase
-      .from('jobs')
-      .select('status')
-      .eq('id', jobId)
-      .single();
-
-    if (jobStatus?.status === 'in_progress' || jobStatus?.status === 'completed') {
-      return NextResponse.json(
-        { success: false, error: 'Cannot update job that is in progress or completed' },
-        { status: 400 }
-      );
-    }
-
-    // 8. Update job
-    const { data: updatedJob, error } = await supabase
+    const { data: updatedJob, error: updateError } = await supabase
       .from('jobs')
       .update({
         ...validatedData,
@@ -178,9 +170,9 @@ export async function PATCH(
       .select()
       .single();
 
-    if (error) {
-      logger.error('Job update failed', error, { jobId, userId: user.id });
-      throw error;
+    if (updateError) {
+      logger.error('Job update failed', updateError, { jobId, userId: user.id });
+      throw updateError;
     }
 
     logger.info('Job updated', { jobId, userId: user.id });
@@ -212,12 +204,13 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    // 1. Authentication
-    const authResult = await requireAuth(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
 
-    // 2. Validate job ID
+    if (error) return error;
+
     const jobId = sanitizeUuid(params.id);
     if (!jobId) {
       return NextResponse.json(
@@ -226,18 +219,8 @@ export async function DELETE(
       );
     }
 
-    // 3. Rate limiting
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
-    }
-
     const supabase = createClient();
 
-    // 4. Verify ownership and status
     const { data: job } = await supabase
       .from('jobs')
       .select('client_id, status, proposals_count')
@@ -259,7 +242,6 @@ export async function DELETE(
       );
     }
 
-    // 5. Can't delete if already in progress
     if (job.status === 'in_progress' || job.status === 'completed') {
       return NextResponse.json(
         { success: false, error: 'Cannot delete job that is in progress or completed' },
@@ -267,7 +249,6 @@ export async function DELETE(
       );
     }
 
-    // 6. Update to cancelled instead of hard delete
     await supabase
       .from('jobs')
       .update({ 
@@ -276,7 +257,7 @@ export async function DELETE(
       })
       .eq('id', jobId);
 
-    // 7. Notify freelancers who submitted proposals
+    // Notify freelancers who submitted proposals
     if (job.proposals_count > 0) {
       const { data: proposals } = await supabase
         .from('proposals')

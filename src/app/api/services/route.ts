@@ -2,8 +2,7 @@
 // PRODUCTION-READY: Enhanced services API with full security stack
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, requireRole } from '@/lib/api/middleware';
-import { checkRateLimit } from '@/lib/rate-limit-upstash';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { serviceSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeText } from '@/lib/security/sanitize';
@@ -16,7 +15,6 @@ export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     
-    // Input validation and sanitization
     const category = sanitizeText(searchParams.get('category') || '');
     const search = sanitizeText(searchParams.get('search') || '');
     const minPrice = searchParams.get('min_price');
@@ -28,7 +26,7 @@ export async function GET(request: NextRequest) {
     const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
     const perPage = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
 
-    // SQL injection check on text inputs
+    // SQL injection check
     if (search && containsSqlInjection(search)) {
       logger.warn('SQL injection attempt in search', { search, ip: request.headers.get('x-forwarded-for') });
       return NextResponse.json(
@@ -55,7 +53,7 @@ export async function GET(request: NextRequest) {
       `, { count: 'exact' })
       .eq('is_active', true);
 
-    // Text search with sanitized input
+    // Text search
     if (search) {
       const searchTerm = `%${search}%`;
       query = query.or(
@@ -96,7 +94,6 @@ export async function GET(request: NextRequest) {
       throw error;
     }
 
-    // Log successful query for analytics
     logger.info('Services query executed', {
       filters: { category, search, verified },
       resultCount: data?.length || 0
@@ -129,36 +126,23 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - Create service (authenticated, rate-limited)
+// POST - Create service
 export async function POST(request: NextRequest) {
   try {
-    // 1. Authentication check
-    const authResult = await requireAuth(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      role: ['freelancer', 'both'],
+      rateLimit: {
+        key: 'createService',
+        max: 10,
+        window: 3600000, // 1 hour
+      },
+    });
 
-    // 2. Role verification - only freelancers can create services
-    const roleResult = await requireRole(request, ['freelancer', 'both']);
-    if (roleResult instanceof NextResponse) return roleResult;
+    if (error) return error;
 
-    // 3. Rate limiting (10 services per hour)
-    const rateLimitResult = await checkRateLimit('createService', user.id);
-    if (!rateLimitResult.success) {
-      logger.warn('Rate limit exceeded for service creation', { userId: user.id });
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Too many service creations. Please try again later.',
-          resetAt: rateLimitResult.reset 
-        },
-        { status: 429 }
-      );
-    }
-
-    // 4. Parse and validate request body
     const body = await request.json();
     
-    // Sanitize text inputs
     const sanitizedBody = {
       ...body,
       title: sanitizeText(body.title || ''),
@@ -168,12 +152,11 @@ export async function POST(request: NextRequest) {
       tags: body.tags?.map((tag: string) => sanitizeText(tag)) || [],
     };
 
-    // Validate with Zod schema
     const validatedData = serviceSchema.parse(sanitizedBody);
 
     const supabase = createClient();
 
-    // 5. Check service limit (max 20 active services per user)
+    // Check service limit (max 20 active services per user)
     const { count: serviceCount } = await supabase
       .from('services')
       .select('*', { count: 'exact', head: true })
@@ -191,8 +174,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 6. Create service
-    const { data, error } = await supabase
+    const { data, error: serviceError } = await supabase
       .from('services')
       .insert({
         freelancer_id: user.id,
@@ -210,12 +192,11 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    if (error) {
-      logger.error('Service creation failed', error, { userId: user.id });
-      throw error;
+    if (serviceError) {
+      logger.error('Service creation failed', serviceError, { userId: user.id });
+      throw serviceError;
     }
 
-    // 7. Log successful creation
     logger.info('Service created successfully', {
       serviceId: data.id,
       userId: user.id,

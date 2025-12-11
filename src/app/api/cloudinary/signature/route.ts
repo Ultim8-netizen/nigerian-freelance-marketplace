@@ -1,10 +1,8 @@
 // src/app/api/cloudinary/signature/route.ts
 // Generate Cloudinary upload signature
-// ============================================================================
 
-import { NextRequest as NR, NextResponse as NRes } from 'next/server';
-import { requireAuth as reqAuth } from '@/lib/api/middleware';
-import { checkRateLimit as limitCheck } from '@/lib/rate-limit-upstash';
+import { NextRequest, NextResponse } from 'next/server';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { v2 as cloudinary } from 'cloudinary';
 import { logger } from '@/lib/logger';
 
@@ -14,19 +12,14 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-export async function POST(request: NR) {
+export async function POST(request: NextRequest) {
   try {
-    const authResult = await reqAuth(request);
-    if (authResult instanceof NRes) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
 
-    const rateLimitResult = await limitCheck('api', user.id);
-    if (!rateLimitResult.success) {
-      return NRes.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
-    }
+    if (error) return error;
 
     const body = await request.json();
     const { folder = 'marketplace' } = body;
@@ -34,7 +27,7 @@ export async function POST(request: NR) {
     // Validate folder name
     const allowedFolders = ['marketplace', 'services', 'profiles', 'products'];
     if (!allowedFolders.includes(folder)) {
-      return NRes.json(
+      return NextResponse.json(
         { success: false, error: 'Invalid folder' },
         { status: 400 }
       );
@@ -52,7 +45,7 @@ export async function POST(request: NR) {
 
     logger.info('Upload signature generated', { userId: user.id, folder });
 
-    return NRes.json({
+    return NextResponse.json({
       signature,
       timestamp,
       cloudName: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
@@ -61,7 +54,7 @@ export async function POST(request: NR) {
     });
   } catch (error) {
     logger.error('Signature generation error', error as Error);
-    return NRes.json(
+    return NextResponse.json(
       { success: false, error: 'Failed to generate signature' },
       { status: 500 }
     );

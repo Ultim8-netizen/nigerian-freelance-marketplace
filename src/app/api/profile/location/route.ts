@@ -2,6 +2,7 @@
 // API endpoint to update user location
 
 import { NextRequest, NextResponse } from 'next/server';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { z } from 'zod';
 
@@ -18,21 +19,20 @@ const locationSchema = z.object({
 
 export async function PUT(request: NextRequest) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
+
+    if (error) return error;
 
     const body = await request.json();
     const validatedData = locationSchema.parse(body);
 
+    const supabase = createClient();
+
     // Update profile with location
-    const { error } = await supabase
+    const { error: updateError } = await supabase
       .from('profiles')
       .update({
         location: validatedData.city 
@@ -42,9 +42,9 @@ export async function PUT(request: NextRequest) {
       })
       .eq('id', user.id);
 
-    if (error) {
+    if (updateError) {
       return NextResponse.json(
-        { success: false, error: error.message },
+        { success: false, error: updateError.message },
         { status: 500 }
       );
     }
@@ -69,7 +69,7 @@ export async function PUT(request: NextRequest) {
   } catch (error: unknown) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error instanceof Error ? error.message : 'An error occurred' },
+        { success: false, error: error.errors[0].message },
         { status: 400 }
       );
     }

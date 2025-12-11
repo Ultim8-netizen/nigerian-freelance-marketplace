@@ -1,18 +1,21 @@
 // src/app/api/storage/get/route.ts
-import { NextRequest as R, NextResponse as Rs } from 'next/server';
-import { requireAuth as a } from '@/lib/api/middleware';
-import { createClient as c } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
+import { createClient } from '@/lib/supabase/server';
 
-export async function POST(request: R) {
+export async function POST(request: NextRequest) {
   try {
-    const authResult = await a(request);
-    if (authResult instanceof Rs) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
+
+    if (error) return error;
 
     const { key, shared } = await request.json();
 
-    const supabase = c();
-    const { data, error } = await supabase
+    const supabase = createClient();
+    const { data, error: queryError } = await supabase
       .from('artifact_storage')
       .select('*')
       .eq('key', key)
@@ -20,10 +23,10 @@ export async function POST(request: R) {
       .eq(shared ? 'shared' : 'user_id', shared ? shared : user.id)
       .single();
 
-    if (error) throw error;
+    if (queryError) throw queryError;
 
-    return Rs.json({ key: data.key, value: data.value, shared: data.shared });
+    return NextResponse.json({ key: data.key, value: data.value, shared: data.shared });
   } catch (error: any) {
-    return Rs.json({ error: error.message }, { status: 404 });
+    return NextResponse.json({ error: error.message }, { status: 404 });
   }
 }

@@ -2,6 +2,7 @@
 // Complete marketplace order management
 
 import { NextRequest, NextResponse } from 'next/server';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { z } from 'zod';
 
@@ -22,20 +23,18 @@ const createOrderSchema = z.object({
 // GET - List user's orders
 export async function GET(request: NextRequest) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
+    if (error) return error;
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
     const role = searchParams.get('role'); // 'buyer' or 'seller'
 
+    const supabase = createClient();
     let query = supabase
       .from('marketplace_orders')
       .select(`
@@ -51,7 +50,6 @@ export async function GET(request: NextRequest) {
     } else if (role === 'seller') {
       query = query.eq('seller_id', user.id);
     } else {
-      // Show all orders user is involved in
       query = query.or(`buyer_id.eq.${user.id},seller_id.eq.${user.id}`);
     }
 
@@ -59,9 +57,9 @@ export async function GET(request: NextRequest) {
       query = query.eq('status', status);
     }
 
-    const { data, error } = await query.order('created_at', { ascending: false });
+    const { data, error: queryError } = await query.order('created_at', { ascending: false });
 
-    if (error) throw error;
+    if (queryError) throw queryError;
 
     return NextResponse.json({ success: true, data });
   } catch (error) {
@@ -76,18 +74,17 @@ export async function GET(request: NextRequest) {
 // POST - Create new order
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
+    if (error) return error;
 
     const body = await request.json();
     const validated = createOrderSchema.parse(body);
+
+    const supabase = createClient();
 
     // Get product details
     const { data: product, error: productError } = await supabase

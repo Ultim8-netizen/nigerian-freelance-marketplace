@@ -2,8 +2,7 @@
 // PRODUCTION-READY: Secure orders management with comprehensive validation
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/api/middleware';
-import { checkRateLimit } from '@/lib/rate-limit-upstash';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { sanitizeText, sanitizeHtml, sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
@@ -24,19 +23,12 @@ const createOrderSchema = z.object({
 // GET - List orders
 export async function GET(request: NextRequest) {
   try {
-    // Authentication required
-    const authResult = await requireAuth(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
 
-    // Rate limiting for API calls
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
-    }
+    if (error) return error;
 
     const searchParams = request.nextUrl.searchParams;
     const status = sanitizeText(searchParams.get('status') || '');
@@ -72,13 +64,13 @@ export async function GET(request: NextRequest) {
     const from = (page - 1) * perPage;
     const to = from + perPage - 1;
 
-    const { data, error, count } = await query
+    const { data, error: queryError, count } = await query
       .order('created_at', { ascending: false })
       .range(from, to);
 
-    if (error) {
-      logger.error('Orders fetch error', error);
-      throw error;
+    if (queryError) {
+      logger.error('Orders fetch error', queryError);
+      throw queryError;
     }
 
     logger.info('Orders query executed', {
@@ -108,26 +100,13 @@ export async function GET(request: NextRequest) {
 // POST - Create order
 export async function POST(request: NextRequest) {
   try {
-    // 1. Authentication
-    const authResult = await requireAuth(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
 
-    // 2. Rate limiting (10 orders per hour)
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
-      logger.warn('Rate limit exceeded for order creation', { userId: user.id });
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Too many order creations. Please try again later.',
-          resetAt: rateLimitResult.reset 
-        },
-        { status: 429 }
-      );
-    }
+    if (error) return error;
 
-    // 3. Parse and sanitize request
     const body = await request.json();
     
     const sanitizedBody = {
@@ -140,12 +119,11 @@ export async function POST(request: NextRequest) {
       description: sanitizeHtml(body.description || ''),
     };
 
-    // 4. Validate with Zod
     const validatedData = createOrderSchema.parse(sanitizedBody);
 
     const supabase = createClient();
 
-    // 5. Verify freelancer exists and is active
+    // Verify freelancer exists and is active
     const { data: freelancer, error: freelancerError } = await supabase
       .from('profiles')
       .select('id, account_status')
@@ -167,18 +145,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 6. Calculate fees (10% platform fee)
+    // Calculate fees
     const platformFee = Math.round(validatedData.amount * 0.1);
     const freelancerEarnings = validatedData.amount - platformFee;
 
-    // 7. Calculate delivery date
     const deliveryDate = new Date();
     deliveryDate.setDate(deliveryDate.getDate() + validatedData.delivery_days);
 
-    // 8. Generate secure order number
     const orderNumber = `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
 
-    // 9. Create order with transaction
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .insert({
@@ -206,7 +181,7 @@ export async function POST(request: NextRequest) {
       throw orderError;
     }
 
-    // 10. Update related records
+    // Update related records
     if (validatedData.proposal_id) {
       await supabase
         .from('proposals')
@@ -221,7 +196,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 11. Create notification for freelancer
+    // Notify freelancer
     await supabase.from('notifications').insert({
       user_id: validatedData.freelancer_id,
       type: 'new_order',
@@ -230,7 +205,6 @@ export async function POST(request: NextRequest) {
       link: `/freelancer/orders/${order.id}`,
     });
 
-    // 12. Log successful creation
     logger.info('Order created successfully', {
       orderId: order.id,
       clientId: user.id,

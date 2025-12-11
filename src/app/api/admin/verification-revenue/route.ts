@@ -1,20 +1,20 @@
 // src/app/api/admin/verification-revenue/route.ts
 import { NextRequest, NextResponse } from 'next/server';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 
 export async function GET(request: NextRequest) {
   try {
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
+
+    if (error) return error;
+
     const supabase = createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
-
-    // Check if user is admin (you should have an is_admin field in profiles)
+    // Check if user is admin
     const { data: profile } = await supabase
       .from('profiles')
       .select('is_admin')

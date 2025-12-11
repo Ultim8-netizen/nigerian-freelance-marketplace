@@ -1,27 +1,25 @@
-// ============================================================================
 // src/app/api/auth/register/route.ts
 // Enhanced user registration with comprehensive validation
-// ============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { registerSchema } from '@/lib/validations';
-import { rateLimit } from '@/lib/rate-limit';
 import { z } from 'zod';
 
 export async function POST(request: NextRequest) {
   try {
     // Rate limiting by IP (5 registrations per hour)
-    const ip = request.headers.get('x-forwarded-for') || 'unknown';
-    if (!rateLimit(`register:${ip}`, 5, 3600000)) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Too many registration attempts. Please try again later.' 
-        },
-        { status: 429 }
-      );
-    }
+    const { error: rateLimitError } = await applyMiddleware(request, {
+      auth: 'optional',
+      rateLimit: {
+        key: 'register',
+        max: 5,
+        window: 3600000, // 1 hour
+      },
+    });
+
+    if (rateLimitError) return rateLimitError;
 
     const body = await request.json();
     const validatedData = registerSchema.parse(body);

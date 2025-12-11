@@ -2,8 +2,7 @@
 // PRODUCTION-READY: Secure proposal submission with comprehensive checks
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, requireRole } from '@/lib/api/middleware';
-import { checkRateLimit } from '@/lib/rate-limit-upstash';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { proposalSchema } from '@/lib/validations';
 import { sanitizeText, sanitizeHtml, sanitizeUuid, sanitizeUrl } from '@/lib/security/sanitize';
@@ -12,30 +11,18 @@ import { z } from 'zod';
 
 export async function POST(request: NextRequest) {
   try {
-    // 1. Authentication
-    const authResult = await requireAuth(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      role: ['freelancer', 'both'],
+      rateLimit: {
+        key: 'submitProposal',
+        max: 20,
+        window: 86400000, // 24 hours
+      },
+    });
 
-    // 2. Role verification - only freelancers
-    const roleResult = await requireRole(request, ['freelancer', 'both']);
-    if (roleResult instanceof NextResponse) return roleResult;
+    if (error) return error;
 
-    // 3. Rate limiting (20 proposals per day)
-    const rateLimitResult = await checkRateLimit('submitProposal', user.id);
-    if (!rateLimitResult.success) {
-      logger.warn('Rate limit exceeded for proposals', { userId: user.id });
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Maximum daily proposals reached (20). Please try tomorrow.',
-          resetAt: rateLimitResult.reset 
-        },
-        { status: 429 }
-      );
-    }
-
-    // 4. Parse and sanitize request
     const body = await request.json();
     
     const sanitizedBody = {
@@ -45,12 +32,11 @@ export async function POST(request: NextRequest) {
       portfolio_links: body.portfolio_links?.map((link: string) => sanitizeUrl(link)).filter(Boolean) || [],
     };
 
-    // 5. Validate with Zod
     const validatedData = proposalSchema.parse(sanitizedBody);
 
     const supabase = createClient();
 
-    // 6. Check if job exists and is open
+    // Check if job exists and is open
     const { data: job, error: jobError } = await supabase
       .from('jobs')
       .select('id, status, client_id')
@@ -72,7 +58,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 7. Prevent applying to own jobs
+    // Prevent applying to own jobs
     if (job.client_id === user.id) {
       logger.warn('User attempted to apply to own job', { userId: user.id, jobId: validatedData.job_id });
       return NextResponse.json(
@@ -81,7 +67,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 8. Check for duplicate proposals
+    // Check for duplicate proposals
     const { data: existing } = await supabase
       .from('proposals')
       .select('id')
@@ -96,8 +82,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 9. Create proposal
-    const { data, error } = await supabase
+    // Create proposal
+    const { data, error: proposalError } = await supabase
       .from('proposals')
       .insert({
         freelancer_id: user.id,
@@ -111,15 +97,15 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    if (error) {
-      logger.error('Proposal creation failed', error, { userId: user.id });
-      throw error;
+    if (proposalError) {
+      logger.error('Proposal creation failed', proposalError, { userId: user.id });
+      throw proposalError;
     }
 
-    // 10. Increment proposals count
+    // Increment proposals count
     await supabase.rpc('increment_proposals_count', { job_id: validatedData.job_id });
 
-    // 11. Notify client
+    // Notify client
     await supabase.from('notifications').insert({
       user_id: job.client_id,
       type: 'new_proposal',

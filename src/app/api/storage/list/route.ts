@@ -1,18 +1,16 @@
 // src/app/api/storage/list/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-
-export async function POST(request: NextRequest) {
+export async function POST_LIST(request: NextRequest) {
   try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
+
+    if (error) return error;
 
     const { prefix, shared } = await request.json();
 
+    const supabase = createClient();
     let query = supabase
       .from('artifact_storage')
       .select('key')
@@ -23,9 +21,9 @@ export async function POST(request: NextRequest) {
       query = query.ilike('key', `${prefix}%`);
     }
 
-    const { data, error } = await query;
+    const { data, error: queryError } = await query;
 
-    if (error) throw error;
+    if (queryError) throw queryError;
 
     return NextResponse.json({
       keys: data.map(d => d.key),

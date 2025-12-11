@@ -2,8 +2,7 @@
 // PRODUCTION-READY: Marketplace products with full security
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, requireRole } from '@/lib/api/middleware';
-import { checkRateLimit } from '@/lib/rate-limit-upstash';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { sanitizeText, sanitizeHtml, sanitizeUrl } from '@/lib/security/sanitize';
 import { containsSqlInjection } from '@/lib/security/sql-injection-check';
@@ -46,14 +45,12 @@ export async function GET(request: NextRequest) {
     }
 
     // Rate limiting for reads
-    const ip = request.headers.get('x-forwarded-for') || 'unknown';
-    const rateLimitResult = await checkRateLimit('api', ip);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
-    }
+    const { error } = await applyMiddleware(request, {
+      auth: 'optional',
+      rateLimit: 'api',
+    });
+
+    if (error) return error;
 
     const supabase = createClient();
 
@@ -79,13 +76,13 @@ export async function GET(request: NextRequest) {
     const from = (page - 1) * perPage;
     const to = from + perPage - 1;
 
-    const { data, error, count } = await query
+    const { data, error: queryError, count } = await query
       .order('created_at', { ascending: false })
       .range(from, to);
     
-    if (error) {
-      logger.error('Products fetch error', error);
-      throw error;
+    if (queryError) {
+      logger.error('Products fetch error', queryError);
+      throw queryError;
     }
 
     logger.info('Products query executed', {
@@ -115,26 +112,17 @@ export async function GET(request: NextRequest) {
 // POST - Create product
 export async function POST(request: NextRequest) {
   try {
-    // 1. Authentication
-    const authResult = await requireAuth(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: {
+        key: 'createService',
+        max: 10,
+        window: 86400000, // 24 hours
+      },
+    });
 
-    // 2. Rate limiting (10 products per day)
-    const rateLimitResult = await checkRateLimit('createService', user.id);
-    if (!rateLimitResult.success) {
-      logger.warn('Rate limit exceeded for product creation', { userId: user.id });
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Too many product creations. Please try again later.',
-          resetAt: rateLimitResult.reset 
-        },
-        { status: 429 }
-      );
-    }
+    if (error) return error;
 
-    // 3. Parse and sanitize
     const body = await request.json();
     
     const sanitizedBody = {
@@ -146,13 +134,11 @@ export async function POST(request: NextRequest) {
       delivery_options: body.delivery_options?.map((opt: string) => sanitizeText(opt)) || [],
     };
 
-    // 4. Validate
     const validated = productSchema.parse(sanitizedBody);
     
     const supabase = createClient();
 
-    // 5. Create product
-    const { data, error } = await supabase
+    const { data, error: createError } = await supabase
       .from('products')
       .insert({ 
         seller_id: user.id, 
@@ -164,9 +150,9 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
     
-    if (error) {
-      logger.error('Product creation failed', error, { userId: user.id });
-      throw error;
+    if (createError) {
+      logger.error('Product creation failed', createError, { userId: user.id });
+      throw createError;
     }
 
     logger.info('Product created', { productId: data.id, userId: user.id });

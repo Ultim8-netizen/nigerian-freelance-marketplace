@@ -1,19 +1,17 @@
-// src/app/api/storage/set/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-
-export async function POST(request: NextRequest) {
+/ src/app/api/storage/set/route.ts
+export async function POST_SET(request: NextRequest) {
   try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const { user, error } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
+
+    if (error) return error;
 
     const { key, value, shared } = await request.json();
 
-    const { data, error } = await supabase
+    const supabase = createClient();
+    const { data, error: queryError } = await supabase
       .from('artifact_storage')
       .upsert({
         key,
@@ -24,7 +22,7 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    if (error) throw error;
+    if (queryError) throw queryError;
 
     return NextResponse.json({ key: data.key, value: data.value, shared: data.shared });
   } catch (error: any) {
