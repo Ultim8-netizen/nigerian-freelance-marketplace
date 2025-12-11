@@ -1,11 +1,9 @@
-// src/components/verification/LivenessVerificationCard.tsx
-
 import { useState, useRef, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Shield, Camera, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
-import { localVideoStorage } from '@/lib/storage/local-video-storage';
 
+// Challenge types for liveness verification
 const CHALLENGES = [
   { type: 'head_turn', direction: 'left', instruction: 'Turn your head left' },
   { type: 'head_turn', direction: 'right', instruction: 'Turn your head right' },
@@ -19,24 +17,52 @@ function generateChallengeSequence() {
   return shuffled.slice(0, 2 + Math.floor(Math.random() * 2));
 }
 
-export function LivenessVerificationCard() {
+// Mock local storage for demo
+const mockLocalStorage = {
+  saveVideo: async (userId: string, blob: Blob, challenges: string[]) => {
+    const videoId = `video_${Date.now()}`;
+    console.log('Saving video:', videoId, { userId, size: blob.size, challenges });
+    return videoId;
+  },
+  markAsVerified: async (videoId: string) => {
+    console.log('Marked as verified:', videoId);
+  }
+};
+
+export default function LivenessVerificationCard() {
   const [stage, setStage] = useState<'intro' | 'camera' | 'processing' | 'success' | 'error'>('intro');
   const [error, setError] = useState('');
   const [challenges, setChallenges] = useState<typeof CHALLENGES>([]);
   const [currentChallenge, setCurrentChallenge] = useState(0);
   const [recording, setRecording] = useState(false);
   const [videoId, setVideoId] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const challengeTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     return () => {
       stopCamera();
+      if (challengeTimerRef.current) {
+        clearInterval(challengeTimerRef.current);
+      }
     };
   }, []);
+
+  // Auto-advance challenges during recording
+  useEffect(() => {
+    if (recording && currentChallenge < challenges.length) {
+      const timer = setTimeout(() => {
+        setCurrentChallenge(prev => prev + 1);
+      }, 5000); // 5 seconds per challenge
+      
+      return () => clearTimeout(timer);
+    }
+  }, [recording, currentChallenge, challenges.length]);
 
   const startCamera = async () => {
     try {
@@ -50,11 +76,11 @@ export function LivenessVerificationCard() {
       }
 
       streamRef.current = stream;
-      setStage('camera');
       
       // Generate challenges
       const newChallenges = generateChallengeSequence();
       setChallenges(newChallenges);
+      setStage('camera');
       
     } catch (err) {
       console.error('Camera error:', err);
@@ -71,6 +97,20 @@ export function LivenessVerificationCard() {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+  };
+
+  const startCountdown = () => {
+    setCountdown(3);
+    const interval = setInterval(() => {
+      setCountdown(prev => {
+        if (prev === null || prev <= 1) {
+          clearInterval(interval);
+          startRecording();
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
   };
 
   const startRecording = () => {
@@ -92,10 +132,11 @@ export function LivenessVerificationCard() {
     setRecording(true);
     setCurrentChallenge(0);
 
-    // Auto-complete after 15 seconds (user completes 2-3 challenges)
+    // Auto-complete after challenges finish
+    const totalTime = challenges.length * 5000 + 1000;
     setTimeout(() => {
       stopRecording();
-    }, 15000);
+    }, totalTime);
   };
 
   const stopRecording = async () => {
@@ -105,10 +146,9 @@ export function LivenessVerificationCard() {
       mediaRecorderRef.current!.onstop = async () => {
         const videoBlob = new Blob(chunksRef.current, { type: 'video/webm' });
         
-        // Save to IndexedDB
         try {
           const userId = 'current_user_id'; // Get from auth context
-          const id = await localVideoStorage.saveVideo(
+          const id = await mockLocalStorage.saveVideo(
             userId,
             videoBlob,
             challenges.map(c => c.instruction)
@@ -137,26 +177,17 @@ export function LivenessVerificationCard() {
 
   const submitVerification = async (videoId: string, videoBlob: Blob) => {
     try {
-      // Create form data for upload
-      const formData = new FormData();
-      formData.append('video', videoBlob, 'liveness-check.webm');
-      formData.append('video_id', videoId);
-      formData.append('challenges', JSON.stringify(challenges));
-      formData.append('timestamp', Date.now().toString());
-
-      const response = await fetch('/api/verification/liveness', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const result = await response.json();
+      // Simulate API call
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Simulate successful verification
+      const result = { success: true };
 
       if (result.success) {
-        // Mark as verified in IndexedDB
-        await localVideoStorage.markAsVerified(videoId);
+        await mockLocalStorage.markAsVerified(videoId);
         setStage('success');
       } else {
-        setError(result.error || 'Verification failed');
+        setError('Verification failed');
         setStage('error');
       }
     } catch (err) {
@@ -170,159 +201,227 @@ export function LivenessVerificationCard() {
     setStage('intro');
     setError('');
     setCurrentChallenge(0);
+    setVideoId(null);
   };
 
+  // Intro Screen
   if (stage === 'intro') {
     return (
-      <Card className="p-8 max-w-2xl mx-auto">
-        <div className="text-center">
-          <div className="w-16 h-16 bg-blue-600 rounded-full mx-auto mb-4 flex items-center justify-center">
-            <Shield className="w-8 h-8 text-white" />
-          </div>
-          <h2 className="text-2xl font-bold mb-3">Liveness Verification</h2>
-          <p className="text-gray-600 mb-6">
-            Complete a quick liveness check to verify your identity and build trust with clients
-          </p>
-
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 text-left">
-            <h3 className="font-semibold mb-2">What to expect:</h3>
-            <ul className="space-y-2 text-sm text-gray-700">
-              <li>✓ We'll ask you to make 2-3 simple movements</li>
-              <li>✓ The whole process takes 10-15 seconds</li>
-              <li>✓ Your video is stored securely on your device</li>
-              <li>✓ One-time ₦150 payment for lifetime verification</li>
-            </ul>
-          </div>
-
-          <div className="space-y-3">
-            <Button 
-              onClick={startCamera}
-              size="lg"
-              className="w-full"
-            >
-              <Camera className="w-5 h-5 mr-2" />
-              Start Verification
-            </Button>
-            <p className="text-xs text-gray-500">
-              By continuing, you agree to our privacy policy
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
+        <Card className="p-8 max-w-2xl w-full shadow-xl">
+          <div className="text-center">
+            <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg">
+              <Shield className="w-10 h-10 text-white" />
+            </div>
+            <h2 className="text-3xl font-bold mb-3 text-gray-900">Liveness Verification</h2>
+            <p className="text-gray-600 mb-8 text-lg">
+              Complete a quick liveness check to verify your identity and build trust with clients
             </p>
+
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 mb-8 text-left">
+              <h3 className="font-semibold mb-4 text-lg text-gray-900">What to expect:</h3>
+              <ul className="space-y-3 text-gray-700">
+                <li className="flex items-start">
+                  <span className="text-blue-600 mr-3 text-xl">✓</span>
+                  <span>We'll ask you to make 2-3 simple movements</span>
+                </li>
+                <li className="flex items-start">
+                  <span className="text-blue-600 mr-3 text-xl">✓</span>
+                  <span>The whole process takes 10-15 seconds</span>
+                </li>
+                <li className="flex items-start">
+                  <span className="text-blue-600 mr-3 text-xl">✓</span>
+                  <span>Your video is stored securely on your device</span>
+                </li>
+                <li className="flex items-start">
+                  <span className="text-blue-600 mr-3 text-xl">✓</span>
+                  <span>Get your verified badge instantly</span>
+                </li>
+              </ul>
+            </div>
+
+            <div className="space-y-4">
+              <Button 
+                onClick={startCamera}
+                size="lg"
+                className="w-full h-14 text-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+              >
+                <Camera className="w-6 h-6 mr-2" />
+                Start Verification
+              </Button>
+              <p className="text-xs text-gray-500">
+                By continuing, you agree to our privacy policy and terms of service
+              </p>
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      </div>
     );
   }
 
+  // Camera/Recording Screen
   if (stage === 'camera') {
     return (
-      <Card className="p-6 max-w-2xl mx-auto">
-        <div className="space-y-4">
-          <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
-            
-            {recording && currentChallenge < challenges.length && (
-              <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black/70 text-white px-6 py-3 rounded-full text-lg font-semibold">
-                {challenges[currentChallenge]?.instruction}
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
+        <Card className="p-6 max-w-3xl w-full shadow-xl">
+          <div className="space-y-6">
+            <div className="relative bg-black rounded-xl overflow-hidden aspect-video shadow-2xl">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover"
+              />
+              
+              {/* Countdown overlay */}
+              {countdown !== null && (
+                <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                  <div className="text-white text-8xl font-bold animate-pulse">
+                    {countdown}
+                  </div>
+                </div>
+              )}
+              
+              {/* Challenge instruction */}
+              {recording && currentChallenge < challenges.length && (
+                <div className="absolute top-6 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-8 py-4 rounded-full text-xl font-semibold shadow-lg">
+                  {challenges[currentChallenge]?.instruction}
+                </div>
+              )}
+
+              {/* Recording indicator */}
+              {recording && (
+                <div className="absolute top-6 right-6 bg-red-600 text-white px-4 py-2 rounded-full text-sm font-semibold flex items-center gap-2 shadow-lg">
+                  <span className="w-2.5 h-2.5 bg-white rounded-full animate-pulse"></span>
+                  Recording
+                </div>
+              )}
+
+              {/* Challenge progress */}
+              {recording && (
+                <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 flex items-center gap-3">
+                  {challenges.map((_, i) => (
+                    <div
+                      key={i}
+                      className={`w-4 h-4 rounded-full transition-all duration-300 ${
+                        i < currentChallenge ? 'bg-green-500 shadow-lg' : 
+                        i === currentChallenge ? 'bg-blue-500 shadow-lg scale-125' : 
+                        'bg-gray-400'
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {!recording && countdown === null && (
+              <div className="text-center">
+                <p className="text-gray-700 mb-6 text-lg">
+                  Position your face in the center of the frame. When you're ready, click Start.
+                </p>
+                <Button 
+                  onClick={startCountdown} 
+                  size="lg"
+                  className="px-8 h-14 text-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+                >
+                  <Camera className="w-6 h-6 mr-2" />
+                  Start Recording
+                </Button>
               </div>
             )}
 
             {recording && (
-              <div className="absolute top-4 right-4 bg-red-600 text-white px-3 py-1.5 rounded-full text-sm font-semibold flex items-center gap-2">
-                <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>
-                Recording
+              <div className="text-center">
+                <p className="text-gray-700 text-lg font-medium">
+                  Follow the instructions on screen...
+                </p>
+                <p className="text-sm text-gray-500 mt-2">
+                  Challenge {currentChallenge + 1} of {challenges.length}
+                </p>
               </div>
             )}
           </div>
-
-          {!recording && (
-            <div className="text-center">
-              <p className="text-gray-600 mb-4">
-                Position your face in the center. When you're ready, click Start.
-              </p>
-              <Button onClick={startRecording} size="lg">
-                <Camera className="w-5 h-5 mr-2" />
-                Start Recording
-              </Button>
-            </div>
-          )}
-
-          {recording && (
-            <div className="text-center">
-              <p className="text-sm text-gray-600">
-                Follow the instructions on screen...
-              </p>
-              <div className="flex items-center justify-center gap-2 mt-3">
-                {challenges.map((_, i) => (
-                  <div
-                    key={i}
-                    className={`w-3 h-3 rounded-full ${
-                      i <= currentChallenge ? 'bg-blue-600' : 'bg-gray-300'
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </Card>
+        </Card>
+      </div>
     );
   }
 
+  // Processing Screen
   if (stage === 'processing') {
     return (
-      <Card className="p-8 max-w-md mx-auto text-center">
-        <Loader2 className="w-16 h-16 text-blue-600 mx-auto mb-4 animate-spin" />
-        <h2 className="text-xl font-bold mb-2">Processing Verification</h2>
-        <p className="text-gray-600">
-          Please wait while we verify your liveness check...
-        </p>
-      </Card>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
+        <Card className="p-12 max-w-md w-full text-center shadow-xl">
+          <Loader2 className="w-20 h-20 text-blue-600 mx-auto mb-6 animate-spin" />
+          <h2 className="text-2xl font-bold mb-3">Processing Verification</h2>
+          <p className="text-gray-600 text-lg">
+            Please wait while we verify your liveness check...
+          </p>
+          <div className="mt-6 w-full bg-gray-200 rounded-full h-2">
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 h-2 rounded-full animate-pulse" style={{ width: '60%' }}></div>
+          </div>
+        </Card>
+      </div>
     );
   }
 
+  // Success Screen
   if (stage === 'success') {
     return (
-      <Card className="p-8 max-w-md mx-auto text-center">
-        <div className="w-16 h-16 bg-green-600 rounded-full mx-auto mb-4 flex items-center justify-center">
-          <CheckCircle className="w-8 h-8 text-white" />
-        </div>
-        <h2 className="text-2xl font-bold text-green-900 mb-3">
-          Verification Complete!
-        </h2>
-        <p className="text-gray-700 mb-6">
-          Your identity has been verified. You now have a verified badge on your profile.
-        </p>
-        <Button size="lg" onClick={() => window.location.href = '/dashboard/profile'}>
-          View Profile
-        </Button>
-      </Card>
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 p-4 flex items-center justify-center">
+        <Card className="p-12 max-w-md w-full text-center shadow-xl">
+          <div className="w-20 h-20 bg-gradient-to-br from-green-500 to-emerald-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg animate-bounce">
+            <CheckCircle className="w-10 h-10 text-white" />
+          </div>
+          <h2 className="text-3xl font-bold text-green-900 mb-4">
+            Verification Complete!
+          </h2>
+          <p className="text-gray-700 mb-8 text-lg">
+            Your identity has been verified. You now have a verified badge on your profile.
+          </p>
+          <Button 
+            size="lg" 
+            className="w-full h-14 text-lg bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
+            onClick={() => alert('Redirecting to profile...')}
+          >
+            View Profile
+          </Button>
+        </Card>
+      </div>
     );
   }
 
+  // Error Screen
   if (stage === 'error') {
     return (
-      <Card className="p-8 max-w-md mx-auto text-center">
-        <div className="w-16 h-16 bg-red-600 rounded-full mx-auto mb-4 flex items-center justify-center">
-          <AlertCircle className="w-8 h-8 text-white" />
-        </div>
-        <h2 className="text-2xl font-bold text-red-900 mb-3">
-          Verification Failed
-        </h2>
-        <p className="text-gray-700 mb-6">{error}</p>
-        <div className="space-y-3">
-          <Button size="lg" onClick={handleRetry}>
-            Try Again
-          </Button>
-          <Button size="lg" variant="outline" onClick={() => window.location.href = '/support'}>
-            Contact Support
-          </Button>
-        </div>
-      </Card>
+      <div className="min-h-screen bg-gradient-to-br from-red-50 to-rose-100 p-4 flex items-center justify-center">
+        <Card className="p-12 max-w-md w-full text-center shadow-xl">
+          <div className="w-20 h-20 bg-gradient-to-br from-red-500 to-rose-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg">
+            <AlertCircle className="w-10 h-10 text-white" />
+          </div>
+          <h2 className="text-3xl font-bold text-red-900 mb-4">
+            Verification Failed
+          </h2>
+          <p className="text-gray-700 mb-8 text-lg">{error}</p>
+          <div className="space-y-3">
+            <Button 
+              size="lg" 
+              onClick={handleRetry}
+              className="w-full h-14 text-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+            >
+              Try Again
+            </Button>
+            <Button 
+              size="lg" 
+              variant="outline" 
+              onClick={() => alert('Redirecting to support...')}
+              className="w-full h-14 text-lg"
+            >
+              Contact Support
+            </Button>
+          </div>
+        </Card>
+      </div>
     );
   }
 

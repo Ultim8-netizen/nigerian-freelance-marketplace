@@ -1708,3 +1708,211 @@ BEGIN
   );
 END;
 $$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- TRUST SCORE CALCULATION FUNCTIONS
+-- ============================================================================
+
+-- Function: Calculate trust score from events
+CREATE OR REPLACE FUNCTION calculate_trust_score(p_user_id UUID)
+RETURNS INTEGER AS $$
+DECLARE
+  v_total_score INTEGER;
+BEGIN
+  SELECT COALESCE(SUM(score_change), 0)
+  INTO v_total_score
+  FROM trust_score_events
+  WHERE user_id = p_user_id;
+  
+  -- Cap score between 0 and 100
+  RETURN GREATEST(0, LEAST(100, v_total_score));
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function: Add trust score event
+CREATE OR REPLACE FUNCTION add_trust_score_event(
+  p_user_id UUID,
+  p_event_type TEXT,
+  p_score_change INTEGER,
+  p_related_entity_type TEXT DEFAULT NULL,
+  p_related_entity_id UUID DEFAULT NULL,
+  p_notes TEXT DEFAULT NULL
+)
+RETURNS void AS $$
+DECLARE
+  v_current_score INTEGER;
+  v_new_score INTEGER;
+BEGIN
+  -- Get current score
+  SELECT trust_score INTO v_current_score
+  FROM profiles
+  WHERE id = p_user_id;
+  
+  -- Calculate new score
+  v_new_score := GREATEST(0, LEAST(100, v_current_score + p_score_change));
+  
+  -- Update profile
+  UPDATE profiles
+  SET 
+    trust_score = v_new_score,
+    trust_level = CASE
+      WHEN v_new_score >= 90 THEN 'elite'
+      WHEN v_new_score >= 70 THEN 'top_rated'
+      WHEN v_new_score >= 40 THEN 'trusted'
+      WHEN v_new_score >= 25 THEN 'verified'
+      ELSE 'new'
+    END
+  WHERE id = p_user_id;
+  
+  -- Log event
+  INSERT INTO trust_score_events (
+    user_id, event_type, score_change,
+    previous_score, new_score,
+    related_entity_type, related_entity_id,
+    notes
+  ) VALUES (
+    p_user_id, p_event_type, p_score_change,
+    v_current_score, v_new_score,
+    p_related_entity_type, p_related_entity_id,
+    p_notes
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function: Get trust level requirements
+CREATE OR REPLACE FUNCTION get_trust_level_requirements(p_trust_level TEXT)
+RETURNS TABLE(
+  min_score INTEGER,
+  required_jobs INTEGER,
+  required_rating NUMERIC,
+  features TEXT[]
+) AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    CASE p_trust_level
+      WHEN 'elite' THEN 90
+      WHEN 'top_rated' THEN 70
+      WHEN 'trusted' THEN 40
+      WHEN 'verified' THEN 25
+      ELSE 0
+    END AS min_score,
+    CASE p_trust_level
+      WHEN 'elite' THEN 50
+      WHEN 'top_rated' THEN 20
+      WHEN 'trusted' THEN 5
+      ELSE 0
+    END AS required_jobs,
+    CASE p_trust_level
+      WHEN 'elite' THEN 4.8
+      WHEN 'top_rated' THEN 4.5
+      WHEN 'trusted' THEN 4.0
+      ELSE 0.0
+    END::NUMERIC AS required_rating,
+    CASE p_trust_level
+      WHEN 'elite' THEN ARRAY['Priority listing', 'Exclusive badge', 'Premium support']
+      WHEN 'top_rated' THEN ARRAY['High visibility', 'Featured badge', 'Priority support']
+      WHEN 'trusted' THEN ARRAY['Search boost', 'Trust badge']
+      WHEN 'verified' THEN ARRAY['Basic verification badge']
+      ELSE ARRAY['Limited visibility']
+    END AS features;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- AUTOMATIC TRUST SCORE EVENTS
+-- ============================================================================
+
+-- Trigger: Award points for completed orders
+CREATE OR REPLACE FUNCTION trigger_order_completion_trust_score()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.status = 'completed' AND OLD.status != 'completed' THEN
+    -- Award freelancer for completion
+    PERFORM add_trust_score_event(
+      NEW.freelancer_id,
+      'order_completed',
+      2,
+      'order',
+      NEW.id,
+      'Order completed successfully'
+    );
+    
+    -- Award client for good review if 4+ stars
+    IF NEW.client_rating >= 4 THEN
+      PERFORM add_trust_score_event(
+        NEW.client_id,
+        'positive_client_behavior',
+        1,
+        'order',
+        NEW.id,
+        'Left positive review'
+      );
+    END IF;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER order_completion_trust_score
+  AFTER UPDATE ON orders
+  FOR EACH ROW
+  EXECUTE FUNCTION trigger_order_completion_trust_score();
+
+-- Trigger: Award points for positive reviews
+CREATE OR REPLACE FUNCTION trigger_review_trust_score()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.rating >= 4 THEN
+    PERFORM add_trust_score_event(
+      NEW.reviewee_id,
+      'positive_review',
+      3,
+      'review',
+      NEW.id,
+      'Received ' || NEW.rating || '-star review'
+    );
+  ELSIF NEW.rating <= 2 THEN
+    PERFORM add_trust_score_event(
+      NEW.reviewee_id,
+      'negative_review',
+      -5,
+      'review',
+      NEW.id,
+      'Received ' || NEW.rating || '-star review'
+    );
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER review_trust_score
+  AFTER INSERT ON reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION trigger_review_trust_score();
+
+-- Trigger: Penalize late deliveries
+CREATE OR REPLACE FUNCTION trigger_late_delivery_penalty()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.status = 'delivered' AND NEW.delivered_at > NEW.delivery_date THEN
+    PERFORM add_trust_score_event(
+      NEW.freelancer_id,
+      'late_delivery',
+      -3,
+      'order',
+      NEW.id,
+      'Order delivered late'
+    );
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER late_delivery_penalty
+  AFTER UPDATE ON orders
+  FOR EACH ROW
+  EXECUTE FUNCTION trigger_late_delivery_penalty();
