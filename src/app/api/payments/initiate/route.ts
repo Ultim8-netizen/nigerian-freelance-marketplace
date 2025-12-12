@@ -19,11 +19,7 @@ export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
-      rateLimit: {
-        key: 'initiatePayment',
-        max: 5,
-        window: 3600000, // 1 hour
-      },
+      rateLimit: 'initiatePayment'
     });
 
     if (error) return error;

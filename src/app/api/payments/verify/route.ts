@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { FlutterwaveService } from '@/lib/flutterwave/config';
+import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
     const supabase = createClient();
 
     // Verify payment with Flutterwave
-    const verification = await FlutterwaveService.verifyPayment(transaction_id);
+    const verification = await FlutterwaveServerService.verifyPayment(transaction_id);
 
     if (verification.status !== 'success') {
       return NextResponse.json(
