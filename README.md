@@ -1,174 +1,266 @@
-Nigerian Freelance Marketplace(F9)
+F9 – Hustle Forward
 
-A modern, full-stack freelance marketplace designed specifically for Nigeria’s unique digital, economic, and infrastructural landscape. The platform connects freelancers and clients across diverse skill categories while addressing local challenges such as unreliable addresses, payment frictions, onboarding barriers, and service discovery in an informal economy.
+A Nigerian-first freelance and marketplace platform connecting skills, services, and small businesses with those who need them.
 
 Overview
 
-This project provides a scalable foundation for a localized Nigerian freelance ecosystem. It combines a marketplace workflow with supporting tools and utilities that improve trust, visibility, communication, and job completion efficiency. The platform focuses on simplicity at the early stage while remaining extensible for advanced features.
+F9 is a lightweight, Nigeria-centric freelance and digital marketplace platform designed to remove the structural barriers Nigerians face on foreign platforms.
+It provides a unified space where users can:
 
-Core Features
-1. User Accounts & Profiles
+Offer freelance services
 
-Freelancers and clients have distinct but flexible roles.
+Hire freelancers
 
-Profiles include skills, ratings, portfolios, and verification levels.
+Advertise and sell physical products (student businesses, campus vendors, small-scale traders)
 
-Designed to support future KYC integrations.
+Buy items directly from sellers across campuses and communities
 
-2. Job Posting & Bidding
+At its core, F9 is a neutral connection channel. It does not impose restrictions on visibility or access. Every user can interact freely; F9 simply provides the link, the tools, and basic safety layers.
 
-Clients can publish job listings with budgets, deadlines, and descriptions.
+Core Vision
 
-Freelancers submit proposals directly from their dashboards.
+To create an open, accessible platform for the overlooked majority—students, small business owners, and everyday Nigerians—where skills, services, and goods can flow freely without unnecessary institutional barriers.
 
-Status transitions: Open → In-Progress → Review → Completed → Closed.
+F9 prioritizes seamless onboarding, low cost, and Nigerian realities:
+poor network, payment friction, distrust of BVN/NIN requirements, and limited visibility for small vendors.
 
-3. Messaging & Communication
+Key Features
+1. Freelance Hub
 
-Real-time or near-real-time direct messaging for negotiation and project updates.
+A simple, fast system for:
 
-Initially lightweight, expandable to file sharing and voice notes.
+Posting tasks
 
-4. Category & Skill Organization
+Offering services
 
-Structured browsing of jobs by categories (design, writing, tech, repairs, etc.).
+Negotiating prices directly
 
-Flexible enough to incorporate informal and non-tech Nigerian skill sectors.
+Completing jobs with built-in escrow protection
 
-5. Ratings & Reviews
+Users set their own rates. The platform takes no control over pricing decisions.
 
-After job completion, clients can rate freelancers.
+2. Digital Marketplace
 
-Review data contributes to ranking and trust signals.
+A dedicated space where users can:
 
-6. Dashboard & Activity Management
+Upload products
 
-Separate dashboards for clients and freelancers.
+Set prices
 
-Track jobs, proposals, finances, messages, and notifications.
+Receive orders
 
-7. Location-Aware Service Discovery (Optional Future Feature)
+Get rated by buyers
 
-Lightweight location validation (no heavy real-time tracking).
+Gain visibility beyond WhatsApp contact lists
 
-Users can add descriptive location info (e.g., local landmarks).
+This feature supports student sellers, small-scale businesses, and campus-based traders.
 
-Designed for integration with the Descriptive-to-Geospatial Translation Framework (DGTF) for better discovery of informal areas.
+3. Unified Search
 
-8. Payment Architecture (Future)
+Users can search:
 
-Designed for later implementation of escrow-based systems.
+Services (freelance)
 
-Support for Nigerian gateways: Paystack, Flutterwave, etc.
+Goods (marketplace)
 
-Secure ledger and transaction logs prepared for expansion.
+Vendors or freelancers
 
-Technology Stack
-Frontend
+Keywords
 
-Next.js 14 / React 18
+Prices
 
-TypeScript
+Ratings
 
-TailwindCSS
+Search results are sorted by trust score, relevance, distance, and user activity.
 
-Modular UI components (Select, Spinner, ProgressBar, etc.)
+4. Trust System (Without NIN)
+Identity Layer: Liveness Verification
 
-Backend & API
+F9 uses liveness checks to confirm that each verified user is a real human.
+No government ID needed.
 
-Next.js server actions
+Badge: Verified Human
 
-Supabase for authentication and database
+Reputation Layer: Trust Score
 
-Middleware for cookies, sessions, and protected routes
+A dynamic score based on:
 
-Database
+Liveness verification
 
-PostgreSQL (Supabase)
+Phone/email verification
 
-Tables for users, jobs, proposals, reviews, messages, and notifications
+Successful jobs/orders
 
-State & Utilities
+Ratings
 
-Custom hooks
+Timeliness
 
-Loading indicators
+Low dispute count
 
-Validation rules
+Account age and consistent activity
 
-Reusable UI primitives
+Trust tiers affect visibility only.
+They never restrict access to jobs, buyers, or interactions.
 
-Project Structure
-/src
-  /app
-    /api
-    /dashboard
-    /auth
-    ...
-  /components
-    /ui
-      spinner.tsx
-      select.tsx
-      progressbar.tsx
-      ...
-  /lib
-    supabase.ts
-    utils.ts
-  /types
-  /hooks
-  /styles
+Trust Levels
 
-Installation & Setup
-Requirements
+New User
 
-Node.js
+Verified User (liveness verified)
 
-npm or yarn
+Trusted
 
-Supabase project with API keys
+Top Rated
 
-Environment variables (.env.local)
+Elite (behaviour-based, invite-only)
 
-Setup Steps
+Badges are informational tools to guide user decision-making. Users retain full freedom to interact with anyone.
 
-Clone repository
+5. Escrow Protection
 
-Install dependencies
+All paid tasks use an escrow system:
 
-Configure environment variables
+Buyer pays upfront
 
-Run dev server:
+Funds are held securely
 
-npm run dev
+Released after job approval
 
-Goals & Philosophy
+This protects both sides without adding friction.
 
-The project aims to:
+6. Optimized for Nigerian Network Conditions
 
-Provide a fast, lightweight, and locally-relevant freelance platform.
+F9 was designed with unstable connectivity in mind:
 
-Support both digital and non-digital Nigerian work sectors.
+Minimal API calls
 
-Gradually integrate advanced features without bloating the initial experience.
+Caching and offline-friendly components
 
-Tackle challenges like informal addresses, trust gaps, and payment failures.
+Lightweight UI
 
-Build a reliable, modular foundation for long-term expansion.
+Graceful fallback for timeouts
 
-Future Enhancements
+Fast-loading images
 
-Full DGTF-powered descriptive-location mapping
+Local-first interactions where possible
 
-Advanced search and filtering
+7. Payment Integration
 
-Full escrow payment system
+Flutterwave powers payments, supporting:
 
-Mobile app versions
+Verve
 
-Real-time activity feeds
+Visa/Mastercard
 
-AI-assisted proposal generation
+Bank transfers
 
-Verification and reputation scoring
+USSD
 
-Offline-friendly modes
+Mobile money options
+
+This ensures local compatibility and reliability.
+
+8. Marketplace Ratings & Feedback
+
+Each listing and vendor has:
+
+Star rating
+
+Written feedback
+
+Trust tier
+
+Delivery record
+
+Users can compare multiple providers offering the same product or service.
+
+9. Developer Philosophy
+
+F9 has three non-negotiable principles:
+
+A. Absolute Neutrality
+
+The platform connects people; it does not gatekeep access.
+
+B. Minimal Barriers
+
+No NIN, no BVN, no institutional obstacles.
+
+C. User Choice
+
+Badges inform decisions—users are free to interact with anyone at their own discretion.
+
+The platform is not responsible for choices made by users after reasonable safety tools have been provided. This is clearly stated in the user agreement.
+
+10. Monetization Strategy
+Freelance Platform
+
+Monetized from day one to offset:
+
+Liveness verification costs
+
+Server expenses
+
+Escrow operations
+
+Marketplace
+
+Free during early stages to encourage adoption and rapid growth.
+
+Future optional revenue streams:
+
+Promoted listings
+
+Vendor-specific enhancements
+
+Cosmetic upgrades (for future virtual market expansion)
+
+11. Future Expansion: Virtual Marketplace (Long-Term Plan)
+
+A hybrid pixel/3D real-time virtual market:
+
+Avatars representing users
+
+Stall representations for sellers
+
+Real-time online/offline presence
+
+Optional paid cosmetics (skins, upgraded shops, branding)
+
+Location-based scaling with user permission
+
+Enhanced discovery and engagement loop
+
+This feature will be implemented only after stable traction.
+
+12. Technology Stack
+
+(Adjust based on your implementation)
+
+Frontend: Next.js, React, Tailwind
+
+Backend: Serverless functions (e.g., Vercel, Supabase functions, Cloudflare Workers)
+
+Database: Supabase / Postgres
+
+Storage: Supabase or Cloudflare R2
+
+Payments: Flutterwave
+
+Verification: Liveness detection (third-party or custom model)
+
+Hosting: Free-tier serverless infrastructure where possible
+
+13. Current Development Stage
+
+Core freelance features: Complete
+
+Marketplace: In development
+
+Trust system: Implemented
+
+Testing and debugging: Ongoing
+
+14. License
+
+Private / All rights reserved
