@@ -1916,3 +1916,19 @@ CREATE TRIGGER late_delivery_penalty
   AFTER UPDATE ON orders
   FOR EACH ROW
   EXECUTE FUNCTION trigger_late_delivery_penalty();
+
+  -- Ran this migration in Supabase SQL Editor
+ALTER TABLE liveness_verifications 
+DROP COLUMN IF EXISTS amount_paid,
+DROP COLUMN IF EXISTS transaction_ref;
+
+-- Verify
+SELECT column_name, data_type 
+FROM information_schema.columns 
+WHERE table_name = 'liveness_verifications';
+
+CREATE INDEX IF NOT EXISTS idx_liveness_verifications_user_status 
+ON liveness_verifications(user_id, verification_status);
+
+CREATE INDEX IF NOT EXISTS idx_liveness_verifications_created 
+ON liveness_verifications(created_at DESC);

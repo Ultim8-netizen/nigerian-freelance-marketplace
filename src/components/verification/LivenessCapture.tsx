@@ -1,7 +1,13 @@
 // src/components/verification/LivenessCapture.tsx
 /**
- * Liveness Capture Component - Production Ready
- * Uses actual MediaPipe Face Landmarker and existing challenge validator
+ * ✅ PRODUCTION-READY: Liveness Capture with Error Recovery & Timeout
+ * 
+ * IMPROVEMENTS:
+ * - Added processing timeout (60s max)
+ * - Added retry mechanism for MediaPipe initialization
+ * - Better error messages
+ * - Graceful degradation for camera access denial
+ * - No payment references
  */
 
 'use client';
@@ -12,7 +18,7 @@ import { Card } from '@/components/ui/card';
 import { FaceDetector } from '@/lib/mediapipe/face-detector';
 import { ChallengeValidator, type ChallengeType } from '@/lib/mediapipe/challenge-validator';
 import { livenessDB } from '@/lib/storage/indexedDB';
-import { Camera, X, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Camera, X, CheckCircle, AlertCircle, Loader2, RotateCcw } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import type { FaceLandmarkerResult } from '@mediapipe/tasks-vision';
 
@@ -30,6 +36,11 @@ interface LivenessCaptureProps {
   onCancel: () => void;
 }
 
+// Constants
+const MAX_RETRY_ATTEMPTS = 3;
+const PROCESSING_TIMEOUT = 60000; // 60 seconds
+const MEDIAPIPE_INIT_TIMEOUT = 15000; // 15 seconds
+
 export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -40,10 +51,13 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
   const faceDetectorRef = useRef<FaceDetector | null>(null);
   const challengeValidatorRef = useRef<ChallengeValidator | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const processingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // State
   const [isInitializing, setIsInitializing] = useState(true);
+  const [initRetryCount, setInitRetryCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [errorType, setErrorType] = useState<'camera' | 'mediapipe' | 'general' | null>(null);
   const [faceDetected, setFaceDetected] = useState(false);
   const [faceConfidence, setFaceConfidence] = useState(0);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
@@ -78,12 +92,45 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       },
     ];
 
-    // Set instruction for head turn
     allChallenges[0].instruction = `Turn your head ${allChallenges[0].direction}`;
-
-    // Shuffle for randomness
     return allChallenges.sort(() => Math.random() - 0.5);
   }, []);
+
+  /**
+   * Initialize MediaPipe with retry logic
+   */
+  const initializeMediaPipe = useCallback(async (): Promise<boolean> => {
+    try {
+      console.log('🔧 Initializing MediaPipe (attempt', initRetryCount + 1, ')...');
+      
+      const detector = new FaceDetector();
+      
+      // Add timeout to initialization
+      const initPromise = detector.initialize();
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('MediaPipe initialization timeout')), MEDIAPIPE_INIT_TIMEOUT);
+      });
+      
+      await Promise.race([initPromise, timeoutPromise]);
+      
+      faceDetectorRef.current = detector;
+      challengeValidatorRef.current = new ChallengeValidator();
+      
+      console.log('✅ MediaPipe initialized successfully');
+      return true;
+    } catch (err) {
+      console.error('❌ MediaPipe initialization failed:', err);
+      
+      if (initRetryCount < MAX_RETRY_ATTEMPTS - 1) {
+        setInitRetryCount(prev => prev + 1);
+        // Wait 2 seconds before retry
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return initializeMediaPipe();
+      }
+      
+      throw err;
+    }
+  }, [initRetryCount]);
 
   /**
    * Initialize camera and face detector
@@ -93,9 +140,11 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
 
     async function initialize() {
       try {
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 1. Request Camera Access
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         console.log('🎥 Requesting camera access...');
 
-        // Request camera access
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: { ideal: 1280 },
@@ -112,47 +161,57 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
 
         streamRef.current = stream;
 
-        // Setup video element
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
           console.log('✅ Video stream started');
         }
 
-        // Initialize MediaPipe Face Detector
-        console.log('🔧 Initializing MediaPipe Face Detector...');
-        const detector = new FaceDetector();
-        await detector.initialize();
-        faceDetectorRef.current = detector;
-        console.log('✅ Face Detector initialized');
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 2. Initialize MediaPipe
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        const mediapipeSuccess = await initializeMediaPipe();
+        
+        if (!mediapipeSuccess) {
+          throw new Error('Failed to initialize face detection');
+        }
 
-        // Initialize Challenge Validator
-        challengeValidatorRef.current = new ChallengeValidator();
-        console.log('✅ Challenge Validator initialized');
-
-        // Generate challenges
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 3. Generate Challenges
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         const newChallenges = generateChallenges();
         setChallenges(newChallenges);
-        console.log('✅ Challenges generated:', newChallenges);
 
-        // Cleanup old videos
-        await livenessDB.deleteOldVideos(1); // Delete videos older than 1 day
-        console.log('✅ Old videos cleaned up');
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 4. Cleanup Old Videos
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        await livenessDB.deleteOldVideos(1);
 
         setIsInitializing(false);
-
-        // Start detection loop
         startDetectionLoop();
       } catch (err) {
         console.error('❌ Initialization error:', err);
-        if (mounted) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to access camera. Please grant camera permissions and try again.'
-          );
-          setIsInitializing(false);
+        
+        if (!mounted) return;
+
+        // Determine error type
+        if (err instanceof Error) {
+          if (err.message.includes('Permission denied') || err.name === 'NotAllowedError') {
+            setErrorType('camera');
+            setError('Camera access denied. Please allow camera access in your browser settings and refresh the page.');
+          } else if (err.message.includes('MediaPipe') || err.message.includes('timeout')) {
+            setErrorType('mediapipe');
+            setError('Failed to initialize face detection. This might be a network issue. Please check your connection and try again.');
+          } else {
+            setErrorType('general');
+            setError('Something went wrong during initialization. Please refresh and try again.');
+          }
+        } else {
+          setErrorType('general');
+          setError('Failed to start verification. Please try again.');
         }
+        
+        setIsInitializing(false);
       }
     }
 
@@ -162,7 +221,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       mounted = false;
       cleanup();
     };
-  }, [generateChallenges]);
+  }, [generateChallenges, initializeMediaPipe]);
 
   /**
    * Start face detection loop
@@ -182,17 +241,12 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
         if (result && result.faceLandmarks && result.faceLandmarks.length > 0) {
           const landmarks = result.faceLandmarks[0];
           
-          // Face detected
           setFaceDetected(true);
-          
-          // Calculate confidence (simplified)
           const confidence = landmarks.length > 0 ? 0.9 : 0;
           setFaceConfidence(confidence);
 
-          // Draw face landmarks on canvas
           drawLandmarks(landmarks);
 
-          // If recording, validate current challenge
           if (isRecording && currentChallengeIndex < challenges.length) {
             validateCurrentChallenge(landmarks);
           }
@@ -200,7 +254,6 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           setFaceDetected(false);
           setFaceConfidence(0);
           
-          // Clear canvas
           if (canvasRef.current) {
             const ctx = canvasRef.current.getContext('2d');
             if (ctx) {
@@ -229,14 +282,11 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas size to match video
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw landmarks
     ctx.fillStyle = '#22c55e';
     landmarks.forEach((landmark) => {
       const x = landmark.x * canvas.width;
@@ -246,7 +296,6 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       ctx.fill();
     });
 
-    // Draw bounding box
     if (landmarks.length > 0) {
       const xs = landmarks.map((l) => l.x * canvas.width);
       const ys = landmarks.map((l) => l.y * canvas.height);
@@ -294,7 +343,6 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     }
 
     if (result) {
-      // Update progress
       setChallenges((prev) =>
         prev.map((c, i) =>
           i === currentChallengeIndex
@@ -303,23 +351,17 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
         )
       );
 
-      // Check if challenge passed
       if (result.passed && result.confidence >= 0.8) {
-        console.log(`✅ Challenge ${currentChallengeIndex + 1} passed!`);
-        
-        // Mark as completed
         setChallenges((prev) =>
           prev.map((c, i) =>
             i === currentChallengeIndex ? { ...c, completed: true, progress: 1 } : c
           )
         );
 
-        // Move to next challenge after delay
         setTimeout(() => {
           if (currentChallengeIndex + 1 < challenges.length) {
             setCurrentChallengeIndex((prev) => prev + 1);
           } else {
-            // All challenges completed
             finishVerification();
           }
         }, 500);
@@ -328,7 +370,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
   }, [challenges, currentChallengeIndex]);
 
   /**
-   * Start verification (begin recording)
+   * Start verification
    */
   const startVerification = useCallback(async () => {
     if (!videoRef.current || !streamRef.current || !faceDetected) {
@@ -337,12 +379,8 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     }
 
     try {
-      console.log('🎬 Starting recording...');
-
-      // Reset challenge validator
       challengeValidatorRef.current?.reset();
 
-      // Start recording
       const mediaRecorder = new MediaRecorder(streamRef.current, {
         mimeType: 'video/webm;codecs=vp9',
       });
@@ -356,14 +394,12 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       };
 
       mediaRecorder.onstop = async () => {
-        console.log('🎬 Recording stopped');
         await saveVerification();
       };
 
       mediaRecorderRef.current = mediaRecorder;
       mediaRecorder.start();
       setIsRecording(true);
-      console.log('✅ Recording started');
     } catch (err) {
       console.error('❌ Recording error:', err);
       setError('Failed to start recording. Please try again.');
@@ -371,11 +407,9 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
   }, [faceDetected]);
 
   /**
-   * Finish verification (stop recording)
+   * Finish verification
    */
   const finishVerification = useCallback(() => {
-    console.log('🏁 Finishing verification...');
-    
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
@@ -383,22 +417,22 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
   }, [isRecording]);
 
   /**
-   * Save verification video to IndexedDB
+   * Save verification with timeout
    */
   const saveVerification = useCallback(async () => {
     setIsProcessing(true);
 
-    try {
-      console.log('💾 Saving verification...');
+    // Set processing timeout
+    processingTimeoutRef.current = setTimeout(() => {
+      setError('Processing timed out. Please try again.');
+      setIsProcessing(false);
+    }, PROCESSING_TIMEOUT);
 
-      // Create blob from recorded chunks
+    try {
       const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
       const videoId = uuidv4();
-
-      // Check if all challenges passed
       const allChallengesPassed = challenges.every((c) => c.completed);
 
-      // Save to IndexedDB
       await livenessDB.saveVideo({
         id: videoId,
         blob,
@@ -415,12 +449,20 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
         },
       });
 
-      console.log('✅ Verification saved:', videoId);
+      // Clear timeout
+      if (processingTimeoutRef.current) {
+        clearTimeout(processingTimeoutRef.current);
+      }
 
-      // Callback with success
       onSuccess(videoId, challenges);
     } catch (err) {
       console.error('❌ Save error:', err);
+      
+      // Clear timeout
+      if (processingTimeoutRef.current) {
+        clearTimeout(processingTimeoutRef.current);
+      }
+      
       setError('Failed to save verification. Please try again.');
       setIsProcessing(false);
     }
@@ -430,63 +472,75 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
    * Cleanup resources
    */
   const cleanup = useCallback(() => {
-    console.log('🧹 Cleaning up resources...');
-
-    // Stop animation frame
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
     }
 
-    // Stop recording
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+    }
+
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
     }
 
-    // Stop video stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
     }
 
-    // Cleanup face detector
     if (faceDetectorRef.current) {
       faceDetectorRef.current.destroy();
-      faceDetectorRef.current = null;
     }
-
-    console.log('✅ Cleanup complete');
   }, [isRecording]);
 
   /**
-   * Handle cancel
+   * Retry initialization
    */
-  const handleCancel = useCallback(() => {
-    cleanup();
-    onCancel();
-  }, [cleanup, onCancel]);
+  const handleRetry = useCallback(() => {
+    setError(null);
+    setErrorType(null);
+    setInitRetryCount(0);
+    setIsInitializing(true);
+    window.location.reload();
+  }, []);
 
   // Error UI
   if (error) {
     return (
       <Card className="p-6 text-center">
         <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-        <h3 className="text-lg font-semibold mb-2">Camera Error</h3>
+        <h3 className="text-lg font-semibold mb-2">
+          {errorType === 'camera' ? 'Camera Access Required' : 
+           errorType === 'mediapipe' ? 'Initialization Failed' : 
+           'Something Went Wrong'}
+        </h3>
         <p className="text-sm text-gray-600 mb-4">{error}</p>
         <div className="flex gap-2 justify-center">
-          <Button onClick={() => window.location.reload()}>Retry</Button>
-          <Button variant="outline" onClick={handleCancel}>
+          <Button onClick={handleRetry} leftIcon={<RotateCcw className="w-4 h-4" />}>
+            Retry
+          </Button>
+          <Button variant="outline" onClick={onCancel}>
             Cancel
           </Button>
         </div>
+        
+        {errorType === 'camera' && (
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-left">
+            <p className="font-semibold mb-2">How to enable camera:</p>
+            <ul className="text-xs space-y-1 text-blue-800">
+              <li>• Click the camera icon in your browser's address bar</li>
+              <li>• Select "Allow" for camera access</li>
+              <li>• Refresh the page and try again</li>
+            </ul>
+          </div>
+        )}
       </Card>
     );
   }
 
-  // Main UI
+  // Main UI (rest of the component remains the same...)
   return (
     <Card className="p-6">
-      {/* Video Container */}
       <div className="relative mb-6 bg-black rounded-lg overflow-hidden aspect-video">
         <video
           ref={videoRef}
@@ -500,7 +554,6 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           className="absolute inset-0 w-full h-full pointer-events-none"
         />
 
-        {/* Face Detection Indicator */}
         <div className="absolute top-4 right-4 z-10">
           {faceDetected ? (
             <div className="bg-green-500 text-white px-3 py-1.5 rounded-full text-sm flex items-center gap-2 shadow-lg">
@@ -515,7 +568,6 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           )}
         </div>
 
-        {/* Challenge Instructions */}
         {isRecording && currentChallengeIndex < challenges.length && (
           <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10 w-11/12 max-w-md">
             <div className="bg-white/95 backdrop-blur-sm px-6 py-4 rounded-xl shadow-xl">
@@ -534,18 +586,17 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           </div>
         )}
 
-        {/* Processing Overlay */}
         {isProcessing && (
           <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
             <div className="text-center text-white">
               <Loader2 className="w-12 h-12 animate-spin mx-auto mb-4" />
               <p className="text-lg font-semibold">Processing verification...</p>
+              <p className="text-sm text-gray-300 mt-2">This may take a moment</p>
             </div>
           </div>
         )}
       </div>
 
-      {/* Challenge Progress */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
           <p className="text-sm font-medium text-gray-700">
@@ -579,7 +630,6 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
         </div>
       </div>
 
-      {/* Instructions */}
       {!isRecording && !isInitializing && (
         <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
           <p className="text-sm text-blue-800 font-medium mb-2">
@@ -589,12 +639,11 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
             <li>• Make sure your face is clearly visible</li>
             <li>• Ensure good lighting</li>
             <li>• Follow each challenge instruction carefully</li>
-            <li>• The verification takes about 30-60 seconds</li>
+            <li>• This is 100% free - no payment required</li>
           </ul>
         </div>
       )}
 
-      {/* Action Buttons */}
       <div className="flex gap-3">
         {!isRecording && !isProcessing && (
           <>
@@ -616,7 +665,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
                 </>
               )}
             </Button>
-            <Button onClick={handleCancel} variant="outline" size="lg">
+            <Button onClick={onCancel} variant="outline" size="lg">
               <X className="w-4 h-4 mr-2" />
               Cancel
             </Button>
@@ -632,16 +681,6 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           </div>
         )}
       </div>
-
-      {/* Debug Info (Development Only) */}
-      {process.env.NODE_ENV === 'development' && (
-        <div className="mt-4 p-3 bg-gray-100 rounded text-xs font-mono">
-          <p>Face Detected: {faceDetected ? 'Yes' : 'No'}</p>
-          <p>Confidence: {(faceConfidence * 100).toFixed(1)}%</p>
-          <p>Recording: {isRecording ? 'Yes' : 'No'}</p>
-          <p>Current Challenge: {currentChallengeIndex + 1}/{challenges.length}</p>
-        </div>
-      )}
     </Card>
   );
 }

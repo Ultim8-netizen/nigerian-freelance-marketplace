@@ -50,7 +50,7 @@ export default async function LivenessVerificationPage() {
                 <h3 className="font-semibold mb-1">Build Instant Trust</h3>
                 <p className="text-sm text-gray-600">
                   Clients are 3x more likely to hire verified freelancers. 
-                  Show you're a real, trustworthy person.
+                  Show you are a real, trustworthy person.
                 </p>
               </div>
             </div>
@@ -76,7 +76,7 @@ export default async function LivenessVerificationPage() {
                 <h3 className="font-semibold mb-1">Free Verification</h3>
                 <p className="text-sm text-gray-600">
                   Get your lifetime verified badge at no cost. 
-                  It's free, forever.
+                  It is free, forever.
                 </p>
               </div>
             </div>
@@ -132,14 +132,14 @@ export default async function LivenessVerificationPage() {
             <div>
               <h3 className="font-semibold mb-1">How long does verification take?</h3>
               <p className="text-sm text-gray-600">
-                Usually within 2-5 minutes. You'll receive a notification once 
+                Usually within 2-5 minutes. You will receive a notification once 
                 your identity is verified.
               </p>
             </div>
             <div>
               <h3 className="font-semibold mb-1">What if verification fails?</h3>
               <p className="text-sm text-gray-600">
-                If your liveness check cannot be verified, you can contact support. We'll 
+                If your liveness check cannot be verified, you can contact support. We will 
                 investigate and help resolve the issue.
               </p>
             </div>
