@@ -1,8 +1,14 @@
+// src/components/cloudinary/ImageGallery.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
-import Image from 'next/image';
-import { getCardImageUrl, getFullImageUrl } from '@/lib/cloudinary/config';
+import { AdvancedImage, lazyload, responsive } from '@cloudinary/react';
+import { cld } from '@/lib/cloudinary/config';
+import { fill, limitFit } from '@cloudinary/url-gen/actions/resize';
+import { auto } from '@cloudinary/url-gen/qualifiers/quality';
+import { auto as autoFormat } from '@cloudinary/url-gen/qualifiers/format';
+import { format } from '@cloudinary/url-gen/actions/delivery';
+import { quality } from '@cloudinary/url-gen/actions/delivery';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface ImageGalleryProps {
@@ -21,7 +27,6 @@ export function ImageGallery({ images, alt }: ImageGalleryProps) {
     setSelectedIndex(null);
   };
 
-  // Handle body overflow as a side effect
   useEffect(() => {
     if (selectedIndex !== null) {
       document.body.style.overflow = 'hidden';
@@ -50,6 +55,32 @@ export function ImageGallery({ images, alt }: ImageGalleryProps) {
     if (e.key === 'ArrowRight') goToNext();
   };
 
+  // Helper to get public ID from URL or use as-is
+  const getPublicId = (imageUrl: string): string => {
+    if (imageUrl.includes('cloudinary.com')) {
+      return imageUrl.split('/upload/').pop()?.split('.')[0] || imageUrl;
+    }
+    return imageUrl;
+  };
+
+  // Generate card image (400x300)
+  const getCardImage = (imageUrl: string) => {
+    const publicId = getPublicId(imageUrl);
+    return cld.image(publicId)
+      .resize(fill().width(400).height(300))
+      .delivery(format(autoFormat()))
+      .delivery(quality(auto()));
+  };
+
+  // Generate full image (1200px width)
+  const getFullImage = (imageUrl: string) => {
+    const publicId = getPublicId(imageUrl);
+    return cld.image(publicId)
+      .resize(limitFit().width(1200))
+      .delivery(format(autoFormat()))
+      .delivery(quality(auto()));
+  };
+
   return (
     <>
       {/* Gallery Grid */}
@@ -60,12 +91,15 @@ export function ImageGallery({ images, alt }: ImageGalleryProps) {
             onClick={() => openLightbox(index)}
             className="relative aspect-square overflow-hidden rounded-lg hover:opacity-90 transition-opacity"
           >
-            <Image
-              src={getCardImageUrl(image)}
+            <AdvancedImage
+              cldImg={getCardImage(image)}
               alt={`${alt} ${index + 1}`}
-              fill
-              className="object-cover"
-              sizes="(max-width: 768px) 50vw, 33vw"
+              plugins={[lazyload(), responsive({ steps: [200, 400, 600] })]}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+              }}
             />
           </button>
         ))}
@@ -105,13 +139,14 @@ export function ImageGallery({ images, alt }: ImageGalleryProps) {
             className="relative max-w-7xl max-h-[90vh] w-full h-full flex items-center justify-center p-8"
             onClick={(e) => e.stopPropagation()}
           >
-            <Image
-              src={getFullImageUrl(images[selectedIndex])}
+            <AdvancedImage
+              cldImg={getFullImage(images[selectedIndex])}
               alt={`${alt} ${selectedIndex + 1}`}
-              width={1200}
-              height={800}
-              className="object-contain max-h-full"
-              priority
+              style={{
+                maxWidth: '100%',
+                maxHeight: '100%',
+                objectFit: 'contain',
+              }}
             />
           </div>
 

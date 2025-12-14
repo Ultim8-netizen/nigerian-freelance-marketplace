@@ -1,23 +1,48 @@
 // src/lib/cloudinary/config.ts
-// Cloudinary configuration and URL generation
+// Cloudinary configuration and URL generation using @cloudinary/url-gen
+
+import { Cloudinary } from '@cloudinary/url-gen';
+import { fill, scale, limitFit } from '@cloudinary/url-gen/actions/resize';
+import { auto } from '@cloudinary/url-gen/qualifiers/quality';
+import { auto as autoFormat } from '@cloudinary/url-gen/qualifiers/format';
+import { autoGravity } from '@cloudinary/url-gen/qualifiers/gravity';
+import { AutoFocus } from '@cloudinary/url-gen/qualifiers/autoFocus';
+import { FocusOn } from '@cloudinary/url-gen/qualifiers/focusOn';
+import { format } from '@cloudinary/url-gen/actions/delivery';
+import { quality } from '@cloudinary/url-gen/actions/delivery';
 
 const CLOUDINARY_CLOUD_NAME = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || '';
-const CLOUDINARY_BASE_URL = `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}`;
+
+// Initialize Cloudinary instance
+const cld = new Cloudinary({
+  cloud: {
+    cloudName: CLOUDINARY_CLOUD_NAME
+  },
+  url: {
+    secure: true
+  }
+});
 
 /**
  * Generate optimized Cloudinary URL with transformations
  */
 export function getCloudinaryUrl(
   publicId: string,
-  transformations: string = ''
+  transformations?: (image: ReturnType<typeof cld.image>) => ReturnType<typeof cld.image>
 ): string {
   if (!publicId) return '';
   
   // If it's already a full URL, return as-is
   if (publicId.startsWith('http')) return publicId;
   
-  // Build Cloudinary URL
-  return `${CLOUDINARY_BASE_URL}/image/upload/${transformations}/${publicId}`;
+  // Build Cloudinary URL with transformations
+  let image = cld.image(publicId);
+  
+  if (transformations) {
+    image = transformations(image);
+  }
+  
+  return image.toURL();
 }
 
 /**
@@ -25,10 +50,14 @@ export function getCloudinaryUrl(
  * 200x200, auto format, quality auto:good
  */
 export function getThumbnailUrl(publicId: string): string {
-  return getCloudinaryUrl(
-    publicId,
-    'w_200,h_200,c_fill,f_auto,q_auto:good'
-  );
+  if (!publicId) return '';
+  if (publicId.startsWith('http')) return publicId;
+  
+  return cld.image(publicId)
+    .resize(fill().width(200).height(200))
+    .delivery(format(autoFormat()))
+    .delivery(quality(auto()))
+    .toURL();
 }
 
 /**
@@ -36,10 +65,14 @@ export function getThumbnailUrl(publicId: string): string {
  * 400x300, auto format, quality auto:good
  */
 export function getCardImageUrl(publicId: string): string {
-  return getCloudinaryUrl(
-    publicId,
-    'w_400,h_300,c_fill,f_auto,q_auto:good'
-  );
+  if (!publicId) return '';
+  if (publicId.startsWith('http')) return publicId;
+  
+  return cld.image(publicId)
+    .resize(fill().width(400).height(300))
+    .delivery(format(autoFormat()))
+    .delivery(quality(auto()))
+    .toURL();
 }
 
 /**
@@ -47,21 +80,34 @@ export function getCardImageUrl(publicId: string): string {
  * 1200px width, maintain aspect ratio
  */
 export function getFullImageUrl(publicId: string): string {
-  return getCloudinaryUrl(
-    publicId,
-    'w_1200,c_limit,f_auto,q_auto:good'
-  );
+  if (!publicId) return '';
+  if (publicId.startsWith('http')) return publicId;
+  
+  return cld.image(publicId)
+    .resize(limitFit().width(1200))
+    .delivery(format(autoFormat()))
+    .delivery(quality(auto()))
+    .toURL();
 }
 
 /**
  * Get profile image (circular avatar)
- * 200x200, circular crop
+ * 200x200, circular crop with face detection
  */
 export function getProfileImageUrl(publicId: string): string {
-  return getCloudinaryUrl(
-    publicId,
-    'w_200,h_200,c_fill,g_face,f_auto,q_auto:good'
-  );
+  if (!publicId) return '';
+  if (publicId.startsWith('http')) return publicId;
+  
+  return cld.image(publicId)
+    .resize(
+      fill()
+        .width(200)
+        .height(200)
+        .gravity(autoGravity().autoFocus(AutoFocus.focusOn(FocusOn.faces())))
+    )
+    .delivery(format(autoFormat()))
+    .delivery(quality(auto()))
+    .toURL();
 }
 
 /**
@@ -70,19 +116,32 @@ export function getProfileImageUrl(publicId: string): string {
 export function getOptimizedImageUrl(
   publicId: string,
   width?: number,
-  height?: number,
-  quality: 'auto:low' | 'auto:good' | 'auto:best' = 'auto:good'
+  height?: number
 ): string {
-  const transformations: string[] = [];
+  if (!publicId) return '';
+  if (publicId.startsWith('http')) return publicId;
   
-  if (width) transformations.push(`w_${width}`);
-  if (height) transformations.push(`h_${height}`);
-  transformations.push('c_fill');
-  transformations.push('f_auto');
-  transformations.push(`q_${quality}`);
+  let image = cld.image(publicId);
   
-  return getCloudinaryUrl(publicId, transformations.join(','));
+  // Apply resize transformation
+  if (width && height) {
+    image = image.resize(fill().width(width).height(height));
+  } else if (width) {
+    image = image.resize(scale().width(width));
+  } else if (height) {
+    image = image.resize(scale().height(height));
+  }
+  
+  // Apply delivery optimizations
+  image = image
+    .delivery(format(autoFormat()))
+    .delivery(quality(auto()));
+  
+  return image.toURL();
 }
+
+// Export Cloudinary instance for advanced usage
+export { cld };
 
 export const cloudinaryConfig = {
   cloudName: CLOUDINARY_CLOUD_NAME,
