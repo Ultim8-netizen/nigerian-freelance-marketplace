@@ -10,7 +10,7 @@ export default function TermsPage() {
         
         {/* # Terms of Service
 
-**Last Updated: December 7, 2024**
+**Last Updated: December 20, 2024**
 
 ## 1. ACCEPTANCE OF TERMS
 

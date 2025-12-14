@@ -9,8 +9,14 @@ import { DollarSign, Package, Clock, Star } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 
+type Order = {
+  id: string;
+  title: string;
+  status: string;
+};
+
 export default async function FreelancerDashboard() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   
   if (!user) {
@@ -38,7 +44,7 @@ export default async function FreelancerDashboard() {
     .in('status', ['awaiting_delivery', 'delivered']);
 
   // Get total services
-  const { count: _servicesCount } = await supabase
+  const { count: servicesCount } = await supabase
     .from('services')
     .select('*', { count: 'exact', head: true })
     .eq('freelancer_id', user.id)
@@ -71,7 +77,7 @@ export default async function FreelancerDashboard() {
         <StatCard
           icon={<Star className="w-6 h-6" />}
           title="Rating"
-          value={profile?.freelancer_rating.toFixed(1) || '0.0'}
+          value={profile?.freelancer_rating?.toFixed(1) || '0.0'}
           color="bg-purple-500"
         />
       </div>
@@ -95,9 +101,12 @@ export default async function FreelancerDashboard() {
 
         <Card className="p-6">
           <h2 className="text-xl font-semibold mb-4">Recent Activity</h2>
+          <div className="mb-4 text-sm text-gray-600">
+            {servicesCount || 0} active service{servicesCount !== 1 ? 's' : ''}
+          </div>
           {activeOrders && activeOrders.length > 0 ? (
             <div className="space-y-3">
-              {activeOrders.slice(0, 3).map((order) => (
+              {activeOrders.slice(0, 3).map((order: Order) => (
                 <div key={order.id} className="border-l-4 border-blue-500 pl-3 py-2">
                   <p className="font-medium">{order.title}</p>
                   <p className="text-sm text-gray-600">

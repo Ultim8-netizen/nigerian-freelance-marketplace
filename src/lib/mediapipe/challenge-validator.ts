@@ -185,9 +185,14 @@ export class ChallengeValidator {
       this.nodState = null;
     }
 
+    // Calculate confidence, ensuring nodState is not null
+    const confidence = this.nodState 
+      ? (this.nodState.movedDown ? 0.5 : 0) + (this.nodState.movedUp ? 0.5 : 0)
+      : 1.0; // If nodState is null (validation passed), confidence is 100%
+
     return {
       passed,
-      confidence: (this.nodState.movedDown ? 0.5 : 0) + (this.nodState.movedUp ? 0.5 : 0),
+      confidence,
     };
   }
 

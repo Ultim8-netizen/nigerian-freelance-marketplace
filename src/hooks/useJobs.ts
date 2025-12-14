@@ -1,9 +1,24 @@
-// ============================================================================
 // src/hooks/useJobs.ts
 // Jobs management hook
 
-import { useState, useEffect } from 'react';
-import type { Job, Proposal, PaginatedResponse } from '@/types/database.types';
+import { useState, useEffect, useCallback } from 'react';
+import type { Job, PaginatedResponse } from '@/types/database.types'; // Removed unused 'Proposal' type
+
+/**
+ * Helper function to safely extract an error message from an unknown error type.
+ * @param error The unknown error object caught in a try/catch block.
+ * @returns A string representation of the error message.
+ */
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  // This handles cases where the error might be an object with a 'message' property
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+    return (error as { message: string }).message;
+  }
+  return String(error);
+};
 
 interface UseJobsOptions {
   category?: string;
@@ -23,7 +38,8 @@ export function useJobs(options: UseJobsOptions = {}) {
     total_pages: 0,
   });
 
-  const fetchJobs = async (page: number = 1) => {
+  // Wrapped fetchJobs in useCallback to create a stable function reference
+  const fetchJobs = useCallback(async (page: number = 1) => {
     setLoading(true);
     setError(null);
 
@@ -45,14 +61,21 @@ export function useJobs(options: UseJobsOptions = {}) {
       } else {
         throw new Error('Failed to fetch jobs');
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      setError(getErrorMessage(err)); // Fixed: Using getErrorMessage helper
     } finally {
       setLoading(false);
     }
-  };
+  }, [
+    pagination.per_page, 
+    options.category, 
+    options.status, 
+    options.state, 
+    // Note: options.autoFetch is not needed here as it only controls initial call
+  ]);
 
-  const createJob = async (jobData: any) => {
+  // Fixed: Replaced 'any' with a safer type for the payload
+  const createJob = async (jobData: Record<string, unknown>) => { 
     setLoading(true);
     setError(null);
 
@@ -71,15 +94,17 @@ export function useJobs(options: UseJobsOptions = {}) {
       } else {
         throw new Error(result.error);
       }
-    } catch (err: any) {
-      setError(err.message);
-      return { success: false, error: err.message };
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      const errorMessage = getErrorMessage(err);
+      setError(errorMessage);
+      return { success: false, error: errorMessage };
     } finally {
       setLoading(false);
     }
   };
 
-  const submitProposal = async (proposalData: any) => {
+  // Fixed: Replaced 'any' with a safer type for the payload
+  const submitProposal = async (proposalData: Record<string, unknown>) => {
     setLoading(true);
     setError(null);
 
@@ -97,19 +122,21 @@ export function useJobs(options: UseJobsOptions = {}) {
       } else {
         throw new Error(result.error);
       }
-    } catch (err: any) {
-      setError(err.message);
-      return { success: false, error: err.message };
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      const errorMessage = getErrorMessage(err);
+      setError(errorMessage);
+      return { success: false, error: errorMessage };
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    // Fixed: Included fetchJobs and options.autoFetch as dependencies
     if (options.autoFetch !== false) {
       fetchJobs();
     }
-  }, [options.category, options.status, options.state]);
+  }, [fetchJobs, options.autoFetch]); 
 
   return {
     jobs,

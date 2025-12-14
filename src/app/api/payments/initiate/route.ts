@@ -24,6 +24,14 @@ export async function POST(request: NextRequest) {
 
     if (error) return error;
 
+    // Add type guard to ensure user is defined
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const body = await request.json();
     const sanitizedBody = {
       order_id: sanitizeUuid(body.order_id) || '',
@@ -32,7 +40,7 @@ export async function POST(request: NextRequest) {
 
     const validatedData = initiateSchema.parse(sanitizedBody);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Get order details with security checks
     const { data: order, error: orderError } = await supabase
@@ -116,7 +124,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.warn('Payment validation failed', undefined, { errors: error.errors });
+      logger.warn('Payment validation failed', { errors: error.issues });
       return NextResponse.json(
         { success: false, error: 'Invalid request data' },
         { status: 400 }

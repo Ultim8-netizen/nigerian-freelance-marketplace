@@ -36,7 +36,7 @@ export interface PaymentData {
     description: string;
     logo: string;
   };
-  meta?: Record<string, any>;
+  meta?: Record<string, unknown>; // FIX: Changed any to unknown
   payment_plan?: string;
   subaccounts?: Array<{
     id: string;
@@ -93,7 +93,7 @@ export interface TransferData {
   reference: string;
   beneficiary_name: string;
   debit_currency?: string;
-  meta?: Record<string, any>;
+  meta?: Record<string, unknown>; // FIX: Changed any to unknown
 }
 
 // Custom error class for better error handling
@@ -102,16 +102,43 @@ export class FlutterwaveError extends Error {
     message: string,
     public code?: string,
     public statusCode?: number,
-    public data?: any
+    public data?: unknown // FIX: Changed any to unknown
   ) {
     super(message);
     this.name = 'FlutterwaveError';
   }
 }
 
+// Event Data Interfaces
+export interface InitiatedEventData {
+  tx_ref: string;
+  result: PaymentResponse;
+}
+
+export interface VerifiedEventData {
+  transactionId: string;
+  result: VerificationResponse;
+}
+
+export interface FailedEventData {
+  tx_ref?: string;
+  transactionId?: string;
+  reference?: string;
+  error: unknown;
+}
+
+export interface TransferredEventData {
+    reference: string;
+    // Assuming transfer response is a generic object structure
+    result: Record<string, unknown>; 
+}
+
 // Event emitter for payment lifecycle hooks
 type PaymentEventType = 'initiated' | 'verified' | 'failed' | 'transferred';
-type PaymentEventCallback = (data: any) => void | Promise<void>;
+
+// FIX: Used specific event data types instead of 'any'
+type PaymentEventData = InitiatedEventData | VerifiedEventData | FailedEventData | TransferredEventData;
+type PaymentEventCallback = (data: PaymentEventData) => void | Promise<void>;
 
 class PaymentEventEmitter {
   private listeners: Map<PaymentEventType, Set<PaymentEventCallback>> = new Map();
@@ -128,7 +155,8 @@ class PaymentEventEmitter {
     this.listeners.get(event)?.delete(callback);
   }
 
-  async emit(event: PaymentEventType, data: any) {
+  // FIX: Used specific event data types instead of 'any'
+  async emit(event: PaymentEventType, data: PaymentEventData) {
     const callbacks = this.listeners.get(event);
     if (callbacks) {
       await Promise.all(Array.from(callbacks).map(cb => cb(data)));
@@ -139,7 +167,9 @@ class PaymentEventEmitter {
 export class FlutterwaveService {
   private static baseUrl = 'https://api.flutterwave.com/v3';
   private static eventEmitter = new PaymentEventEmitter();
-  private static requestCache = new Map<string, { data: any; timestamp: number }>();
+  
+  // FIX: Changed data type in cache to unknown
+  private static requestCache = new Map<string, { data: unknown; timestamp: number }>(); 
   private static readonly CACHE_TTL = 60000; // 1 minute
 
   /**
@@ -167,7 +197,7 @@ export class FlutterwaveService {
           errorData.message || 'Request failed',
           errorData.code,
           response.status,
-          errorData
+          errorData // errorData will be of type unknown here
         );
       }
       
@@ -210,14 +240,16 @@ export class FlutterwaveService {
         }
       );
 
-      const result = await response.json();
+      const result: PaymentResponse = await response.json();
       
       onProgress?.('completed');
       
+      // Emit with specific type
       await this.eventEmitter.emit('initiated', { tx_ref: data.tx_ref, result });
       
       return result;
     } catch (error) {
+      // Emit with specific type
       await this.eventEmitter.emit('failed', { tx_ref: data.tx_ref, error });
       throw error;
     }
@@ -236,7 +268,7 @@ export class FlutterwaveService {
     if (useCache) {
       const cached = this.requestCache.get(cacheKey);
       if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-        return cached.data;
+        return cached.data as VerificationResponse; // Assertion needed here since cache data is 'unknown'
       }
     }
 
@@ -250,17 +282,19 @@ export class FlutterwaveService {
         }
       );
 
-      const result = await response.json();
+      const result: VerificationResponse = await response.json();
       
       // Cache successful verification
       if (result.status === 'success') {
         this.requestCache.set(cacheKey, { data: result, timestamp: Date.now() });
       }
       
+      // Emit with specific type
       await this.eventEmitter.emit('verified', { transactionId, result });
       
       return result;
     } catch (error) {
+      // Emit with specific type
       await this.eventEmitter.emit('failed', { transactionId, error });
       throw error;
     }
@@ -289,8 +323,8 @@ export class FlutterwaveService {
         } else {
           results.set(txId, {
             status: 'error',
-            message: result.reason?.message || 'Verification failed',
-          });
+            message: result.reason instanceof Error ? result.reason.message : 'Verification failed',
+          } as VerificationResponse); // Cast as VerificationResponse to match map value type
         }
       });
     }
@@ -306,7 +340,8 @@ export class FlutterwaveService {
     webhookUrl?: string
   ) {
     try {
-      const payload: any = { ...data };
+      // FIX: Typed payload
+      const payload: TransferData & { callback_url?: string } = { ...data };
       
       if (webhookUrl) {
         payload.callback_url = webhookUrl;
@@ -326,10 +361,12 @@ export class FlutterwaveService {
 
       const result = await response.json();
       
+      // Emit with specific type
       await this.eventEmitter.emit('transferred', { reference: data.reference, result });
       
       return result;
     } catch (error) {
+      // Emit with specific type
       await this.eventEmitter.emit('failed', { reference: data.reference, error });
       throw error;
     }

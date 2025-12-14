@@ -7,10 +7,17 @@ interface LogEntry {
   level: LogLevel;
   message: string;
   timestamp: string;
-  context?: Record<string, any>;
+  context?: Record<string, unknown>;
   error?: Error;
   userId?: string;
   url?: string;
+}
+
+/**
+ * Type guard to check if an unknown object is an instance of Error.
+ */
+function isError(err: unknown): err is Error {
+  return err instanceof Error;
 }
 
 class Logger {
@@ -21,22 +28,23 @@ class Logger {
   /**
    * Log information message
    */
-  info(message: string, context?: Record<string, any>) {
+  info(message: string, context?: Record<string, unknown>) {
     this.log('info', message, context);
   }
 
   /**
    * Log warning message
    */
-  warn(message: string, context?: Record<string, any>) {
+  warn(message: string, context?: Record<string, unknown>) {
     this.log('warn', message, context);
   }
 
   /**
    * Log error with full context
    */
-  error(message: string, error?: Error, context?: Record<string, any>) {
-    this.log('error', message, { ...context, error });
+  error(message: string, error?: Error, context?: Record<string, unknown>) {
+    // We pass the error object here separately to allow cleaner LogEntry creation
+    this.log('error', message, context, error); 
 
     // In production, send to error tracking service
     if (!this.isDevelopment) {
@@ -47,7 +55,7 @@ class Logger {
   /**
    * Log debug information (development only)
    */
-  debug(message: string, context?: Record<string, any>) {
+  debug(message: string, context?: Record<string, unknown>) {
     if (this.isDevelopment) {
       this.log('debug', message, context);
     }
@@ -59,13 +67,15 @@ class Logger {
   private log(
     level: LogLevel,
     message: string,
-    context?: Record<string, any>
+    context?: Record<string, unknown>,
+    error?: Error // Added optional Error parameter
   ) {
     const entry: LogEntry = {
       level,
       message,
       timestamp: new Date().toISOString(),
       context,
+      error, // Assigned directly
       url: typeof window !== 'undefined' ? window.location.href : undefined,
     };
 
@@ -91,10 +101,10 @@ class Logger {
     }[level];
 
     if (this.isDevelopment) {
-      console.log(`%c${emoji} [${level.toUpperCase()}]`, style, message, context || '');
+      console.log(`%c${emoji} [${level.toUpperCase()}]`, style, message, context || '', error || '');
     } else if (level === 'error' || level === 'warn') {
       // Only log errors/warnings in production
-      console[level](message, context);
+      console[level](message, context, error);
     }
   }
 
@@ -104,11 +114,10 @@ class Logger {
   private async sendToErrorTracking(data: {
     message: string;
     error?: Error;
-    context?: Record<string, any>;
+    context?: Record<string, unknown>;
   }) {
     try {
       // TODO: Integrate with error tracking service
-      // Example: Sentry, LogRocket, Datadog, etc.
       
       // For now, send to backend endpoint
       await fetch('/api/errors', {
@@ -163,9 +172,12 @@ export async function withErrorLogging<T>(
   try {
     return await fn();
   } catch (error) {
+    // FIX: Check if error is an Error instance or wrap it to satisfy logger.error signature
+    const errorObject = isError(error) ? error : new Error(String(error));
+    
     logger.error(
       context || 'Async operation failed',
-      error as Error,
+      errorObject,
       { context }
     );
     throw error;
@@ -175,15 +187,20 @@ export async function withErrorLogging<T>(
 /**
  * API error handler
  */
-export function handleApiError(error: any): {
+export function handleApiError(error: unknown): {
   success: false;
   error: string;
   statusCode: number;
 } {
-  logger.error('API Error', error);
+  // FIX: Pass the error safely to the logger
+  const errorObject = isError(error) ? error : new Error(String(error));
+  logger.error('API Error', errorObject);
+  
+  // FIX: Safely extract message for comparison
+  const errorMessage = isError(error) ? error.message : String(error);
 
   // Known error types
-  if (error.message?.includes('fetch failed')) {
+  if (errorMessage.includes('fetch failed')) {
     return {
       success: false,
       error: 'Network error. Please check your connection.',
@@ -191,7 +208,7 @@ export function handleApiError(error: any): {
     };
   }
 
-  if (error.message?.includes('timeout')) {
+  if (errorMessage.includes('timeout')) {
     return {
       success: false,
       error: 'Request timeout. Please try again.',
@@ -199,7 +216,7 @@ export function handleApiError(error: any): {
     };
   }
 
-  if (error.message?.includes('unauthorized')) {
+  if (errorMessage.includes('unauthorized')) {
     return {
       success: false,
       error: 'You are not authorized. Please login.',
@@ -212,7 +229,7 @@ export function handleApiError(error: any): {
     success: false,
     error: process.env.NODE_ENV === 'production'
       ? 'An error occurred. Please try again.'
-      : error.message || 'Unknown error',
+      : errorMessage || 'Unknown error',
     statusCode: 500,
   };
 }

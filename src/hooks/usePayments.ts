@@ -1,8 +1,24 @@
-// ============================================================================
 // src/hooks/usePayments.ts
 // Payment processing hook
 
 import { useState } from 'react';
+
+/**
+ * Helper function to safely extract an error message from an unknown error type.
+ * @param error The unknown error object caught in a try/catch block.
+ * @returns A string representation of the error message.
+ */
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  // This handles cases where the error might be an object with a 'message' property
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+    return (error as { message: string }).message;
+  }
+  return String(error);
+};
+
 
 interface PaymentData {
   orderId: string;
@@ -35,11 +51,12 @@ export function usePayments() {
       if (result.success) {
         return { success: true, data: result.data };
       } else {
-        throw new Error(result.error);
+        throw new Error(result.error || 'Unknown error during payment initiation.');
       }
-    } catch (err: any) {
-      setError(err.message);
-      return { success: false, error: err.message };
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      const errorMessage = getErrorMessage(err);
+      setError(errorMessage);
+      return { success: false, error: errorMessage };
     } finally {
       setLoading(false);
     }
@@ -64,11 +81,12 @@ export function usePayments() {
       if (result.success) {
         return { success: true, data: result.data };
       } else {
-        throw new Error(result.error);
+        throw new Error(result.error || 'Unknown error during payment verification.');
       }
-    } catch (err: any) {
-      setError(err.message);
-      return { success: false, error: err.message };
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      const errorMessage = getErrorMessage(err);
+      setError(errorMessage);
+      return { success: false, error: errorMessage };
     } finally {
       setLoading(false);
     }

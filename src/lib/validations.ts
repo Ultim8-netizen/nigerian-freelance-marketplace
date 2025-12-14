@@ -142,7 +142,7 @@ const sanitizeString = (str: string): string => {
 /**
  * Smart name validator with helpful suggestions
  */
-const validateFullName = (name: string): { 
+export const validateFullName = (name: string): { 
   isValid: boolean; 
   suggestion?: string 
 } => {
@@ -169,7 +169,7 @@ const validateFullName = (name: string): {
 /**
  * Budget range validator with smart suggestions
  */
-const validateBudgetRange = (min?: number, max?: number, type?: string) => {
+export const validateBudgetRange = (min?: number, max?: number, type?: string) => {
   if (type === 'negotiable') return { isValid: true };
   if (!min || !max) return { isValid: true };
 
@@ -250,8 +250,8 @@ export const registerSchema = z.object({
       return phone.startsWith('0') ? `+234${phone.slice(1)}` : phone;
     }),
   
-  user_type: z.enum(['freelancer', 'client', 'both'], {
-    errorMap: () => ({ message: 'Please select a valid user type' }),
+  user_type: z.enum(['freelancer', 'client', 'both'], { // FIX: Changed errorMap to message
+    message: 'Please select a valid user type',
   }),
   
   university: z
@@ -420,8 +420,8 @@ export const jobSchema = z.object({
     .min(1, 'Category is required')
     .max(100, 'Category name is too long'),
   
-  budget_type: z.enum(['fixed', 'hourly', 'negotiable'], {
-    errorMap: () => ({ message: 'Please select a valid budget type' }),
+  budget_type: z.enum(['fixed', 'hourly', 'negotiable'], { // FIX: Changed errorMap to message
+    message: 'Please select a valid budget type',
   }),
   
   budget_min: z
@@ -438,8 +438,8 @@ export const jobSchema = z.object({
     .max(NAIRA_CONSTRAINTS.MAX_PRICE, `Maximum budget is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}`)
     .optional(),
   
-  experience_level: z.enum(['beginner', 'intermediate', 'expert', 'any'], {
-    errorMap: () => ({ message: 'Please select a valid experience level' }),
+  experience_level: z.enum(['beginner', 'intermediate', 'expert', 'any'], { // FIX: Changed errorMap to message
+    message: 'Please select a valid experience level',
   }),
   
   deadline: z
@@ -644,15 +644,3 @@ export type JobInput = z.infer<typeof jobSchema>;
 export type ProposalInput = z.infer<typeof proposalSchema>;
 export type WithdrawalInput = z.infer<typeof withdrawalSchema>;
 export type ReviewInput = z.infer<typeof reviewSchema>;
-
-// ============================================================================
-// UTILITY EXPORTS
-// ============================================================================
-
-export { 
-  calculatePasswordStrength, 
-  formatPhoneNumber, 
-  validateFullName,
-  validateBudgetRange,
-  NIGERIAN_BANKS 
-};

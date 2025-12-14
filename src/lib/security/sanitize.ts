@@ -3,6 +3,9 @@
 
 import DOMPurify from 'isomorphic-dompurify';
 
+// Type alias for better readability and to constrain sanitized objects
+type SanitizableObject = Record<string, unknown>;
+
 /**
  * Sanitize HTML content with configurable security levels
  */
@@ -116,30 +119,37 @@ export function sanitizeSearchQuery(query: string): string {
 /**
  * Sanitize object recursively (for form data)
  */
-export function sanitizeObject<T extends Record<string, any>>(
+export function sanitizeObject<T extends SanitizableObject>(
   obj: T,
   textFields: (keyof T)[],
   htmlFields: (keyof T)[] = []
 ): T {
   const sanitized = { ...obj };
   
-  for (const key in sanitized) {
+  // FIX: Use Object.keys and assert the keys to be of type keyof T, resolving
+  // the 'string | number | symbol' assignment conflict.
+  (Object.keys(sanitized) as Array<keyof T>).forEach((key: keyof T) => {
     const value = sanitized[key];
     
     if (typeof value === 'string') {
-      if (htmlFields.includes(key as keyof T)) {
-        sanitized[key] = sanitizeHtml(value) as any;
-      } else if (textFields.includes(key as keyof T)) {
-        sanitized[key] = sanitizeText(value) as any;
+      if (htmlFields.includes(key)) {
+        sanitized[key] = sanitizeHtml(value) as T[keyof T];
+      } else if (textFields.includes(key)) {
+        sanitized[key] = sanitizeText(value) as T[keyof T];
       }
     } else if (Array.isArray(value)) {
-      sanitized[key] = value.map(item => 
+      sanitized[key] = value.map((item: unknown) => 
         typeof item === 'string' ? sanitizeText(item) : item
-      ) as any;
+      ) as T[keyof T];
     } else if (typeof value === 'object' && value !== null) {
-      sanitized[key] = sanitizeObject(value, textFields, htmlFields) as any;
+      // Recursive call: Text/HTML fields are coerced to string array for nested objects
+      sanitized[key] = sanitizeObject(
+        value as SanitizableObject, 
+        textFields.filter(f => typeof f === 'string') as string[], 
+        htmlFields.filter(f => typeof f === 'string') as string[]
+      ) as T[keyof T];
     }
-  }
+  });
   
   return sanitized;
 }
@@ -209,7 +219,12 @@ export function sanitizeJson<T>(jsonString: string): T | null {
     
     // Check for prototype pollution
     if (parsed && typeof parsed === 'object') {
-      if ('__proto__' in parsed || 'constructor' in parsed || 'prototype' in parsed) {
+      // NOTE: Using a type guard and explicit property check to be safe
+      if (
+        Object.prototype.hasOwnProperty.call(parsed, '__proto__') ||
+        Object.prototype.hasOwnProperty.call(parsed, 'constructor') ||
+        Object.prototype.hasOwnProperty.call(parsed, 'prototype')
+      ) {
         console.warn('Potential prototype pollution attempt detected');
         return null;
       }

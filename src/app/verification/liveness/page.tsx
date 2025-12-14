@@ -2,7 +2,7 @@
 import { Metadata } from 'next';
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
-import { LivenessVerificationCard } from '@/components/verification/LivenessVerificationCard';
+import  LivenessVerificationCard from '@/components/verification/LivenessVerificationCard';
 import { Card } from '@/components/ui/card';
 import { Shield, Users, TrendingUp, Lock } from 'lucide-react';
 
@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 };
 
 export default async function LivenessVerificationPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
@@ -20,7 +20,7 @@ export default async function LivenessVerificationPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 py-8 px-4">
+    <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-50 py-8 px-4">
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="text-center mb-8">

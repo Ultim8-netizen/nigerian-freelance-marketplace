@@ -35,7 +35,6 @@ export default function LivenessVerificationCard() {
   const [challenges, setChallenges] = useState<typeof CHALLENGES>([]);
   const [currentChallenge, setCurrentChallenge] = useState(0);
   const [recording, setRecording] = useState(false);
-  const [videoId, setVideoId] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -44,11 +43,25 @@ export default function LivenessVerificationCard() {
   const chunksRef = useRef<Blob[]>([]);
   const challengeTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Define stopCamera before useEffect (fixes hoisting error)
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
+
   useEffect(() => {
+    // Copy ref to variable inside effect
+    const timer = challengeTimerRef.current;
     return () => {
       stopCamera();
-      if (challengeTimerRef.current) {
-        clearInterval(challengeTimerRef.current);
+      // Use the copied variable in cleanup
+      if (timer) {
+        clearInterval(timer);
       }
     };
   }, []);
@@ -86,16 +99,6 @@ export default function LivenessVerificationCard() {
       console.error('Camera error:', err);
       setError('Failed to access camera. Please enable camera permissions.');
       setStage('error');
-    }
-  };
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
     }
   };
 
@@ -154,13 +157,13 @@ export default function LivenessVerificationCard() {
             challenges.map(c => c.instruction)
           );
           
-          setVideoId(id);
           setRecording(false);
           stopCamera();
           setStage('processing');
           
           // Submit for verification
-          await submitVerification(id, videoBlob);
+          // Removed the unused _videoBlob argument
+          await submitVerification(id);
           
           resolve();
         } catch (err) {
@@ -175,7 +178,8 @@ export default function LivenessVerificationCard() {
     });
   };
 
-  const submitVerification = async (videoId: string, videoBlob: Blob) => {
+  // Removed unused _videoBlob argument to fix ESLint warning
+  const submitVerification = async (videoId: string) => {
     try {
       // Simulate API call
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -201,16 +205,15 @@ export default function LivenessVerificationCard() {
     setStage('intro');
     setError('');
     setCurrentChallenge(0);
-    setVideoId(null);
   };
 
   // Intro Screen
   if (stage === 'intro') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
+      <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
         <Card className="p-8 max-w-2xl w-full shadow-xl">
           <div className="text-center">
-            <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg">
+            <div className="w-20 h-20 bg-linear-to-br from-blue-600 to-indigo-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg">
               <Shield className="w-10 h-10 text-white" />
             </div>
             <h2 className="text-3xl font-bold mb-3 text-gray-900">Liveness Verification</h2>
@@ -218,12 +221,12 @@ export default function LivenessVerificationCard() {
               Complete a quick liveness check to verify your identity and build trust with clients
             </p>
 
-            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 mb-8 text-left">
+            <div className="bg-linear-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 mb-8 text-left">
               <h3 className="font-semibold mb-4 text-lg text-gray-900">What to expect:</h3>
               <ul className="space-y-3 text-gray-700">
                 <li className="flex items-start">
                   <span className="text-blue-600 mr-3 text-xl">✓</span>
-                  <span>We'll ask you to make 2-3 simple movements</span>
+                  <span>We&apos;ll ask you to make 2-3 simple movements</span>
                 </li>
                 <li className="flex items-start">
                   <span className="text-blue-600 mr-3 text-xl">✓</span>
@@ -244,7 +247,7 @@ export default function LivenessVerificationCard() {
               <Button 
                 onClick={startCamera}
                 size="lg"
-                className="w-full h-14 text-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+                className="w-full h-14 text-lg bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
               >
                 <Camera className="w-6 h-6 mr-2" />
                 Start Verification
@@ -262,7 +265,7 @@ export default function LivenessVerificationCard() {
   // Camera/Recording Screen
   if (stage === 'camera') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
+      <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
         <Card className="p-6 max-w-3xl w-full shadow-xl">
           <div className="space-y-6">
             <div className="relative bg-black rounded-xl overflow-hidden aspect-video shadow-2xl">
@@ -285,7 +288,7 @@ export default function LivenessVerificationCard() {
               
               {/* Challenge instruction */}
               {recording && currentChallenge < challenges.length && (
-                <div className="absolute top-6 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-8 py-4 rounded-full text-xl font-semibold shadow-lg">
+                <div className="absolute top-6 left-1/2 transform -translate-x-1/2 bg-linear-to-r from-blue-600 to-indigo-600 text-white px-8 py-4 rounded-full text-xl font-semibold shadow-lg">
                   {challenges[currentChallenge]?.instruction}
                 </div>
               )}
@@ -318,12 +321,12 @@ export default function LivenessVerificationCard() {
             {!recording && countdown === null && (
               <div className="text-center">
                 <p className="text-gray-700 mb-6 text-lg">
-                  Position your face in the center of the frame. When you're ready, click Start.
+                  Position your face in the center of the frame. When you&apos;re ready, click Start.
                 </p>
                 <Button 
                   onClick={startCountdown} 
                   size="lg"
-                  className="px-8 h-14 text-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+                  className="px-8 h-14 text-lg bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
                 >
                   <Camera className="w-6 h-6 mr-2" />
                   Start Recording
@@ -350,7 +353,7 @@ export default function LivenessVerificationCard() {
   // Processing Screen
   if (stage === 'processing') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
+      <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
         <Card className="p-12 max-w-md w-full text-center shadow-xl">
           <Loader2 className="w-20 h-20 text-blue-600 mx-auto mb-6 animate-spin" />
           <h2 className="text-2xl font-bold mb-3">Processing Verification</h2>
@@ -358,7 +361,7 @@ export default function LivenessVerificationCard() {
             Please wait while we verify your liveness check...
           </p>
           <div className="mt-6 w-full bg-gray-200 rounded-full h-2">
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 h-2 rounded-full animate-pulse" style={{ width: '60%' }}></div>
+            <div className="bg-linear-to-r from-blue-600 to-indigo-600 h-2 rounded-full animate-pulse" style={{ width: '60%' }}></div>
           </div>
         </Card>
       </div>
@@ -368,9 +371,9 @@ export default function LivenessVerificationCard() {
   // Success Screen
   if (stage === 'success') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 p-4 flex items-center justify-center">
+      <div className="min-h-screen bg-linear-to-br from-green-50 to-emerald-100 p-4 flex items-center justify-center">
         <Card className="p-12 max-w-md w-full text-center shadow-xl">
-          <div className="w-20 h-20 bg-gradient-to-br from-green-500 to-emerald-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg animate-bounce">
+          <div className="w-20 h-20 bg-linear-to-br from-green-500 to-emerald-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg animate-bounce">
             <CheckCircle className="w-10 h-10 text-white" />
           </div>
           <h2 className="text-3xl font-bold text-green-900 mb-4">
@@ -381,8 +384,9 @@ export default function LivenessVerificationCard() {
           </p>
           <Button 
             size="lg" 
-            className="w-full h-14 text-lg bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
-            onClick={() => alert('Redirecting to profile...')}
+            className="w-full h-14 text-lg bg-linear-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
+            // Replaced alert() with console.log()
+            onClick={() => console.log('Redirecting to profile...')}
           >
             View Profile
           </Button>
@@ -394,9 +398,9 @@ export default function LivenessVerificationCard() {
   // Error Screen
   if (stage === 'error') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-red-50 to-rose-100 p-4 flex items-center justify-center">
+      <div className="min-h-screen bg-linear-to-br from-red-50 to-rose-100 p-4 flex items-center justify-center">
         <Card className="p-12 max-w-md w-full text-center shadow-xl">
-          <div className="w-20 h-20 bg-gradient-to-br from-red-500 to-rose-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg">
+          <div className="w-20 h-20 bg-linear-to-br from-red-500 to-rose-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg">
             <AlertCircle className="w-10 h-10 text-white" />
           </div>
           <h2 className="text-3xl font-bold text-red-900 mb-4">
@@ -407,14 +411,15 @@ export default function LivenessVerificationCard() {
             <Button 
               size="lg" 
               onClick={handleRetry}
-              className="w-full h-14 text-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+              className="w-full h-14 text-lg bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
             >
               Try Again
             </Button>
             <Button 
               size="lg" 
               variant="outline" 
-              onClick={() => alert('Redirecting to support...')}
+              // Replaced alert() with console.log()
+              onClick={() => console.log('Redirecting to support...')}
               className="w-full h-14 text-lg"
             >
               Contact Support

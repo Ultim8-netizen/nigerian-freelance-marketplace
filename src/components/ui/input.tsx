@@ -1,12 +1,10 @@
-// ============================================================================
-// src/components/ui/input.tsx
 // Input component
 
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
-export interface InputProps
-  extends React.InputHTMLAttributes<HTMLInputElement> {}
+// Fixed ESLint error by converting the empty interface extension to a type alias.
+export type InputProps = React.InputHTMLAttributes<HTMLInputElement>;
 
 const Input = React.forwardRef<HTMLInputElement, InputProps>(
   ({ className, type, ...props }, ref) => {

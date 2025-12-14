@@ -1,9 +1,24 @@
-// ============================================================================
 // src/hooks/useServices.ts
 // Services management hook
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Service } from '@/types/database.types';
+
+/**
+ * Helper function to safely extract an error message from an unknown error type.
+ * @param error The unknown error object caught in a try/catch block.
+ * @returns A string representation of the error message.
+ */
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  // This handles cases where the error might be an object with a 'message' property
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+    return (error as { message: string }).message;
+  }
+  return String(error);
+};
 
 interface UseServicesOptions {
   category?: string;
@@ -24,7 +39,8 @@ export function useServices(options: UseServicesOptions = {}) {
     total_pages: 0,
   });
 
-  const fetchServices = async (page: number = 1) => {
+  // Use useCallback to memoize fetchServices, resolving the exhaustive-deps warning later
+  const fetchServices = useCallback(async (page: number = 1) => {
     setLoading(true);
     setError(null);
 
@@ -34,6 +50,7 @@ export function useServices(options: UseServicesOptions = {}) {
         per_page: pagination.per_page.toString(),
         ...(options.category && { category: options.category }),
         ...(options.state && { state: options.state }),
+        // Convert number filters to string for URLSearchParams
         ...(options.minPrice && { min_price: options.minPrice.toString() }),
         ...(options.maxPrice && { max_price: options.maxPrice.toString() }),
       });
@@ -45,16 +62,23 @@ export function useServices(options: UseServicesOptions = {}) {
         setServices(result.data);
         setPagination(result.pagination);
       } else {
-        throw new Error(result.error);
+        throw new Error(result.error || 'Failed to fetch services.');
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
-  };
+  }, [
+    pagination.per_page, 
+    options.category, 
+    options.state, 
+    options.minPrice, 
+    options.maxPrice
+  ]);
 
-  const createService = async (serviceData: any) => {
+  // Fixed: Replaced 'any' with Record<string, unknown> for serviceData type
+  const createService = async (serviceData: Record<string, unknown>) => {
     setLoading(true);
     setError(null);
 
@@ -71,21 +95,23 @@ export function useServices(options: UseServicesOptions = {}) {
         await fetchServices(); // Refresh list
         return { success: true, data: result.data };
       } else {
-        throw new Error(result.error);
+        throw new Error(result.error || 'Failed to create service.');
       }
-    } catch (err: any) {
-      setError(err.message);
-      return { success: false, error: err.message };
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      const errorMessage = getErrorMessage(err);
+      setError(errorMessage);
+      return { success: false, error: errorMessage };
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    // Fixed: Added fetchServices and options.autoFetch as dependencies
     if (options.autoFetch !== false) {
       fetchServices();
     }
-  }, [options.category, options.state, options.minPrice, options.maxPrice]);
+  }, [fetchServices, options.autoFetch]); 
 
   return {
     services,

@@ -1,4 +1,5 @@
-// src/lib/auth/session.ts
+import { nanoid } from 'nanoid';
+
 const SESSIONS = new Map<string, { userId: string; expiresAt: Date }>();
 
 export function createSession(userId: string): string {

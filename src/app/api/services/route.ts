@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     let query = supabase
       .from('services')
@@ -131,15 +131,16 @@ export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
-      role: ['freelancer', 'both'],
-      rateLimit: {
-        key: 'createService',
-        max: 10,
-        window: 3600000, // 1 hour
-      },
-    });
+      roles: ['freelancer', 'both'],
+      rateLimit:'createService',});
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
 
     const body = await request.json();
     
@@ -154,7 +155,7 @@ export async function POST(request: NextRequest) {
 
     const validatedData = serviceSchema.parse(sanitizedBody);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Check service limit (max 20 active services per user)
     const { count: serviceCount } = await supabase
@@ -183,8 +184,8 @@ export async function POST(request: NextRequest) {
         category: validatedData.category,
         base_price: validatedData.base_price,
         delivery_days: validatedData.delivery_days,
-        images: validatedData.images || [],
-        service_location: validatedData.service_location,
+        images: body.images || [],
+        service_location: body.service_location,
         is_active: true,
         views_count: 0,
         orders_count: 0,
@@ -210,12 +211,12 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.warn('Service validation failed', undefined, { errors: error.errors });
+      logger.warn('Service validation failed', { errors: error.issues });
       return NextResponse.json(
         { 
           success: false, 
-          error: error.errors[0]?.message || 'Validation failed',
-          details: error.errors,
+          error: error.issues[0]?.message || 'Validation failed',
+          details: error.issues,
         },
         { status: 400 }
       );

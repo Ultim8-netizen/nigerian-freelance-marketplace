@@ -23,7 +23,7 @@ export const queryKeys = {
   
   // Services
   services: ['services'] as const,
-  servicesList: (filters?: Record<string, any>) => 
+  servicesList: (filters?: Record<string, unknown>) => 
     ['services', 'list', filters] as const,
   serviceDetail: (id: string) => 
     ['services', 'detail', id] as const,
@@ -31,7 +31,7 @@ export const queryKeys = {
   
   // Jobs
   jobs: ['jobs'] as const,
-  jobsList: (filters?: Record<string, any>) => 
+  jobsList: (filters?: Record<string, unknown>) => 
     ['jobs', 'list', filters] as const,
   jobDetail: (id: string) => 
     ['jobs', 'detail', id] as const,

@@ -7,9 +7,15 @@ import Image, { ImageProps } from 'next/image';
 import { getOptimizedImageUrl } from '@/lib/cloudinary/config';
 import { CloudinaryMonitor } from '@/lib/cloudinary/monitoring';
 
-interface OptimizedImageProps extends Omit<ImageProps, 'src'> {
+// ---------------------------
+// FIX: Omit 'quality' from ImageProps before extending
+// ---------------------------
+interface OptimizedImageProps 
+  extends Omit<ImageProps, 'src' | 'quality'> // <-- OMIT 'quality' HERE
+{
   src: string;
-  quality?: 'auto:low' | 'auto:good' | 'auto:best';
+  // Redefine 'quality' with your desired Cloudinary types
+  quality?: 'auto:low' | 'auto:good' | 'auto:best'; 
 }
 
 export function OptimizedImage({
@@ -41,6 +47,10 @@ export function OptimizedImage({
       width={width}
       height={height}
       alt={alt}
+      // Note: Next.js 'quality' prop is intentionally omitted here 
+      // because we handle image optimization via the 'optimizedSrc' URL.
+      // If Next.js 'quality' were required, you'd need to convert the 
+      // Cloudinary string ('auto:good') to a number (0-100) for the Image component.
       {...props}
     />
   );

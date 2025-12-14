@@ -19,7 +19,10 @@ export async function POST(request: NextRequest) {
       rateLimit: 'api',
     });
 
-    if (error) return error;
+    if (error || !user) return error || NextResponse.json(
+      { success: false, error: 'Authentication required' },
+      { status: 401 }
+    );
 
     const body = await request.json();
     const { folder = 'marketplace' } = body;

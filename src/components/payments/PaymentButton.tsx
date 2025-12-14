@@ -1,6 +1,3 @@
-// src/components/payments/PaymentButton.tsx
-// Fixed: Uses only client-safe config
-
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -17,9 +14,41 @@ interface PaymentButtonProps {
   onClose?: () => void;
 }
 
+// --- Flutterwave Type Definitions to resolve 'any' errors ---
+
+/** Defines the structure of the data returned by the Flutterwave callback. */
+interface FlutterwaveResponse {
+  status: 'successful' | 'pending' | 'cancelled' | string;
+  transaction_id: number;
+  tx_ref: string;
+  amount: number;
+  currency: string;
+}
+
+/** Defines the required configuration object for window.FlutterwaveCheckout. */
+interface FlutterwaveConfig {
+  public_key: string;
+  tx_ref: string;
+  amount: number;
+  currency: 'NGN' | string;
+  payment_options: string;
+  customer: {
+    email: string;
+    phone_number: string;
+    name: string;
+  };
+  customizations: {
+    title: string;
+    description: string;
+    logo: string;
+  };
+  callback: (response: FlutterwaveResponse) => void;
+  onclose: () => void;
+}
+
 declare global {
   interface Window {
-    FlutterwaveCheckout: (config: any) => void;
+    FlutterwaveCheckout: (config: FlutterwaveConfig) => void;
   }
 }
 
@@ -74,12 +103,12 @@ export function PaymentButton({
 
       const result = await response.json();
 
-      if (!result.success) {
+      if (!response.ok || !result.success) {
         throw new Error(result.error || 'Payment initialization failed');
       }
 
-      // Use inline checkout with client-safe public key
-      window.FlutterwaveCheckout({
+      // Configure the payment object using the defined interface
+      const config: FlutterwaveConfig = {
         public_key: flutterwaveClientConfig.publicKey,
         tx_ref: result.data.tx_ref,
         amount: amount,
@@ -95,7 +124,8 @@ export function PaymentButton({
           description: 'Payment for freelance services',
           logo: `${window.location.origin}/logo.png`,
         },
-        callback: async (response: any) => {
+        // Use typed response for the callback
+        callback: async (response: FlutterwaveResponse) => {
           if (response.status === 'successful') {
             // Verify payment on backend
             try {
@@ -129,10 +159,19 @@ export function PaymentButton({
           setIsLoading(false);
           onClose?.();
         },
-      });
-    } catch (error: any) {
+      };
+
+      // Use inline checkout with client-safe public key
+      window.FlutterwaveCheckout(config);
+      
+    } catch (error: unknown) { // Use unknown for the catch error
       console.error('Payment error:', error);
-      setError(error.message || 'Payment failed');
+      // Safely extract error message
+      if (error instanceof Error) {
+        setError(error.message);
+      } else {
+        setError('An unknown payment failure occurred.');
+      }
       setIsLoading(false);
     }
   };

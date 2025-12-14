@@ -10,9 +10,12 @@ export async function GET(request: NextRequest) {
       rateLimit: 'api',
     });
 
-    if (error) return error;
+    if (error || !user) return error || NextResponse.json(
+      { success: false, error: 'Unauthorized' },
+      { status: 401 }
+    );
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Get profile with trust data
     const { data: profile } = await supabase
@@ -47,7 +50,8 @@ export async function GET(request: NextRequest) {
       },
     });
 
-  } catch (error) {
+  } catch (err) {
+    console.error('Trust score fetch error:', err);
     return NextResponse.json({
       success: false,
       error: 'Failed to fetch trust score',

@@ -55,7 +55,7 @@ export default function AboutPage() {
             </h1>
 
             <p className="text-xl md:text-2xl text-blue-100 max-w-3xl mx-auto">
-              The platform that turns "F9" from failure into "Hustle Forward" — 
+              The platform that turns &ldquo;F9&rdquo; from failure into &ldquo;Hustle Forward&rdquo; &mdash; 
               where talent meets real opportunity.
             </p>
           </div>
@@ -83,7 +83,7 @@ export default function AboutPage() {
             <Card className="p-8 md:p-12 bg-linear-to-br from-red-50 to-orange-50 border-red-200">
               <div className="prose prose-lg max-w-none">
                 <p className="text-lg text-gray-800 leading-relaxed mb-6">
-                  I got tired of watching Nigerian students fight the same battles over and over—
+                  I got tired of watching Nigerian students fight the same battles over and over&mdash;
                   <span className="font-semibold text-red-600"> no access, no visibility, and no real opportunity </span>
                   to turn skills into money.
                 </p>
@@ -94,9 +94,9 @@ export default function AboutPage() {
                 </p>
 
                 <p className="text-lg text-gray-800 leading-relaxed">
-                  You shouldn't need NIN, BVN, or a foreign account just to get paid for work you already did. 
-                  You shouldn't depend on WhatsApp status views to sell the products you believe in. 
-                  And you shouldn't have to hope someone recognizes your worth by chance.
+                  You shouldn&apos;t need NIN, BVN, or a foreign account just to get paid for work you already did. 
+                  You shouldn&apos;t depend on WhatsApp status views to sell the products you believe in. 
+                  And you shouldn&apos;t have to hope someone recognizes your worth by chance.
                 </p>
               </div>
             </Card>
@@ -110,34 +110,34 @@ export default function AboutPage() {
           <div className="max-w-4xl mx-auto">
             <Card className="p-8 md:p-12 border-2 border-blue-200 bg-white shadow-xl">
               <div className="flex items-start gap-4 mb-6">
-                <div className="w-16 h-16 bg-linear-to-br from-red-600 to-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
+                <div className="w-16 h-16 bg-linear-to-br from-red-600 to-blue-600 rounded-full flex items-center justify-center shrink-0">
                   <Zap className="w-8 h-8 text-white" />
                 </div>
                 <div>
-                  <h2 className="text-3xl font-bold mb-2">Why "F9"?</h2>
+                  <h2 className="text-3xl font-bold mb-2">Why &ldquo;F9&rdquo;?</h2>
                   <p className="text-gray-600">The irony is intentional</p>
                 </div>
               </div>
 
               <div className="prose prose-lg max-w-none">
                 <p className="text-lg text-gray-800 leading-relaxed mb-6">
-                  I know what the name traditionally means—an F9 is supposed to be <span className="italic">failure</span>. 
+                  I know what the name traditionally means&mdash;an F9 is supposed to be <span className="italic">failure</span>. 
                   But here, <span className="font-bold text-blue-600">the joke flips.</span>
                 </p>
 
                 <p className="text-lg text-gray-800 leading-relaxed mb-6">
                   <span className="font-semibold bg-linear-to-r from-red-600 via-blue-600 to-purple-600 bg-clip-text text-transparent">
-                    F9 isn't a platform for failures; it's a platform built precisely because too many talented people 
-                    were being made to feel like failures by systems that weren't built for them.
+                    F9 isn&apos;t a platform for failures; it&apos;s a platform built precisely because too many talented people 
+                    were being made to feel like failures by systems that weren&apos;t built for them.
                   </span>
                 </p>
 
                 <div className="bg-blue-50 border-l-4 border-blue-600 p-6 rounded-r-lg">
                   <p className="text-xl font-bold text-blue-900 mb-2">
-                    F9 is where you "Hustle Forward," not backwards.
+                    F9 is where you &ldquo;Hustle Forward,&rdquo; not backwards.
                   </p>
                   <p className="text-blue-800">
-                    This is not just software. It's a correction. A redirection. A link that should have existed long ago.
+                    This is not just software. It&apos;s a correction. A redirection. A link that should have existed long ago.
                   </p>
                 </div>
               </div>
@@ -180,7 +180,7 @@ export default function AboutPage() {
       </section>
 
       {/* Who This Is For */}
-      <section className="py-20 bg-gradient-to-br from-purple-50 to-pink-50">
+      <section className="py-20 bg-linear-to-br from-purple-50 to-pink-50">
         <div className="container mx-auto px-4">
           <div className="max-w-4xl mx-auto">
             <div className="text-center mb-12">
@@ -192,11 +192,11 @@ export default function AboutPage() {
             <div className="grid md:grid-cols-2 gap-6">
               <Card className="p-6 hover:shadow-xl transition-shadow bg-white">
                 <div className="flex items-start gap-4">
-                  <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0 mt-1" />
+                  <CheckCircle className="w-6 h-6 text-green-600 shrink-0 mt-1" />
                   <div>
-                    <h3 className="font-semibold text-lg mb-2">You're Hustling</h3>
+                    <h3 className="font-semibold text-lg mb-2">You&apos;re Hustling</h3>
                     <p className="text-gray-600">
-                      Trying to pay bills without begging for "urgent 2k"
+                      Trying to pay bills without begging for &ldquo;urgent 2k&rdquo;
                     </p>
                   </div>
                 </div>
@@ -204,9 +204,9 @@ export default function AboutPage() {
 
               <Card className="p-6 hover:shadow-xl transition-shadow bg-white">
                 <div className="flex items-start gap-4">
-                  <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0 mt-1" />
+                  <CheckCircle className="w-6 h-6 text-green-600 shrink-0 mt-1" />
                   <div>
-                    <h3 className="font-semibold text-lg mb-2">You're Learning</h3>
+                    <h3 className="font-semibold text-lg mb-2">You&apos;re Learning</h3>
                     <p className="text-gray-600">
                       Building skills and want to earn while you grow
                     </p>
@@ -216,9 +216,9 @@ export default function AboutPage() {
 
               <Card className="p-6 hover:shadow-xl transition-shadow bg-white">
                 <div className="flex items-start gap-4">
-                  <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0 mt-1" />
+                  <CheckCircle className="w-6 h-6 text-green-600 shrink-0 mt-1" />
                   <div>
-                    <h3 className="font-semibold text-lg mb-2">You're Surviving</h3>
+                    <h3 className="font-semibold text-lg mb-2">You&apos;re Surviving</h3>
                     <p className="text-gray-600">
                       Making it work day by day and need a reliable channel
                     </p>
@@ -228,9 +228,9 @@ export default function AboutPage() {
 
               <Card className="p-6 hover:shadow-xl transition-shadow bg-white">
                 <div className="flex items-start gap-4">
-                  <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0 mt-1" />
+                  <CheckCircle className="w-6 h-6 text-green-600 shrink-0 mt-1" />
                   <div>
-                    <h3 className="font-semibold text-lg mb-2">You're Building</h3>
+                    <h3 className="font-semibold text-lg mb-2">You&apos;re Building</h3>
                     <p className="text-gray-600">
                       Creating something and need visibility without barriers
                     </p>
@@ -240,13 +240,13 @@ export default function AboutPage() {
             </div>
 
             <div className="mt-12 text-center">
-              <Card className="p-8 bg-gradient-to-r from-blue-600 to-purple-600 text-white border-none">
+              <Card className="p-8 bg-linear-to-r from-blue-600 to-purple-600 text-white border-none">
                 <p className="text-2xl font-bold mb-2">
                   F9 exists to lift some weight off your shoulders.
                 </p>
                 <p className="text-lg text-blue-100">
-                  Whether you're offering a skill, selling a product, or just trying to survive—
-                  there's room for you here.
+                  Whether you&apos;re offering a skill, selling a product, or just trying to survive&mdash;
+                  there&apos;s room for you here.
                 </p>
               </Card>
             </div>
@@ -258,9 +258,9 @@ export default function AboutPage() {
       <section className="py-20">
         <div className="container mx-auto px-4">
           <div className="max-w-4xl mx-auto">
-            <Card className="p-8 md:p-12 bg-gradient-to-br from-gray-900 to-blue-900 text-white border-none shadow-2xl">
+            <Card className="p-8 md:p-12 bg-linear-to-br from-gray-900 to-blue-900 text-white border-none shadow-2xl">
               <div className="flex flex-col md:flex-row items-start gap-8">
-                <div className="w-32 h-32 bg-gradient-to-br from-red-500 to-purple-600 rounded-full flex items-center justify-center text-6xl font-bold flex-shrink-0">
+                <div className="w-32 h-32 bg-linear-to-br from-red-500 to-purple-600 rounded-full flex items-center justify-center text-6xl font-bold shrink-0">
                   AP
                 </div>
                 <div className="flex-1">
@@ -268,9 +268,9 @@ export default function AboutPage() {
                   <p className="text-blue-200 mb-6">Founder & Creator of F9</p>
                   
                   <blockquote className="text-lg leading-relaxed border-l-4 border-blue-400 pl-6 mb-6">
-                    "I built F9 because I got tired of watching Nigerian students fight the same battles 
+                    &ldquo;I built F9 because I got tired of watching Nigerian students fight the same battles 
                     over and over. This platform exists because talent without opportunity is just 
-                    potential—and potential doesn't pay bills."
+                    potential&mdash;and potential doesn&apos;t pay bills.&rdquo;
                   </blockquote>
 
                   <div className="flex flex-wrap gap-4">
@@ -295,7 +295,7 @@ export default function AboutPage() {
       </section>
 
       {/* Final CTA */}
-      <section className="py-20 bg-gradient-to-br from-red-600 via-blue-600 to-purple-600 text-white relative overflow-hidden">
+      <section className="py-20 bg-linear-to-br from-red-600 via-blue-600 to-purple-600 text-white relative overflow-hidden">
         <div className="absolute inset-0 opacity-10">
           <div className="absolute inset-0" style={{
             backgroundImage: `url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z' fill='%23ffffff' fill-opacity='1' fill-rule='evenodd'/%3E%3C/svg%3E")`,

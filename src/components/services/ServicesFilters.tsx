@@ -1,4 +1,3 @@
-// src/components/services/ServicesFilters.tsx
 // Filter sidebar for services browse page
 
 'use client';
@@ -8,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
-import { SERVICE_CATEGORIES } from '@/types/service-categories';
+import { SERVICE_CATEGORIES } from '@/types/service.categories';
 import { NIGERIAN_STATES } from '@/types/location.types';
 import { Search, MapPin, DollarSign, Filter } from 'lucide-react';
 
@@ -87,7 +86,8 @@ export function ServicesFilters({ currentFilters }: ServicesFiltersProps) {
 
         {/* Search */}
         <div>
-          <label className="block text-sm font-medium mb-2 flex items-center gap-2">
+          {/* Removed 'block' as 'flex' is already setting the display property */}
+          <label className="text-sm font-medium mb-2 flex items-center gap-2">
             <Search className="w-4 h-4" />
             Search Services
           </label>
@@ -125,7 +125,8 @@ export function ServicesFilters({ currentFilters }: ServicesFiltersProps) {
 
         {/* Price Range */}
         <div>
-          <label className="block text-sm font-medium mb-2 flex items-center gap-2">
+          {/* Removed 'block' as 'flex' is already setting the display property */}
+          <label className="text-sm font-medium mb-2 flex items-center gap-2">
             <DollarSign className="w-4 h-4" />
             Price Range (₦)
           </label>
@@ -188,7 +189,8 @@ export function ServicesFilters({ currentFilters }: ServicesFiltersProps) {
 
         {/* Location */}
         <div>
-          <label className="block text-sm font-medium mb-2 flex items-center gap-2">
+          {/* Removed 'block' as 'flex' is already setting the display property */}
+          <label className="text-sm font-medium mb-2 flex items-center gap-2">
             <MapPin className="w-4 h-4" />
             Location (Proximity)
           </label>

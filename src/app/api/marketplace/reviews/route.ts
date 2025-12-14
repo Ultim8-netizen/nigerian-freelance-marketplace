@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
     const sellerId = sanitizeUuid(searchParams.get('seller_id') || '');
     const orderId = sanitizeUuid(searchParams.get('order_id') || '');
 
-    const supabase = createClient();
+    const supabase = await createClient();
     let query = supabase
       .from('marketplace_reviews')
       .select(`
@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
 // POST - Create review
 export async function POST(request: NextRequest) {
   try {
-    const authResult = await requireAuth(request);
+    const authResult = await requireAuth();
     if (authResult instanceof NextResponse) return authResult;
     const { user } = authResult;
 
@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
     };
 
     const validated = createReviewSchema.parse(sanitized);
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Verify order exists and belongs to user
     const { data: order, error: orderError } = await supabase
@@ -175,7 +175,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0]?.message || 'Validation failed' },
+        { success: false, error: error.issues[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }
@@ -207,8 +207,8 @@ async function updateProductRating(supabase: SupabaseClient, productId: string) 
         })
         .eq('id', productId);
     }
-  } catch (error) {
-    logger.error('Failed to update product rating', { error, productId });
+  } catch (err) {
+    logger.error('Failed to update product rating', err as Error, { productId });
   }
 }
 
@@ -231,7 +231,7 @@ async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
         })
         .eq('id', sellerId);
     }
-  } catch (error) {
-    logger.error('Failed to update seller rating', { error, sellerId });
+  } catch (err) {
+    logger.error('Failed to update seller rating', err as Error, { sellerId });
   }
 }

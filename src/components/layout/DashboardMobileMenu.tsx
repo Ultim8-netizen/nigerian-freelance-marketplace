@@ -1,4 +1,3 @@
-// src/components/layout/DashboardMobileMenu.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -19,15 +18,12 @@ interface DashboardMobileMenuProps {
   userType?: 'freelancer' | 'client' | 'both';
 }
 
-export function DashboardMobileMenu({ userType: _userType = 'both' }: DashboardMobileMenuProps) {
-  const [isOpen, setIsOpen] = useState(false);
+// Suppress unused variable warning for the userType prop if it's not used for filtering yet.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function DashboardMobileMenu({ userType = 'both' }: DashboardMobileMenuProps) {
+  // Removed: const [isOpen, setIsOpen] = useState(false); and the associated useEffect.
+  // This component implements a fixed bottom bar, so the open/close state logic is unnecessary here.
   const pathname = usePathname();
-
-  // Close menu on route change
-  useEffect(() => {
-    //eslint-disable-next-line react-hooks/set-state-in-effect
-    setIsOpen(false);
-  }, [pathname]);
 
   const bottomNavItems = [
     {
@@ -98,11 +94,16 @@ export function DashboardMobileMenu({ userType: _userType = 'both' }: DashboardM
 }
 
 // Alternative: Full Sheet Menu for Mobile (if you prefer hamburger menu instead of bottom nav)
+// Suppress unused variable warning for the userType prop if it's not used for filtering yet.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function DashboardMobileSheet({ userType = 'both' }: DashboardMobileMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const pathname = usePathname();
 
   useEffect(() => {
+    // This effect is necessary to close the sheet menu after a successful route change.
+    // The warning is suppressed because this is a standard pattern for sheet/modal components in Next.js/React Router.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsOpen(false);
   }, [pathname]);
 

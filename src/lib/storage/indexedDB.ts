@@ -12,7 +12,7 @@ interface VideoRecord {
   id: string;
   blob: Blob;
   timestamp: number;
-  challenges: any[];
+  challenges: unknown[]; // FIX: Changed 'any[]' to 'unknown[]' for better type safety
   metadata: {
     faceDetected: boolean;
     faceConfidence: number;

@@ -1,6 +1,4 @@
-// ============================================================================
 // Visually smoother F9 Premium Spinner
-// ============================================================================
 
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";

@@ -38,7 +38,7 @@ export async function GET(
       );
     }
 
-    const supabase = client();
+    const supabase = await client();
     const { data: product, error } = await supabase
       .from('products')
       .select(`
@@ -77,7 +77,7 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await auth(req);
+    const authResult = await auth();
     if (authResult instanceof Res) return authResult;
     const { user } = authResult;
 
@@ -86,7 +86,7 @@ export async function PATCH(
       return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
     }
 
-    const ownershipResult = await ownership(req, 'products', productId, 'seller_id');
+    const ownershipResult = await ownership('products', productId, 'seller_id');
     if (ownershipResult instanceof Res) return ownershipResult;
 
     const rateLimitResult = await rateLimit('api', user.id);
@@ -105,7 +105,7 @@ export async function PATCH(
     };
 
     const validated = updateSchema.parse(sanitized);
-    const supabase = client();
+    const supabase = await client();
 
     const { data: updated, error } = await supabase
       .from('products')
@@ -132,7 +132,7 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof Z.ZodError) {
       return Res.json(
-        { success: false, error: error.errors[0]?.message || 'Validation failed' },
+        { success: false, error: error.issues[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }
@@ -148,7 +148,7 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await auth(req);
+    const authResult = await auth();
     if (authResult instanceof Res) return authResult;
     const { user } = authResult;
 
@@ -157,7 +157,7 @@ export async function DELETE(
       return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
     }
 
-    const supabase = client();
+    const supabase = await client();
     const { data: product } = await supabase
       .from('products')
       .select('seller_id, sales_count')

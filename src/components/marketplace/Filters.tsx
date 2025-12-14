@@ -1,4 +1,3 @@
-// src/components/marketplace/Filters.tsx
 'use client';
 
 import { useState } from 'react';
@@ -114,7 +113,7 @@ export function MarketplaceFilters({ currentFilters }: MarketplaceFiltersProps) 
 
         {/* Category */}
         <div>
-          <label className="block text-sm font-medium mb-2 flex items-center gap-2">
+          <label className="text-sm font-medium mb-2 flex items-center gap-2">
             <Package className="w-4 h-4" />
             Category
           </label>
@@ -165,7 +164,7 @@ export function MarketplaceFilters({ currentFilters }: MarketplaceFiltersProps) 
 
         {/* Price Range */}
         <div>
-          <label className="block text-sm font-medium mb-2 flex items-center gap-2">
+          <label className="text-sm font-medium mb-2 flex items-center gap-2">
             <DollarSign className="w-4 h-4" />
             Price Range (₦)
           </label>
@@ -219,7 +218,7 @@ export function MarketplaceFilters({ currentFilters }: MarketplaceFiltersProps) 
 
         {/* Location */}
         <div>
-          <label className="block text-sm font-medium mb-2 flex items-center gap-2">
+          <label className="text-sm font-medium mb-2 flex items-center gap-2">
             <MapPin className="w-4 h-4" />
             Location
           </label>

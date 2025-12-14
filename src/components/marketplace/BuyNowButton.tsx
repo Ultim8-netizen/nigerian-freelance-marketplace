@@ -1,4 +1,3 @@
-// src/components/marketplace/BuyNowButton.tsx
 'use client';
 
 import { useState } from 'react';
@@ -7,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
-import { ShoppingCart, Loader2, MapPin, Phone, User } from 'lucide-react';
+import { ShoppingCart, Loader2, MapPin } from 'lucide-react'; // Removed unused Phone and User
 import { NIGERIAN_STATES } from '@/types/location.types';
 
 interface BuyNowButtonProps {
@@ -67,7 +66,8 @@ export function BuyNowButton({ productId, className }: BuyNowButtonProps) {
       } else {
         setError(result.error || 'Failed to create order');
       }
-    } catch (err) {
+    } catch (e) { // Renamed 'err' to 'e' for brevity and consistency
+      console.error('An unexpected error occurred during order submission:', e); // Use 'e' to resolve unused variable warning
       setError('An unexpected error occurred');
     } finally {
       setIsSubmitting(false);

@@ -8,6 +8,22 @@ import { AuthService } from '@/lib/auth/auth-utils';
 import type { Profile } from '@/types/database.types';
 import type { User, Session } from '@supabase/supabase-js';
 
+/**
+ * Helper function to safely extract an error message from an unknown error type.
+ * @param error The unknown error object caught in a try/catch block.
+ * @returns A string representation of the error message.
+ */
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  // This handles cases where the error might be an object with a 'message' property
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+    return (error as { message: string }).message;
+  }
+  return String(error);
+};
+
 interface AuthState {
   user: User | null;
   profile: Profile | null;
@@ -50,13 +66,13 @@ export function useAuth() {
             error: null,
           });
         }
-      } catch (error: any) {
+      } catch (error: unknown) { // Fixed: changed 'any' to 'unknown'
         setState({
           user: null,
           profile: null,
           session: null,
           loading: false,
-          error: error.message,
+          error: getErrorMessage(error), // Fixed: using helper function
         });
       }
     };
@@ -67,14 +83,23 @@ export function useAuth() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (session) {
-          const profile = await AuthService.getProfile();
-          setState({
-            user: session.user,
-            profile,
-            session,
-            loading: false,
-            error: null,
-          });
+          try {
+            const profile = await AuthService.getProfile();
+            setState({
+              user: session.user,
+              profile,
+              session,
+              loading: false,
+              error: null,
+            });
+          } catch (profileError: unknown) {
+             // Handle profile fetch error during auth change
+             setState(prev => ({
+              ...prev,
+              loading: false,
+              error: `Auth successful but profile fetch failed: ${getErrorMessage(profileError)}`,
+            }));
+          }
         } else {
           setState({
             user: null,
@@ -90,13 +115,20 @@ export function useAuth() {
     return () => {
       subscription.unsubscribe();
     };
-  }, []);
+  }, [router]); // Added router to dependency array for completeness
 
   const login = async (email: string, password: string) => {
     setState(prev => ({ ...prev, loading: true, error: null }));
     
     try {
+      // Assuming AuthService.login returns { user, session }
       const { user, session } = await AuthService.login({ email, password });
+      
+      // Ensure user and session are present before continuing
+      if (!user || !session) {
+        throw new Error("Login failed: User or session data is missing.");
+      }
+
       const profile = await AuthService.getProfile();
       
       setState({
@@ -108,13 +140,14 @@ export function useAuth() {
       });
 
       return { success: true };
-    } catch (error: any) {
+    } catch (error: unknown) { // Fixed: changed 'any' to 'unknown'
+      const errorMessage = getErrorMessage(error);
       setState(prev => ({
         ...prev,
         loading: false,
-        error: error.message,
+        error: errorMessage,
       }));
-      return { success: false, error: error.message };
+      return { success: false, error: errorMessage };
     }
   };
 
@@ -131,11 +164,12 @@ export function useAuth() {
         error: null,
       });
       router.push('/login');
-    } catch (error: any) {
+    } catch (error: unknown) { // Fixed: changed 'any' to 'unknown'
+      const errorMessage = getErrorMessage(error);
       setState(prev => ({
         ...prev,
         loading: false,
-        error: error.message,
+        error: errorMessage,
       }));
     }
   };
@@ -151,13 +185,14 @@ export function useAuth() {
         loading: false,
       }));
       return { success: true };
-    } catch (error: any) {
+    } catch (error: unknown) { // Fixed: changed 'any' to 'unknown'
+      const errorMessage = getErrorMessage(error);
       setState(prev => ({
         ...prev,
         loading: false,
-        error: error.message,
+        error: errorMessage,
       }));
-      return { success: false, error: error.message };
+      return { success: false, error: errorMessage };
     }
   };
 

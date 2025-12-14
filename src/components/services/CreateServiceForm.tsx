@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { ImageUploader } from '@/components/cloudinary/ImageUploader';
-import { SERVICE_CATEGORIES } from '@/types/service-categories';
+import { SERVICE_CATEGORIES } from '@/types/service.categories';
 import { NIGERIAN_STATES } from '@/types/location.types';
 import { Loader2, Info } from 'lucide-react';
 
@@ -274,9 +274,9 @@ export function CreateServiceForm() {
         <h3 className="font-semibold text-lg mb-4">Your Location</h3>
         
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex gap-2">
-          <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+          <Info className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
           <p className="text-sm text-blue-800">
-            Your location helps buyers find services nearby. All services can be offered remotely or locally - it's up to you and the buyer to agree.
+            Your location helps buyers find services nearby. All services can be offered remotely or locally - it is up to you and the buyer to agree.
           </p>
         </div>
 

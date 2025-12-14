@@ -1,7 +1,6 @@
-// src/app/marketplace/products/[id]/page.tsx
 import { createClient } from '@/lib/supabase/server';
-import { notFound, redirect } from 'next/navigation';
 import Image from 'next/image';
+import { notFound } from 'next/navigation'; // <-- FIX: Import notFound
 import { formatCurrency, formatRelativeTime } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,7 +18,7 @@ export default async function ProductDetailPage({
 }: {
   params: { id: string };
 }) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
   // Fetch product with seller info

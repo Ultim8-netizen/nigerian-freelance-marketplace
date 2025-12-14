@@ -135,10 +135,19 @@ export const ALL_SERVICE_OPTIONS = Object.values(SERVICE_CATEGORIES).flatMap(
   (category) => category.options
 );
 
-// Helper to get category by service option
+/**
+ * Helper to get the category label based on a specific service option.
+ * * @param service The service option string to look up.
+ * @returns The label of the category the service belongs to.
+ */
 export function getCategoryByService(service: string): string {
-  for (const [key, category] of Object.entries(SERVICE_CATEGORIES)) {
-    if (category.options.includes(service)) {
+  // Renamed 'key' to '_key' to resolve the ESLint warning about unused variables.
+  for (const [_key, category] of Object.entries(SERVICE_CATEGORIES)) {
+    // The type assertion 'as readonly string[]' is used here to resolve 
+    // TypeScript error TS2345. It tells TypeScript that although the array 
+    // elements are strict literals due to 'as const', it is safe to check 
+    // against a generic 'string' type using 'includes'.
+    if ((category.options as readonly string[]).includes(service)) {
       return category.label;
     }
   }

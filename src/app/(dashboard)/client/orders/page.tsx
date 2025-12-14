@@ -6,9 +6,10 @@ import { redirect } from 'next/navigation';
 import { OrderCard } from '@/components/orders/OrderCard';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Order } from '@/types/database.types';
 
 export default async function ClientOrdersPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   
   if (!user) {
@@ -73,7 +74,7 @@ export default async function ClientOrdersPage() {
         <TabsContent value="pending">
           {pendingOrders && pendingOrders.length > 0 ? (
             <div className="grid gap-6">
-              {pendingOrders.map((order) => (
+              {pendingOrders.map((order: Order) => (
                 <OrderCard
                   key={order.id}
                   order={order}
@@ -91,7 +92,7 @@ export default async function ClientOrdersPage() {
         <TabsContent value="active">
           {activeOrders && activeOrders.length > 0 ? (
             <div className="grid gap-6">
-              {activeOrders.map((order) => (
+              {activeOrders.map((order: Order) => (
                 <OrderCard
                   key={order.id}
                   order={order}
@@ -109,7 +110,7 @@ export default async function ClientOrdersPage() {
         <TabsContent value="completed">
           {completedOrders && completedOrders.length > 0 ? (
             <div className="grid gap-6">
-              {completedOrders.map((order) => (
+              {completedOrders.map((order: Order) => (
                 <OrderCard
                   key={order.id}
                   order={order}

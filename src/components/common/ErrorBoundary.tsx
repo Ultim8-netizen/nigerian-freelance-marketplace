@@ -1,6 +1,10 @@
+// src/components/common/ErrorBoundary.tsx
+// Next.js Image component wrapper with Cloudinary optimization
+
 'use client';
 
-import { Component, ReactNode } from 'react';
+// Import ErrorInfo from React
+import { Component, ReactNode, ErrorInfo } from 'react'; 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { AlertCircle } from 'lucide-react';
@@ -25,7 +29,8 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: any) {
+  // FIX: Replace 'any' with the correct type 'ErrorInfo'
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('Error caught by boundary:', error, errorInfo);
   }
 
@@ -57,5 +62,5 @@ export class ErrorBoundary extends Component<Props, State> {
 
 // Usage:
 // <ErrorBoundary>
-//   <YourComponent />
+//   <YourComponent />
 // </ErrorBoundary>

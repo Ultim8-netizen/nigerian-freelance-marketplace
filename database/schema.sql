@@ -1932,3 +1932,122 @@ ON liveness_verifications(user_id, verification_status);
 
 CREATE INDEX IF NOT EXISTS idx_liveness_verifications_created 
 ON liveness_verifications(created_at DESC);
+
+-- Create cloudinary_usage table
+CREATE TABLE IF NOT EXISTS cloudinary_usage (
+  id TEXT PRIMARY KEY DEFAULT 'global',
+  transformations INTEGER NOT NULL DEFAULT 0,
+  bandwidth BIGINT NOT NULL DEFAULT 0, -- bytes
+  storage BIGINT NOT NULL DEFAULT 0, -- bytes
+  last_checked TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Insert default record
+INSERT INTO cloudinary_usage (id, transformations, bandwidth, storage)
+VALUES ('global', 0, 0, 0)
+ON CONFLICT (id) DO NOTHING;
+
+-- Create index for last_checked queries
+CREATE INDEX IF NOT EXISTS idx_cloudinary_usage_last_checked 
+ON cloudinary_usage(last_checked);
+
+-- Enable RLS (optional - allows public read for monitoring dashboards)
+ALTER TABLE cloudinary_usage ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Anyone authenticated can read usage stats
+CREATE POLICY "Authenticated users can view Cloudinary usage"
+  ON cloudinary_usage FOR SELECT
+  TO authenticated
+  USING (true);
+
+-- Policy: Only service role can update (your backend)
+CREATE POLICY "Service role can manage Cloudinary usage"
+  ON cloudinary_usage FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- Trigger for updated_at
+CREATE TRIGGER update_cloudinary_usage_updated_at
+  BEFORE UPDATE ON cloudinary_usage
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
+-- VERIFICATION QUERIES
+-- ============================================================================
+
+-- Check if table was created
+SELECT table_name, column_name, data_type 
+FROM information_schema.columns 
+WHERE table_name = 'cloudinary_usage'
+ORDER BY ordinal_position;
+
+-- Check if default record exists
+SELECT * FROM cloudinary_usage WHERE id = 'global';
+
+-- Check RLS policies
+SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual
+FROM pg_policies
+WHERE tablename = 'cloudinary_usage';
+
+-- ============================================================================
+-- OPTIONAL: Admin function to get formatted usage stats
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION get_cloudinary_usage_stats()
+RETURNS TABLE(
+  metric TEXT,
+  current_value TEXT,
+  limit_value TEXT,
+  percentage NUMERIC,
+  status TEXT
+) AS $$
+DECLARE
+  v_usage RECORD;
+  v_gb CONSTANT BIGINT := 1024 * 1024 * 1024;
+BEGIN
+  SELECT * INTO v_usage FROM cloudinary_usage WHERE id = 'global';
+  
+  -- Transformations
+  RETURN QUERY SELECT
+    'Transformations'::TEXT,
+    v_usage.transformations::TEXT,
+    '25,000'::TEXT,
+    ROUND((v_usage.transformations::NUMERIC / 25000) * 100, 2),
+    CASE 
+      WHEN v_usage.transformations > 20000 THEN 'warning'
+      WHEN v_usage.transformations > 23000 THEN 'critical'
+      ELSE 'ok'
+    END::TEXT;
+  
+  -- Bandwidth
+  RETURN QUERY SELECT
+    'Bandwidth'::TEXT,
+    ROUND(v_usage.bandwidth::NUMERIC / v_gb, 2)::TEXT || ' GB',
+    '25 GB'::TEXT,
+    ROUND((v_usage.bandwidth::NUMERIC / (25 * v_gb)) * 100, 2),
+    CASE 
+      WHEN v_usage.bandwidth > (20 * v_gb) THEN 'warning'
+      WHEN v_usage.bandwidth > (23 * v_gb) THEN 'critical'
+      ELSE 'ok'
+    END::TEXT;
+  
+  -- Storage
+  RETURN QUERY SELECT
+    'Storage'::TEXT,
+    ROUND(v_usage.storage::NUMERIC / v_gb, 2)::TEXT || ' GB',
+    '25 GB'::TEXT,
+    ROUND((v_usage.storage::NUMERIC / (25 * v_gb)) * 100, 2),
+    CASE 
+      WHEN v_usage.storage > (20 * v_gb) THEN 'warning'
+      WHEN v_usage.storage > (23 * v_gb) THEN 'critical'
+      ELSE 'ok'
+    END::TEXT;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Test the function
+SELECT * FROM get_cloudinary_usage_stats();

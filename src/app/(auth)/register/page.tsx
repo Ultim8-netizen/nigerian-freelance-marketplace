@@ -13,8 +13,8 @@ export const metadata: Metadata = {
 
 export default function RegisterPage() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-blue-50/30 to-purple-50/30 py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
-      {/* Animated Background Elements */}
+    <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-gray-50 via-blue-50/30 to-purple-50/30 py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
+      {/* Animated Background Elements */}i
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-20 left-10 w-72 h-72 bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob" />
         <div className="absolute top-40 right-10 w-72 h-72 bg-purple-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-2000" />
@@ -36,7 +36,7 @@ export default function RegisterPage() {
               </div>
             </div>
             
-            <h1 className="text-3xl sm:text-4xl font-bold bg-gradient-to-r from-gray-900 via-blue-900 to-purple-900 bg-clip-text text-transparent mb-3 animate-in fade-in slide-in-from-top duration-700 delay-100">
+            <h1 className="text-3xl sm:text-4xl font-bold bg-linear-to-r from-gray-900 via-blue-900 to-purple-900 bg-clip-text text-transparent mb-3 animate-in fade-in slide-in-from-top duration-700 delay-100">
               Join {BRAND.NAME}
             </h1>
             
@@ -121,7 +121,7 @@ export default function RegisterPage() {
               {[1, 2, 3, 4].map((i) => (
                 <div 
                   key={i}
-                  className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 border-2 border-white"
+                  className="w-6 h-6 rounded-full bg-linear-to-br from-blue-400 to-purple-500 border-2 border-white"
                 />
               ))}
             </div>

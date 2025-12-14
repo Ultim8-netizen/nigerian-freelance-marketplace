@@ -1,4 +1,3 @@
-// src/components/marketplace/ProductCard.tsx
 'use client';
 
 import Image from 'next/image';
@@ -36,14 +35,16 @@ export function ProductCard({ product }: ProductCardProps) {
             <span className="text-xl font-bold text-blue-600">
               {formatCurrency(product.price)}
             </span>
-            {product.seller.identity_verified && (
+            {/* FIX 1: Use optional chaining to safely check identity_verified */}
+            {product.seller?.identity_verified && (
               <Badge variant="outline" className="text-xs">✓ Verified</Badge>
             )}
           </div>
           
           <div className="flex items-center gap-2 text-sm text-gray-600">
             <Star className="w-4 h-4 fill-yellow-400 stroke-yellow-400" />
-            <span>{product.seller.freelancer_rating.toFixed(1)}</span>
+            {/* FIX 2: Use optional chaining and nullish coalescing (?? 0) for freelancer_rating */}
+            <span>{(product.seller?.freelancer_rating ?? 0).toFixed(1)}</span>
             <span>• {product.sales_count} sold</span>
           </div>
         </div>

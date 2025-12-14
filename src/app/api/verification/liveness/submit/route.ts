@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 1. AUTHENTICATION CHECK
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    const supabase = createClient();
+    const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
     if (authError || !user) {
@@ -220,7 +220,7 @@ export async function POST(request: NextRequest) {
     await supabase.from('notifications').insert({
       user_id: user.id,
       type: 'verification_success',
-      title: '🎉 You\'re Verified!',
+      title: "🎉 You're Verified!",
       message: 'Your identity has been verified. You now have a verified badge on your profile.',
       link: '/dashboard/profile',
     });
@@ -254,12 +254,12 @@ export async function POST(request: NextRequest) {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (error instanceof z.ZodError) {
       logger.warn('Liveness verification validation failed', {
-        errors: error.errors,
+        errors: error.issues,
       });
       return NextResponse.json({
         success: false,
         error: 'Invalid verification data',
-        details: error.errors[0]?.message || 'Validation failed',
+        details: error.issues[0]?.message || 'Validation failed',
       }, { status: 400 });
     }
 

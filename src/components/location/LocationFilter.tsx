@@ -1,4 +1,3 @@
-// ============================================================================
 // src/components/location/LocationFilter.tsx
 // Filter jobs/services by location
 
@@ -22,11 +21,16 @@ export function LocationFilter({
   className,
 }: LocationFilterProps) {
   const [showFilter, setShowFilter] = useState(!!currentFilter);
-  const [state, setState] = useState(currentFilter?.state || '');
+  
+  // FIX 1: Explicitly type `state` as `string`. This allows the empty string ('')
+  // for "All States" without causing conflicts with the strict union type
+  // that `currentFilter?.state` would otherwise enforce on the state variable.
+  const [state, setState] = useState<string>(currentFilter?.state || '');
   const [city, setCity] = useState(currentFilter?.city || '');
   const [remoteOk, setRemoteOk] = useState(currentFilter?.remote_ok || false);
 
-  const cities = state ? MAJOR_CITIES[state] || [] : [];
+  // Use type assertion to safely access MAJOR_CITIES based on the current state string
+  const cities = state ? MAJOR_CITIES[state as keyof typeof MAJOR_CITIES] || [] : [];
 
   const handleApply = () => {
     if (!state && !remoteOk) {
@@ -35,9 +39,13 @@ export function LocationFilter({
       return;
     }
 
+    // FIX 2: Use type assertions when assigning `state` and `city` to `LocationFilter`.
+    // We confirm to TypeScript that if these values are not empty, they conform to the
+    // strict union types expected by the LocationFilter interface, as the
+    // options in the `<select>` element enforce this constraint at runtime.
     const filter: LocationFilter = {
-      state: state || undefined,
-      city: city || undefined,
+      state: (state || undefined) as LocationFilter['state'],
+      city: (city || undefined) as LocationFilter['city'],
       remote_ok: remoteOk,
     };
 

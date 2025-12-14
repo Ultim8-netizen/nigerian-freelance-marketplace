@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
 
     if (error) return error;
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     let query = supabase
       .from('products')
@@ -114,14 +114,17 @@ export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
-      rateLimit: {
-        key: 'createService',
-        max: 10,
-        window: 86400000, // 24 hours
-      },
-    });
+      rateLimit: 'createService', });
 
     if (error) return error;
+
+    // Type guard: ensure user is defined after auth check
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
 
     const body = await request.json();
     
@@ -136,7 +139,7 @@ export async function POST(request: NextRequest) {
 
     const validated = productSchema.parse(sanitizedBody);
     
-    const supabase = createClient();
+    const supabase = await createClient();
 
     const { data, error: createError } = await supabase
       .from('products')
@@ -165,7 +168,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0]?.message || 'Validation failed' },
+        { success: false, error: error.issues[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }

@@ -25,11 +25,19 @@ export async function POST(
 
     if (error) return error;
 
+    // Add type guard to ensure user is defined
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const orderId = params.id;
     const body = await request.json();
     const validatedData = deliverySchema.parse(body);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Get order
     const { data: order, error: orderError } = await supabase
@@ -93,7 +101,7 @@ export async function POST(
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0]?.message },
+        { success: false, error: error.issues[0]?.message || 'Validation error' },
         { status: 400 }
       );
     }

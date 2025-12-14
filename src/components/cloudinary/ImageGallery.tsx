@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { getCardImageUrl, getFullImageUrl } from '@/lib/cloudinary/config';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
-import { cn } from '@/lib/utils';
 
 interface ImageGalleryProps {
   images: string[];

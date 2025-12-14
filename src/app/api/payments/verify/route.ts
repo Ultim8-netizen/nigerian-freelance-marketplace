@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { transaction_id, tx_ref } = body;
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Verify payment with Flutterwave
     const verification = await FlutterwaveServerService.verifyPayment(transaction_id);

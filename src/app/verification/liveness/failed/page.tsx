@@ -5,7 +5,7 @@ import Link from 'next/link';
 
 export default function VerificationFailedPage() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-linear-to-br from-red-50 to-orange-50 flex items-center justify-center p-4">
       <Card className="max-w-lg w-full p-8 text-center">
         <div className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center mx-auto mb-6">
           <AlertCircle className="w-10 h-10 text-white" />
@@ -16,7 +16,7 @@ export default function VerificationFailedPage() {
         </h1>
 
         <p className="text-gray-700 mb-6">
-          We couldn't verify your identity through liveness check. This could be due to:
+          We could not verify your identity through liveness check. This could be due to:
         </p>
 
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-left">

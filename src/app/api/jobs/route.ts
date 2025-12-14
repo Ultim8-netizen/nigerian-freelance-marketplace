@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     let query = supabase
       .from('jobs')
@@ -113,15 +113,16 @@ export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
-      role: ['client', 'both'],
-      rateLimit: {
-        key: 'createJob',
-        max: 5,
-        window: 86400000, // 24 hours
-      },
-    });
+      roles: ['client', 'both'],
+      rateLimit:'createJob', });
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
 
     // Parse and sanitize request
     const body = await request.json();
@@ -137,7 +138,7 @@ export async function POST(request: NextRequest) {
     // Validate with Zod
     const validatedData = jobSchema.parse(sanitizedBody);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Create job
     const { data, error: jobError } = await supabase
@@ -178,12 +179,12 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.warn('Job validation failed', undefined, { errors: error.errors });
+      logger.warn('Job validation failed', { errors: error.issues });
       return NextResponse.json(
         { 
           success: false, 
-          error: error.errors[0]?.message || 'Validation failed',
-          details: error.errors 
+          error: error.issues[0]?.message || 'Validation failed',
+          details: error.issues 
         },
         { status: 400 }
       );

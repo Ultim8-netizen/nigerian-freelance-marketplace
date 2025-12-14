@@ -34,7 +34,7 @@ export async function GET(
       );
     }
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     const { data: service, error } = await supabase
       .from('services')
@@ -80,7 +80,7 @@ export async function GET(
       .from('services')
       .update({ views_count: service.views_count + 1 })
       .eq('id', serviceId)
-      .then();
+      .then(() => {});
 
     logger.info('Service viewed', { serviceId, viewCount: service.views_count + 1 });
 
@@ -104,7 +104,7 @@ export async function PATCH(
 ) {
   try {
     // 1. Authentication
-    const authResult = await requireAuth(request);
+    const authResult = await requireAuth();
     if (authResult instanceof NextResponse) return authResult;
     const { user } = authResult;
 
@@ -119,7 +119,6 @@ export async function PATCH(
 
     // 3. Ownership verification
     const ownershipResult = await requireOwnership(
-      request,
       'services',
       serviceId,
       'freelancer_id'
@@ -150,7 +149,7 @@ export async function PATCH(
     // 6. Validate with partial schema
     const validatedData = serviceSchema.partial().parse(sanitizedBody);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // 7. Update service
     const { data: updatedService, error } = await supabase
@@ -178,7 +177,7 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0]?.message || 'Validation failed' },
+        { success: false, error: error.issues[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }
@@ -198,7 +197,7 @@ export async function DELETE(
 ) {
   try {
     // 1. Authentication
-    const authResult = await requireAuth(request);
+    const authResult = await requireAuth();
     if (authResult instanceof NextResponse) return authResult;
     const { user } = authResult;
 
@@ -220,7 +219,7 @@ export async function DELETE(
       );
     }
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // 4. Verify ownership and get service details
     const { data: service } = await supabase

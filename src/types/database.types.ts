@@ -50,7 +50,7 @@ export interface Service {
   orders_count: number;
   created_at: string;
   updated_at: string;
-  freelancer?: Profile; // For joined queries
+  freelancer?: Profile;
   packages?: ServicePackage[];
 }
 
@@ -103,7 +103,7 @@ export interface Proposal {
   cover_letter: string;
   proposed_price: number;
   delivery_days: number;
-  portfolio_items: any[] | null;
+  portfolio_items: object[] | null;
   status: ProposalStatus;
   created_at: string;
   updated_at: string;
@@ -166,7 +166,7 @@ export interface Transaction {
   transaction_type: TransactionType;
   payment_method: string | null;
   status: TransactionStatus;
-  flutterwave_response: any;
+  flutterwave_response: unknown;
   paid_at: string | null;
   created_at: string;
 }
@@ -228,7 +228,7 @@ export interface Message {
   conversation_id: string;
   sender_id: string;
   message_text: string | null;
-  attachments: any[] | null;
+  attachments: object[] | null;
   is_read: boolean;
   read_at: string | null;
   created_at: string;
@@ -250,7 +250,7 @@ export interface Dispute {
   against: string;
   reason: string;
   description: string;
-  evidence: any[] | null;
+  evidence: object[] | null;
   status: DisputeStatus;
   resolution_notes: string | null;
   resolved_by: string | null;
@@ -324,7 +324,7 @@ export interface CreateProposalRequest {
   cover_letter: string;
   proposed_price: number;
   delivery_days: number;
-  portfolio_items?: any[];
+  portfolio_items?: object[];
 }
 
 export interface CreateOrderRequest {
@@ -367,7 +367,7 @@ export interface PaginatedResponse<T> {
   };
 }
 
-export interface ApiResponse<T = any> {
+export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
@@ -413,7 +413,10 @@ export interface ProfileUpdateFormData {
   phone_number?: string;
 }
 
-// Category constants
+// ============================================================================
+// CATEGORY & BANK CONSTANTS
+// ============================================================================
+
 export const CATEGORIES = [
   'Graphics & Design',
   'Digital Marketing',
@@ -432,7 +435,6 @@ export const CATEGORIES = [
 
 export type Category = typeof CATEGORIES[number];
 
-// Nigerian banks
 export const NIGERIAN_BANKS = [
   { code: '044', name: 'Access Bank' },
   { code: '063', name: 'Access Bank (Diamond)' },
@@ -457,3 +459,58 @@ export const NIGERIAN_BANKS = [
   { code: '035', name: 'Wema Bank' },
   { code: '057', name: 'Zenith Bank' }
 ] as const;
+
+// ============================================================================
+// SUPABASE TYPE MAPPING
+// ============================================================================
+
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[];
+
+export interface WebhookLog {
+  id: number;
+  provider: string;
+  event: string;
+  verified: boolean;
+  payload: Json;
+  notes: string | null;
+  received_at: string;
+  ip_address: string | null;
+}
+
+// This is the interface Supabase expects
+export interface Database {
+  public: {
+    Tables: {
+      transactions: {
+        Row: Transaction;
+        Insert: Partial<Transaction>;
+        Update: Partial<Transaction>;
+      };
+      webhook_logs: {
+        Row: WebhookLog;
+        Insert: Omit<WebhookLog, 'id'>;
+        Update: Partial<WebhookLog>;
+      };
+      // Map other tables here as you need them in the future
+    };
+    Functions: {
+      process_successful_payment: {
+        Args: {
+          p_transaction_id: string;
+          p_order_id: string;
+          p_flw_tx_id: number;
+          p_amount: number;
+        };
+        Returns: void;
+      };
+    };
+    Views: Record<string, never>;
+    Enums: Record<string, never>;
+  };
+}

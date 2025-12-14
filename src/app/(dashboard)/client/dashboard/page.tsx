@@ -8,9 +8,24 @@ import { formatCurrency } from '@/lib/utils';
 import { Briefcase, Users, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+// FIX 1: Corrected path for database types based on user context (src/types)
+import { 
+  Job, 
+  Order, 
+  Profile, 
+  // NOTE: You are not using the Supabase "Database" type wrapper, 
+  // but the specific types exported from your file, so we import those.
+} from '@/types/database.types'; 
+
+// --- Adjusted Type Definitions (Removed placehoders now using imported types) ---
+
+type TotalSpent = { amount: number }; // For the total spent query (Supabase format)
+
+// ---------------------------------------------
 
 export default async function ClientDashboard() {
-  const supabase = createClient();
+  const supabase = await createClient(); 
+  
   const { data: { user } } = await supabase.auth.getUser();
   
   if (!user) {
@@ -22,21 +37,21 @@ export default async function ClientDashboard() {
     .from('profiles')
     .select('*')
     .eq('id', user.id)
-    .single();
+    .single() as { data: Profile | null }; 
 
   // Get active jobs
   const { data: activeJobs, count: activeJobsCount } = await supabase
     .from('jobs')
-    .select('*', { count: 'exact' })
+    .select('*, proposals_count:proposals(count)', { count: 'exact' }) 
     .eq('client_id', user.id)
-    .eq('status', 'open');
-
+    .eq('status', 'open') as { data: (Job & { proposals_count: number | null })[] | null, count: number | null };
+  
   // Get ongoing orders
   const { data: ongoingOrders, count: ongoingCount } = await supabase
     .from('orders')
     .select('*, freelancer:profiles!orders_freelancer_id_fkey(*)', { count: 'exact' })
     .eq('client_id', user.id)
-    .in('status', ['awaiting_delivery', 'delivered']);
+    .in('status', ['awaiting_delivery', 'delivered']) as { data: Order[] | null, count: number | null };
 
   // Get completed orders
   const { count: completedCount } = await supabase
@@ -52,7 +67,7 @@ export default async function ClientDashboard() {
       *,
       job:jobs!proposals_job_id_fkey(client_id)
     `, { count: 'exact', head: true })
-    .eq('jobs.client_id', user.id)
+    .eq('job.client_id', user.id) 
     .eq('status', 'pending');
 
   // Calculate total spent
@@ -60,9 +75,9 @@ export default async function ClientDashboard() {
     .from('orders')
     .select('amount')
     .eq('client_id', user.id)
-    .in('status', ['completed', 'awaiting_delivery', 'delivered']);
+    .in('status', ['completed', 'awaiting_delivery', 'delivered']) as { data: TotalSpent[] | null };
 
-  const totalAmount = totalSpent?.reduce((sum, order) => sum + order.amount, 0) || 0;
+  const totalAmount = totalSpent?.reduce((sum: number, order: TotalSpent) => sum + order.amount, 0) || 0;
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -77,8 +92,9 @@ export default async function ClientDashboard() {
           icon={<Briefcase className="w-6 h-6" />}
           title="Active Jobs"
           value={activeJobsCount?.toString() || '0'}
-          color="bg-blue-500"
-          subtitle={`${proposalsCount || 0} new proposals`}
+          // FIX 2: Added missing required 'color' prop
+          color="bg-blue-500" 
+          subtitle={`${proposalsCount || 0} new proposals`} 
         />
         <StatCard
           icon={<Clock className="w-6 h-6" />}
@@ -124,7 +140,7 @@ export default async function ClientDashboard() {
           <h2 className="text-xl font-semibold mb-4">Recent Activity</h2>
           {ongoingOrders && ongoingOrders.length > 0 ? (
             <div className="space-y-3">
-              {ongoingOrders.slice(0, 3).map((order) => (
+              {ongoingOrders.slice(0, 3).map((order: Order) => ( 
                 <div key={order.id} className="border-l-4 border-blue-500 pl-3 py-2">
                   <p className="font-medium">{order.title}</p>
                   <p className="text-sm text-gray-600">
@@ -160,12 +176,12 @@ export default async function ClientDashboard() {
         <Card className="p-6">
           <h2 className="text-xl font-semibold mb-4">Your Active Job Posts</h2>
           <div className="space-y-4">
-            {activeJobs.map((job) => (
+            {activeJobs.map((job: Job & { proposals_count: number | null }) => ( // Keep the union type here for safety
               <div key={job.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
                 <div className="flex justify-between items-start mb-2">
                   <h3 className="font-semibold text-lg">{job.title}</h3>
                   <span className="text-sm text-blue-600 font-medium">
-                    {job.proposals_count} proposals
+                    {job.proposals_count} proposals 
                   </span>
                 </div>
                 <p className="text-gray-600 text-sm mb-3 line-clamp-2">{job.description}</p>
@@ -188,7 +204,7 @@ export default async function ClientDashboard() {
 
       {/* Getting Started Guide (for new users) */}
       {(!activeJobs || activeJobs.length === 0) && (!ongoingOrders || ongoingOrders.length === 0) && (
-        <Card className="p-8 bg-gradient-to-r from-blue-50 to-indigo-50">
+        <Card className="p-8 bg-linear-to-r from-blue-50 to-indigo-50">
           <h2 className="text-2xl font-bold mb-4">Get Started with F9</h2>
           <div className="grid md:grid-cols-2 gap-6">
             <div>

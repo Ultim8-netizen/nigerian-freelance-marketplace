@@ -16,7 +16,7 @@ export async function POST(
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
+    const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
     if (authError || !user) {
@@ -132,12 +132,12 @@ export async function POST(
       message:
         'Dispute raised successfully. Our team will review within 48 hours.',
     });
-  } catch (error: unknown) {
+  } catch (error) {
     console.error('Dispute error:', error);
 
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { success: false, error: error.issues[0].message },
         { status: 400 }
       );
     }
@@ -155,7 +155,7 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const supabase = createClient();
+    const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
     if (authError || !user) {
@@ -200,7 +200,7 @@ export async function GET(
       success: true,
       data: dispute,
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Dispute fetch error:', error);
     return NextResponse.json(
       { success: false, error: 'Failed to fetch dispute' },

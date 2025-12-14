@@ -1,9 +1,24 @@
-// ============================================================================
 // src/hooks/useOrders.ts
 // Orders management hook
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Order } from '@/types/database.types';
+
+/**
+ * Helper function to safely extract an error message from an unknown error type.
+ * @param error The unknown error object caught in a try/catch block.
+ * @returns A string representation of the error message.
+ */
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  // This handles cases where the error might be an object with a 'message' property
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+    return (error as { message: string }).message;
+  }
+  return String(error);
+};
 
 interface UseOrdersOptions {
   status?: string;
@@ -16,7 +31,8 @@ export function useOrders(options: UseOrdersOptions = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchOrders = async () => {
+  // Use useCallback to create a stable fetchOrders function, resolving dependency warnings
+  const fetchOrders = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -32,16 +48,17 @@ export function useOrders(options: UseOrdersOptions = {}) {
       if (result.success) {
         setOrders(result.data);
       } else {
-        throw new Error(result.error);
+        throw new Error(result.error || 'Unknown error fetching orders.');
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
-  };
+  }, [options.status, options.userType]); // Dependencies for fetchOrders
 
-  const deliverOrder = async (orderId: string, deliveryData: any) => {
+  // Fixed: Replaced 'any' with Record<string, unknown> for type safety
+  const deliverOrder = async (orderId: string, deliveryData: Record<string, unknown>) => {
     setLoading(true);
     setError(null);
 
@@ -58,11 +75,12 @@ export function useOrders(options: UseOrdersOptions = {}) {
         await fetchOrders(); // Refresh
         return { success: true };
       } else {
-        throw new Error(result.error);
+        throw new Error(result.error || 'Unknown error during order delivery.');
       }
-    } catch (err: any) {
-      setError(err.message);
-      return { success: false, error: err.message };
+    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
+      const errorMessage = getErrorMessage(err);
+      setError(errorMessage);
+      return { success: false, error: errorMessage };
     } finally {
       setLoading(false);
     }
@@ -72,7 +90,7 @@ export function useOrders(options: UseOrdersOptions = {}) {
     if (options.autoFetch !== false) {
       fetchOrders();
     }
-  }, [options.status, options.userType]);
+  }, [fetchOrders, options.autoFetch]); // Fixed: Added fetchOrders and options.autoFetch as dependencies
 
   return {
     orders,

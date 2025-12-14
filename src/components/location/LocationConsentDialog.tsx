@@ -24,7 +24,7 @@ export function LocationConsentDialog({
       <Card className="max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+          <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center shrink-0">
             <MapPin className="w-6 h-6 text-blue-600" />
           </div>
           <div>
@@ -32,7 +32,7 @@ export function LocationConsentDialog({
               Location Access Request
             </h2>
             <p className="text-gray-600">
-              We'd like to help you connect with people and opportunities in
+              We would like to help you connect with people and opportunities in
               your area
             </p>
           </div>
@@ -43,17 +43,17 @@ export function LocationConsentDialog({
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <h3 className="font-semibold mb-2 flex items-center gap-2">
               <Info className="w-5 h-5 text-blue-600" />
-              What We'll Collect
+              What We will Collect
             </h3>
             <ul className="space-y-2 text-sm text-gray-700">
               <li className="flex items-start gap-2">
-                <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
+                <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
                 <span>
                   <strong>Your approximate location</strong> (city and state only)
                 </span>
               </li>
               <li className="flex items-start gap-2">
-                <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
+                <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
                 <span>
                   <strong>Temporary GPS coordinates</strong> (only used for detection, never stored permanently)
                 </span>
@@ -140,7 +140,7 @@ export function LocationConsentDialog({
               <span className="text-sm text-gray-700">
                 I understand that my approximate location (city/state) will be
                 stored, and that temporary GPS coordinates will be sent to
-                OpenStreetMap's Nominatim service for geocoding (and immediately
+                OpenStreetMap&apos Nominatim service for geocoding (and immediately
                 discarded after).
               </span>
             </label>

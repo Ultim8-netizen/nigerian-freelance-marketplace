@@ -13,7 +13,7 @@ interface SearchFilters {
 }
 
 export async function searchServices(filters: SearchFilters) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const page = filters.page || 1;
   const perPage = filters.perPage || 20;
   const from = (page - 1) * perPage;

@@ -275,7 +275,7 @@ export function GradientBadge({
   return (
     <Badge
       className={cn(
-        'bg-gradient-to-r text-white border-transparent',
+        'bg-linear-to-r text-white border-transparent',
         className
       )}
       style={{

@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { proposalSchema } from '@/lib/validations';
-import { sanitizeText, sanitizeHtml, sanitizeUuid, sanitizeUrl } from '@/lib/security/sanitize';
+import { sanitizeHtml, sanitizeUuid, sanitizeUrl } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
@@ -13,15 +13,16 @@ export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
-      role: ['freelancer', 'both'],
-      rateLimit: {
-        key: 'submitProposal',
-        max: 20,
-        window: 86400000, // 24 hours
-      },
-    });
+      roles: ['freelancer', 'both'],
+      rateLimit: 'submitProposal',});
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
 
     const body = await request.json();
     
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
 
     const validatedData = proposalSchema.parse(sanitizedBody);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Check if job exists and is open
     const { data: job, error: jobError } = await supabase
@@ -127,12 +128,12 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.warn('Proposal validation failed', undefined, { errors: error.errors });
+      logger.warn('Proposal validation failed', { errors: error.issues });
       return NextResponse.json(
         { 
           success: false, 
-          error: error.errors[0]?.message || 'Validation failed',
-          details: error.errors 
+          error: error.issues[0]?.message || 'Validation failed',
+          details: error.issues 
         },
         { status: 400 }
       );

@@ -29,6 +29,12 @@ export async function GET(request: NextRequest) {
     });
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
 
     const searchParams = request.nextUrl.searchParams;
     const status = sanitizeText(searchParams.get('status') || '');
@@ -36,7 +42,7 @@ export async function GET(request: NextRequest) {
     const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
     const perPage = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     let query = supabase
       .from('orders')
@@ -106,6 +112,12 @@ export async function POST(request: NextRequest) {
     });
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
 
     const body = await request.json();
     
@@ -121,7 +133,7 @@ export async function POST(request: NextRequest) {
 
     const validatedData = createOrderSchema.parse(sanitizedBody);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Verify freelancer exists and is active
     const { data: freelancer, error: freelancerError } = await supabase
@@ -219,12 +231,12 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.warn('Order validation failed', undefined, { errors: error.errors });
+      logger.warn('Order validation failed', { errors: error.issues });
       return NextResponse.json(
         { 
           success: false, 
-          error: error.errors[0]?.message || 'Validation failed',
-          details: error.errors 
+          error: error.issues[0]?.message || 'Validation failed',
+          details: error.issues 
         },
         { status: 400 }
       );

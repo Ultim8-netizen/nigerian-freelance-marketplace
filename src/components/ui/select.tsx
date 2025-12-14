@@ -1,7 +1,5 @@
-// ============================================================================
 // src/components/ui/select.tsx
 // Radix-based Select component (fully accessible, shadcn-style)
-// ============================================================================
 
 "use client";
 

@@ -28,6 +28,7 @@ interface FraudDetectionSummary {
  * NOTE: In production, use a proper fingerprinting library.
  */
 async function getDeviceFingerprint(): Promise<string> {
+  // Placeholder implementation
   return 'device_fingerprint_placeholder';
 }
 
@@ -163,7 +164,7 @@ async function checkSuspiciousActivityFrequency(
  * Orchestrates all individual fraud checks to calculate a cumulative risk score.
  */
 export async function detectFraudulentAccount(userId: string): Promise<FraudDetectionSummary> {
-  const supabase = createClient();
+  const supabase = await createClient(); // FIX: Added await here
   const checks: Promise<FraudCheckResult>[] = [
     checkMultipleAccounts(supabase, userId),
     checkRapidAccountCreation(supabase, userId),
@@ -196,7 +197,7 @@ export async function detectFraudulentAccount(userId: string): Promise<FraudDete
  * Check for duplicate liveness attempts within a 24-hour period.
  */
 export async function checkDuplicateLiveness(userId: string): Promise<boolean> {
-  const supabase = createClient();
+  const supabase = await createClient(); // FIX: Added await here
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   
   const { count } = await supabase
@@ -215,7 +216,7 @@ export async function checkDuplicateLiveness(userId: string): Promise<boolean> {
 export async function detectFakeReviews(
   userId: string
 ): Promise<{ suspicious: boolean; reason?: string }> {
-  const supabase = createClient();
+  const supabase = await createClient(); // FIX: Added await here
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
   const { data: reviews, error } = await supabase
@@ -240,7 +241,7 @@ export async function detectFakeReviews(
   // Check 2: Rating manipulation (e.g., all 5-star or all 1-star)
   if (reviews.length >= 5) { // Only check if enough data points exist
     const firstRating = reviews[0].rating;
-    const allSame = reviews.every(r => r.rating === firstRating);
+    const allSame = reviews.every((r: { rating: number }) => r.rating === firstRating); // FIX: Explicitly typed 'r'
     
     if (allSame) {
       return {

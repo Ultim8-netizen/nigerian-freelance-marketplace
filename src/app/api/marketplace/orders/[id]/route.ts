@@ -2,12 +2,23 @@
 // PRODUCTION-READY: Marketplace order operations with complete CRUD
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/api/middleware';
-import { checkRateLimit } from '@/lib/rate-limit-upstash';
+import { requireAuth, RateLimiterType } from '@/lib/api/middleware';
 import { createClient } from '@/lib/supabase/server';
-import { sanitizeUuid, sanitizeText } from '@/lib/security/sanitize';
+import { sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
+
+// Separate rate limit check function
+async function checkRateLimit(type: string, userId: string) {
+  // Import dynamically to avoid circular dependencies
+  const { getRateLimitStatus } = await import('@/lib/api/middleware');
+  const status = await getRateLimitStatus(type as RateLimiterType, userId);
+  
+  return {
+    success: status.remaining > 0,
+    reset: status.reset.toISOString(),
+  };
+}
 
 const updateStatusSchema = z.object({
   status: z.enum(['confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']),
@@ -21,7 +32,7 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await requireAuth(request);
+    const authResult = await requireAuth();
     if (authResult instanceof NextResponse) return authResult;
     const { user } = authResult;
 
@@ -38,7 +49,7 @@ export async function GET(
       );
     }
 
-    const supabase = createClient();
+    const supabase = await createClient();
     const { data: order, error } = await supabase
       .from('marketplace_orders')
       .select(`
@@ -72,7 +83,7 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await requireAuth(request);
+    const authResult = await requireAuth();
     if (authResult instanceof NextResponse) return authResult;
     const { user } = authResult;
 
@@ -92,7 +103,7 @@ export async function PATCH(
     const body = await request.json();
     const validated = updateStatusSchema.parse(body);
 
-    const supabase = createClient();
+    const supabase = await createClient();
     const { data: order, error: orderError } = await supabase
       .from('marketplace_orders')
       .select('seller_id, buyer_id, product_id, status')
@@ -153,7 +164,7 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0]?.message || 'Validation failed' },
+        { success: false, error: error.issues[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }
@@ -169,7 +180,7 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await requireAuth(request);
+    const authResult = await requireAuth();
     if (authResult instanceof NextResponse) return authResult;
     const { user } = authResult;
 
@@ -186,7 +197,7 @@ export async function DELETE(
       );
     }
 
-    const supabase = createClient();
+    const supabase = await createClient();
     const { data: order, error: orderError } = await supabase
       .from('marketplace_orders')
       .select('buyer_id, seller_id, status')

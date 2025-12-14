@@ -4,7 +4,7 @@ export default function PrivacyPage() {
       <h1 className="text-3xl font-bold mb-6">Privacy Policy</h1>
       {/* # Privacy Policy
 
-**Last Updated: December 10, 2025**
+**Last Updated: December 20, 2025**
 
 ## 1. INTRODUCTION
 
@@ -773,7 +773,7 @@ By using our Platform, you:
 
 **© 2025 F9. All rights reserved.**
 
-**This Privacy Policy is effective as of December 10, 2025.** */}
+**This Privacy Policy is effective as of December 20, 2025.** */}
     </div>
   );
 }

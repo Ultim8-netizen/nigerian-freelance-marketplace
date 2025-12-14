@@ -10,8 +10,21 @@ import Link from 'next/link';
 import { formatCurrency, formatRelativeTime } from '@/lib/utils';
 import { Plus, Users, Eye, Clock } from 'lucide-react';
 
+interface Job {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  proposals_count: number;
+  views_count: number;
+  budget_min: number | null;
+  created_at: string;
+  required_skills: string[] | null;
+  client_id: string;
+}
+
 export default async function ClientJobsPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   
   if (!user) {
@@ -55,7 +68,7 @@ export default async function ClientJobsPage() {
 
       {jobs && jobs.length > 0 ? (
         <div className="space-y-4">
-          {jobs.map((job) => (
+          {jobs.map((job: Job) => (
             <Card key={job.id} className="p-6 hover:shadow-lg transition-shadow">
               <div className="flex justify-between items-start mb-4">
                 <div className="flex-1">
@@ -97,7 +110,7 @@ export default async function ClientJobsPage() {
 
               {job.required_skills && job.required_skills.length > 0 && (
                 <div className="flex flex-wrap gap-2 pt-4 border-t">
-                  {job.required_skills.slice(0, 5).map((skill, index) => (
+                  {job.required_skills.slice(0, 5).map((skill: string, index: number) => (
                     <Badge key={index} variant="outline">
                       {skill}
                     </Badge>

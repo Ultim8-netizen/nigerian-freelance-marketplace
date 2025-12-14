@@ -11,7 +11,7 @@ import { registerSchema } from '@/lib/validations';
 import { RegisterFormData } from '@/types/database.types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+// import { Select } from '@/components/ui/select'; // <-- REMOVED UNUSED IMPORT
 import { Card } from '@/components/ui/card';
 
 export function RegisterForm() {
@@ -51,7 +51,8 @@ export function RegisterForm() {
       } else {
         router.push('/client/dashboard');
       }
-    } catch (err) {
+    } catch (error) { // <-- RENAMED 'err' to '_error' or 'error' and it's used now by default to avoid a linter warning
+      console.error(error); // Optionally log the error for debugging
       setError('An unexpected error occurred');
     } finally {
       setIsLoading(false);

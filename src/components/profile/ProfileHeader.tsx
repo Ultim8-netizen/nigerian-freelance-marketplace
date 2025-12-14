@@ -1,32 +1,35 @@
-// src/components/profile/ProfileHeader.tsx
 'use client';
 
 import Image from 'next/image';
-import { VerifiedBadge, ProfileVerifiedBadge } from '@/components/verification/VerifiedBadge'; // From File 1
-import { Badge } from '@/components/ui/badge'; // From File 1
-import { Button } from '@/components/ui/button'; // From File 1
-import { Star, MapPin, Calendar, Shield } from 'lucide-react'; // From File 1
-import Link from 'next/link'; // From File 1
-import { TrustBadge } from '@/components/ui/TrustBadge'; // New component from File 2
+import { ProfileVerifiedBadge } from '@/components/verification/VerifiedBadge';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Star, MapPin, Calendar, Shield } from 'lucide-react';
+import Link from 'next/link';
+import { TrustBadge } from '@/components/ui/TrustBadge';
+
+// Defining the correct TrustLevel type based on src/components/ui/TrustBadge.tsx
+type TrustLevel = 'new' | 'verified' | 'trusted' | 'top_rated' | 'elite';
 
 interface ProfileHeaderProps {
   profile: {
     id: string;
     full_name: string;
     profile_image_url?: string;
-    bio?: string; // From File 1
+    bio?: string;
     location?: string;
     university?: string;
-    user_type: string; // From File 1
-    trust_level: string; // From File 2
-    trust_score: number; // From File 2
+    user_type: string;
+    // Now using the correctly defined union type
+    trust_level: TrustLevel; 
+    trust_score: number;
     freelancer_rating: number;
     total_jobs_completed: number;
-    created_at: string; // From File 1
-    liveness_verified: boolean; // Merged: now non-optional
-    identity_verified?: boolean; // From File 1
+    created_at: string;
+    liveness_verified: boolean;
+    identity_verified?: boolean;
   };
-  isOwnProfile?: boolean; // From File 1
+  isOwnProfile?: boolean;
 }
 
 export function ProfileHeader({ profile, isOwnProfile = false }: ProfileHeaderProps) {
@@ -72,9 +75,9 @@ export function ProfileHeader({ profile, isOwnProfile = false }: ProfileHeaderPr
               <div className="flex items-center gap-2 mb-2">
                 <h1 className="text-2xl font-bold">{profile.full_name}</h1>
                 
-                {/* Use TrustBadge from File 2 next to the name */}
+                {/* Use TrustBadge next to the name (Now strongly typed) */}
                 <TrustBadge 
-                  level={profile.trust_level as any}
+                  level={profile.trust_level}
                   score={profile.trust_score}
                   // Optionally add a className if needed for size adjustment
                 />

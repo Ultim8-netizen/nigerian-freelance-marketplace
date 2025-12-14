@@ -29,12 +29,18 @@ export async function GET(request: NextRequest) {
     });
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
     const role = searchParams.get('role'); // 'buyer' or 'seller'
 
-    const supabase = createClient();
+    const supabase = await createClient();
     let query = supabase
       .from('marketplace_orders')
       .select(`
@@ -80,11 +86,17 @@ export async function POST(request: NextRequest) {
     });
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
 
     const body = await request.json();
     const validated = createOrderSchema.parse(body);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Get product details
     const { data: product, error: productError } = await supabase
@@ -148,7 +160,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { success: false, error: error.issues[0].message },
         { status: 400 }
       );
     }

@@ -13,6 +13,12 @@ interface ListResult {
   shared: boolean;
 }
 
+/**
+ * Define a type for the window object that includes the custom storage property,
+ * allowing us to assign and export it without using 'any'.
+ */
+type WindowWithStorage = Window & { storage: StorageAPI };
+
 class StorageAPI {
   private readonly maxKeyLength = 200;
   private readonly maxValueSize = 5 * 1024 * 1024; // 5MB
@@ -153,9 +159,13 @@ class StorageAPI {
   }
 }
 
-// Initialize and attach to window
+// Initialize and attach to window without using 'any'
 if (typeof window !== 'undefined') {
-  (window as any).storage = new StorageAPI();
+  // Cast window to the augmented type
+  (window as unknown as WindowWithStorage).storage = new StorageAPI();
 }
 
-export const storage = typeof window !== 'undefined' ? (window as any).storage : null;
+// Export the storage instance, explicitly typed
+export const storage: StorageAPI | null = typeof window !== 'undefined' 
+  ? (window as unknown as WindowWithStorage).storage 
+  : null;

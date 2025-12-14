@@ -20,7 +20,7 @@ import { ChallengeValidator, type ChallengeType } from '@/lib/mediapipe/challeng
 import { livenessDB } from '@/lib/storage/indexedDB';
 import { Camera, X, CheckCircle, AlertCircle, Loader2, RotateCcw } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
-import type { FaceLandmarkerResult } from '@mediapipe/tasks-vision';
+import type { FaceLandmarkerResult, NormalizedLandmark } from '@mediapipe/tasks-vision';
 
 interface Challenge {
   type: ChallengeType;
@@ -133,6 +133,239 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
   }, [initRetryCount]);
 
   /**
+   * Draw face landmarks on canvas
+   */
+  const drawLandmarks = useCallback((landmarks: NormalizedLandmark[]) => {
+    if (!canvasRef.current || !videoRef.current) return;
+
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = '#22c55e';
+    landmarks.forEach((landmark) => {
+      const x = landmark.x * canvas.width;
+      const y = landmark.y * canvas.height;
+      ctx.beginPath();
+      ctx.arc(x, y, 2, 0, 2 * Math.PI);
+      ctx.fill();
+    });
+
+    if (landmarks.length > 0) {
+      const xs = landmarks.map((l) => l.x * canvas.width);
+      const ys = landmarks.map((l) => l.y * canvas.height);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+
+      ctx.strokeStyle = '#22c55e';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+    }
+  }, []);
+
+  /**
+   * Finish verification
+   */
+  const finishVerification = useCallback(() => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  }, [isRecording]);
+
+  /**
+   * Validate current challenge
+   */
+  const validateCurrentChallenge = useCallback((landmarks: NormalizedLandmark[]) => {
+    if (!challengeValidatorRef.current) return;
+
+    const currentChallenge = challenges[currentChallengeIndex];
+    if (!currentChallenge || currentChallenge.completed) return;
+
+    let result: { passed: boolean; confidence: number } | null = null;
+
+    switch (currentChallenge.type) {
+      case 'head_turn':
+        result = challengeValidatorRef.current.validateHeadTurn(
+          landmarks,
+          currentChallenge.direction as 'left' | 'right'
+        );
+        break;
+      case 'blink':
+        result = challengeValidatorRef.current.validateBlink(
+          landmarks,
+          currentChallenge.count || 2
+        );
+        break;
+      case 'smile':
+        result = challengeValidatorRef.current.validateSmile(landmarks);
+        break;
+      case 'head_nod':
+        result = challengeValidatorRef.current.validateHeadNod(landmarks);
+        break;
+    }
+
+    if (result) {
+      setChallenges((prev) =>
+        prev.map((c, i) =>
+          i === currentChallengeIndex
+            ? { ...c, progress: Math.min(result!.confidence, 1) }
+            : c
+        )
+      );
+
+      if (result.passed && result.confidence >= 0.8) {
+        setChallenges((prev) =>
+          prev.map((c, i) =>
+            i === currentChallengeIndex ? { ...c, completed: true, progress: 1 } : c
+          )
+        );
+
+        setTimeout(() => {
+          if (currentChallengeIndex + 1 < challenges.length) {
+            setCurrentChallengeIndex((prev) => prev + 1);
+          } else {
+            finishVerification();
+          }
+        }, 500);
+      }
+    }
+  }, [challenges, currentChallengeIndex, finishVerification]);
+
+  /**
+   * Start face detection loop
+   */
+  const startDetectionLoop = useCallback(() => {
+    const detect = async () => {
+      if (!videoRef.current || !faceDetectorRef.current) {
+        animationFrameRef.current = requestAnimationFrame(detect);
+        return;
+      }
+
+      try {
+        const result: FaceLandmarkerResult | null = await faceDetectorRef.current.detectFace(
+          videoRef.current
+        );
+
+        if (result && result.faceLandmarks && result.faceLandmarks.length > 0) {
+          const landmarks = result.faceLandmarks[0];
+          
+          setFaceDetected(true);
+          const confidence = landmarks.length > 0 ? 0.9 : 0;
+          setFaceConfidence(confidence);
+
+          drawLandmarks(landmarks);
+
+          if (isRecording && currentChallengeIndex < challenges.length) {
+            validateCurrentChallenge(landmarks);
+          }
+        } else {
+          setFaceDetected(false);
+          setFaceConfidence(0);
+          
+          if (canvasRef.current) {
+            const ctx = canvasRef.current.getContext('2d');
+            if (ctx) {
+              ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Detection error:', err);
+      }
+
+      animationFrameRef.current = requestAnimationFrame(detect);
+    };
+
+    detect();
+  }, [isRecording, currentChallengeIndex, challenges.length, drawLandmarks, validateCurrentChallenge]);
+
+  /**
+   * Save verification with timeout
+   */
+  const saveVerification = useCallback(async () => {
+    setIsProcessing(true);
+
+    // Set processing timeout
+    processingTimeoutRef.current = setTimeout(() => {
+      setError('Processing timed out. Please try again.');
+      setIsProcessing(false);
+    }, PROCESSING_TIMEOUT);
+
+    try {
+      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+      const videoId = uuidv4();
+      const allChallengesPassed = challenges.every((c) => c.completed);
+
+      await livenessDB.saveVideo({
+        id: videoId,
+        blob,
+        timestamp: Date.now(),
+        challenges: challenges.map((c) => ({
+          type: c.type,
+          direction: c.direction,
+          count: c.count,
+        })),
+        metadata: {
+          faceDetected: true,
+          faceConfidence,
+          allChallengesPassed,
+        },
+      });
+
+      // Clear timeout
+      if (processingTimeoutRef.current) {
+        clearTimeout(processingTimeoutRef.current);
+      }
+
+      onSuccess(videoId, challenges);
+    } catch (err) {
+      console.error('❌ Save error:', err);
+      
+      // Clear timeout
+      if (processingTimeoutRef.current) {
+        clearTimeout(processingTimeoutRef.current);
+      }
+      
+      setError('Failed to save verification. Please try again.');
+      setIsProcessing(false);
+    }
+  }, [challenges, faceConfidence, onSuccess]);
+
+  /**
+   * Cleanup resources
+   */
+  const cleanup = useCallback(() => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+    }
+
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+    }
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+    }
+
+    if (faceDetectorRef.current) {
+      faceDetectorRef.current.destroy();
+    }
+  }, [isRecording]);
+
+  /**
    * Initialize camera and face detector
    */
   useEffect(() => {
@@ -221,153 +454,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       mounted = false;
       cleanup();
     };
-  }, [generateChallenges, initializeMediaPipe]);
-
-  /**
-   * Start face detection loop
-   */
-  const startDetectionLoop = useCallback(() => {
-    const detect = async () => {
-      if (!videoRef.current || !faceDetectorRef.current) {
-        animationFrameRef.current = requestAnimationFrame(detect);
-        return;
-      }
-
-      try {
-        const result: FaceLandmarkerResult | null = await faceDetectorRef.current.detectFace(
-          videoRef.current
-        );
-
-        if (result && result.faceLandmarks && result.faceLandmarks.length > 0) {
-          const landmarks = result.faceLandmarks[0];
-          
-          setFaceDetected(true);
-          const confidence = landmarks.length > 0 ? 0.9 : 0;
-          setFaceConfidence(confidence);
-
-          drawLandmarks(landmarks);
-
-          if (isRecording && currentChallengeIndex < challenges.length) {
-            validateCurrentChallenge(landmarks);
-          }
-        } else {
-          setFaceDetected(false);
-          setFaceConfidence(0);
-          
-          if (canvasRef.current) {
-            const ctx = canvasRef.current.getContext('2d');
-            if (ctx) {
-              ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Detection error:', err);
-      }
-
-      animationFrameRef.current = requestAnimationFrame(detect);
-    };
-
-    detect();
-  }, [isRecording, currentChallengeIndex, challenges.length]);
-
-  /**
-   * Draw face landmarks on canvas
-   */
-  const drawLandmarks = useCallback((landmarks: any[]) => {
-    if (!canvasRef.current || !videoRef.current) return;
-
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = '#22c55e';
-    landmarks.forEach((landmark) => {
-      const x = landmark.x * canvas.width;
-      const y = landmark.y * canvas.height;
-      ctx.beginPath();
-      ctx.arc(x, y, 2, 0, 2 * Math.PI);
-      ctx.fill();
-    });
-
-    if (landmarks.length > 0) {
-      const xs = landmarks.map((l) => l.x * canvas.width);
-      const ys = landmarks.map((l) => l.y * canvas.height);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-
-      ctx.strokeStyle = '#22c55e';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
-    }
-  }, []);
-
-  /**
-   * Validate current challenge
-   */
-  const validateCurrentChallenge = useCallback((landmarks: any[]) => {
-    if (!challengeValidatorRef.current) return;
-
-    const currentChallenge = challenges[currentChallengeIndex];
-    if (!currentChallenge || currentChallenge.completed) return;
-
-    let result: { passed: boolean; confidence: number } | null = null;
-
-    switch (currentChallenge.type) {
-      case 'head_turn':
-        result = challengeValidatorRef.current.validateHeadTurn(
-          landmarks,
-          currentChallenge.direction as 'left' | 'right'
-        );
-        break;
-      case 'blink':
-        result = challengeValidatorRef.current.validateBlink(
-          landmarks,
-          currentChallenge.count || 2
-        );
-        break;
-      case 'smile':
-        result = challengeValidatorRef.current.validateSmile(landmarks);
-        break;
-      case 'head_nod':
-        result = challengeValidatorRef.current.validateHeadNod(landmarks);
-        break;
-    }
-
-    if (result) {
-      setChallenges((prev) =>
-        prev.map((c, i) =>
-          i === currentChallengeIndex
-            ? { ...c, progress: Math.min(result!.confidence, 1) }
-            : c
-        )
-      );
-
-      if (result.passed && result.confidence >= 0.8) {
-        setChallenges((prev) =>
-          prev.map((c, i) =>
-            i === currentChallengeIndex ? { ...c, completed: true, progress: 1 } : c
-          )
-        );
-
-        setTimeout(() => {
-          if (currentChallengeIndex + 1 < challenges.length) {
-            setCurrentChallengeIndex((prev) => prev + 1);
-          } else {
-            finishVerification();
-          }
-        }, 500);
-      }
-    }
-  }, [challenges, currentChallengeIndex]);
+  }, [generateChallenges, initializeMediaPipe, startDetectionLoop, cleanup]);
 
   /**
    * Start verification
@@ -404,94 +491,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       console.error('❌ Recording error:', err);
       setError('Failed to start recording. Please try again.');
     }
-  }, [faceDetected]);
-
-  /**
-   * Finish verification
-   */
-  const finishVerification = useCallback(() => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-    }
-  }, [isRecording]);
-
-  /**
-   * Save verification with timeout
-   */
-  const saveVerification = useCallback(async () => {
-    setIsProcessing(true);
-
-    // Set processing timeout
-    processingTimeoutRef.current = setTimeout(() => {
-      setError('Processing timed out. Please try again.');
-      setIsProcessing(false);
-    }, PROCESSING_TIMEOUT);
-
-    try {
-      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-      const videoId = uuidv4();
-      const allChallengesPassed = challenges.every((c) => c.completed);
-
-      await livenessDB.saveVideo({
-        id: videoId,
-        blob,
-        timestamp: Date.now(),
-        challenges: challenges.map((c) => ({
-          type: c.type,
-          direction: c.direction,
-          count: c.count,
-        })),
-        metadata: {
-          faceDetected: true,
-          faceConfidence,
-          allChallengesPassed,
-        },
-      });
-
-      // Clear timeout
-      if (processingTimeoutRef.current) {
-        clearTimeout(processingTimeoutRef.current);
-      }
-
-      onSuccess(videoId, challenges);
-    } catch (err) {
-      console.error('❌ Save error:', err);
-      
-      // Clear timeout
-      if (processingTimeoutRef.current) {
-        clearTimeout(processingTimeoutRef.current);
-      }
-      
-      setError('Failed to save verification. Please try again.');
-      setIsProcessing(false);
-    }
-  }, [challenges, faceConfidence, onSuccess]);
-
-  /**
-   * Cleanup resources
-   */
-  const cleanup = useCallback(() => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-
-    if (processingTimeoutRef.current) {
-      clearTimeout(processingTimeoutRef.current);
-    }
-
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-    }
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-    }
-
-    if (faceDetectorRef.current) {
-      faceDetectorRef.current.destroy();
-    }
-  }, [isRecording]);
+  }, [faceDetected, saveVerification]);
 
   /**
    * Retry initialization
@@ -528,8 +528,8 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-left">
             <p className="font-semibold mb-2">How to enable camera:</p>
             <ul className="text-xs space-y-1 text-blue-800">
-              <li>• Click the camera icon in your browser's address bar</li>
-              <li>• Select "Allow" for camera access</li>
+              <li>• Click the camera icon in your browser&apos;s address bar</li>
+              <li>• Select &ldquo;Allow&rdquo; for camera access</li>
               <li>• Refresh the page and try again</li>
             </ul>
           </div>
@@ -538,7 +538,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     );
   }
 
-  // Main UI (rest of the component remains the same...)
+  // Main UI
   return (
     <Card className="p-6">
       <div className="relative mb-6 bg-black rounded-lg overflow-hidden aspect-video">
@@ -576,7 +576,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
               </p>
               <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300"
+                  className="h-full bg-linear-to-r from-blue-500 to-purple-500 transition-all duration-300"
                   style={{
                     width: `${challenges[currentChallengeIndex].progress * 100}%`,
                   }}

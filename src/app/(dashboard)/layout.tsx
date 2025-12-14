@@ -35,7 +35,7 @@ interface DashboardLayoutProps {
 export default async function DashboardLayout({
   children,
 }: DashboardLayoutProps) {
-  const supabase = createClient();
+  const supabase = await createClient();
   
   // Authenticate user with detailed error handling
   const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -244,36 +244,3 @@ function BreadcrumbSkeleton() {
     </div>
   );
 }
-
-// ============================================================================
-// STYLES
-// ============================================================================
-
-/**
- * Add these to your global CSS or Tailwind config:
- * 
- * @keyframes shimmer {
- *   100% {
- *     transform: translateX(100%);
- *   }
- * }
- * 
- * @keyframes fade-in {
- *   from {
- *     opacity: 0;
- *     transform: translateY(10px);
- *   }
- *   to {
- *     opacity: 1;
- *     transform: translateY(0);
- *   }
- * }
- * 
- * .animate-shimmer {
- *   animation: shimmer 2s infinite;
- * }
- * 
- * .animate-fade-in {
- *   animation: fade-in 0.3s ease-out;
- * }
- */

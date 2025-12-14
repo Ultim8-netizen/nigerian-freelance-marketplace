@@ -25,11 +25,17 @@ export async function PUT(request: NextRequest) {
     });
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
 
     const body = await request.json();
     const validatedData = locationSchema.parse(body);
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Update profile with location
     const { error: updateError } = await supabase
@@ -66,10 +72,10 @@ export async function PUT(request: NextRequest) {
       success: true,
       message: 'Location updated successfully',
     });
-  } catch (error: unknown) {
+  } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { success: false, error: error.issues[0].message },
         { status: 400 }
       );
     }

@@ -10,14 +10,14 @@ export const metadata: Metadata = {
 
 export default function VerificationSuccessPage() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-linear-to-br from-green-50 to-emerald-50 flex items-center justify-center p-4">
       <Card className="max-w-lg w-full p-8 text-center">
         <div className="w-20 h-20 bg-green-600 rounded-full flex items-center justify-center mx-auto mb-6">
           <CheckCircle className="w-10 h-10 text-white" />
         </div>
 
         <h1 className="text-3xl font-bold text-green-900 mb-3">
-          🎉 You're Verified!
+          🎉 You are Verified!
         </h1>
 
         <p className="text-gray-700 mb-6">

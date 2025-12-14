@@ -1,7 +1,7 @@
 // src/lib/cloudinary/upload.ts
 // Client-side Cloudinary upload utilities with signed uploads
 
-import { cloudinaryConfig } from './config';
+// Removed unused import: import { cloudinaryConfig } from './config';
 
 interface UploadResult {
   url: string;
@@ -104,9 +104,13 @@ export async function uploadImage(
       format: result.format,
       bytes: result.bytes,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
+    // Fix: Using unknown and checking type instead of 'any'
     console.error('Cloudinary upload error:', error);
-    throw new Error(error.message || 'Failed to upload image');
+    const message = error instanceof Error 
+      ? error.message 
+      : 'Failed to upload image';
+    throw new Error(message);
   }
 }
 

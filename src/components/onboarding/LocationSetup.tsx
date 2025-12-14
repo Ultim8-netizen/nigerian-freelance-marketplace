@@ -1,6 +1,3 @@
-// src/components/onboarding/LocationSetup.tsx
-// Onboarding step for new users to set location (with complete button)
-
 'use client';
 
 import { useState } from 'react';
@@ -11,14 +8,18 @@ import { Card } from '@/components/ui/card';
 import { type UserLocation } from '@/types/location.types';
 import { MapPin, Users, Briefcase, Shield, Loader2, CheckCircle } from 'lucide-react';
 
+// The temporary LocationState interface has been removed as we align with UserLocation.
+
 export function LocationSetupStep() {
   const router = useRouter();
+  // Using the standard UserLocation type now
   const [location, setLocation] = useState<UserLocation | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isSkipping, setIsSkipping] = useState(false);
   const [error, setError] = useState('');
 
   const handleLocationSelect = (loc: UserLocation) => {
+    // Setting location directly as it conforms to the UserLocation type
     setLocation(loc);
     setError('');
   };
@@ -92,7 +93,7 @@ export function LocationSetupStep() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-50 flex items-center justify-center p-4">
       <div className="max-w-3xl w-full">
         {/* Header */}
         <div className="text-center mb-8">
@@ -127,7 +128,8 @@ export function LocationSetupStep() {
                   <p className="font-medium">Location Selected</p>
                   <p className="text-sm">
                     {location.city}, {location.state}
-                    {location.campus && ` • ${location.campus}`}
+                    {/* Using 'university' field from UserLocation type */}
+                    {location.university && ` • ${location.university}`}
                   </p>
                 </div>
               </div>
@@ -186,7 +188,7 @@ export function LocationSetupStep() {
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <Card className="p-4 bg-white">
             <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+              <div className="shrink-0 w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
                 <Users className="w-5 h-5 text-blue-600" />
               </div>
               <div>
@@ -200,7 +202,7 @@ export function LocationSetupStep() {
 
           <Card className="p-4 bg-white">
             <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
+              <div className="shrink-0 w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
                 <Briefcase className="w-5 h-5 text-green-600" />
               </div>
               <div>
@@ -214,7 +216,7 @@ export function LocationSetupStep() {
 
           <Card className="p-4 bg-white">
             <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+              <div className="shrink-0 w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
                 <MapPin className="w-5 h-5 text-purple-600" />
               </div>
               <div>
@@ -228,7 +230,7 @@ export function LocationSetupStep() {
 
           <Card className="p-4 bg-white">
             <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
+              <div className="shrink-0 w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
                 <Shield className="w-5 h-5 text-orange-600" />
               </div>
               <div>
@@ -242,13 +244,13 @@ export function LocationSetupStep() {
         </div>
 
         {/* Student-Specific Context */}
-        <Card className="p-4 bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
+        <Card className="p-4 bg-linear-to-r from-blue-600 to-indigo-600 text-white">
           <div className="flex items-start gap-3">
             <div className="text-2xl">🎓</div>
             <div>
               <h3 className="font-semibold mb-1">Built for Nigerian Students</h3>
               <p className="text-sm text-blue-100">
-                Whether you're in Lagos, Abuja, Ibadan, or anywhere else, connecting with your local student community helps everyone thrive. Find study partners, share notes, offer services, or hire talented peers on your campus.
+                Whether you are in Lagos, Abuja, Ibadan, or anywhere else, connecting with your local student community helps everyone thrive. Find study partners, share notes, offer services, or hire talented peers on your campus.
               </p>
             </div>
           </div>

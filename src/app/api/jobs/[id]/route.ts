@@ -108,6 +108,12 @@ export async function PATCH(
     });
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
 
     const jobId = sanitizeUuid(params.id);
     if (!jobId) {
@@ -185,7 +191,7 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0]?.message || 'Validation failed' },
+        { success: false, error: error.issues[0]?.message || 'Validation failed' },
         { status: 400 }
       );
     }
@@ -210,6 +216,12 @@ export async function DELETE(
     });
 
     if (error) return error;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
 
     const jobId = sanitizeUuid(params.id);
     if (!jobId) {

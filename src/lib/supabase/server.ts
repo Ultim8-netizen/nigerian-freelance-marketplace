@@ -1,13 +1,13 @@
 // src/lib/supabase/server.ts
-// Server-side Supabase operations with cookies
-
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { Database } from '@/types/database.types'; // Import the new type
 
-export const createClient = () => {
-  const cookieStore = cookies();
+export const createClient = async () => {
+  const cookieStore = await cookies();
 
-  return createServerClient(
+  // Add the <Database> generic here
+  return createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -18,15 +18,15 @@ export const createClient = () => {
         set(name: string, value: string, options: CookieOptions) {
           try {
             cookieStore.set({ name, value, ...options });
-          } catch (error) {
-            // Server component
+          } catch {
+            // Server component - cookie setting might fail in some contexts
           }
         },
         remove(name: string, options: CookieOptions) {
           try {
             cookieStore.set({ name, value: '', ...options });
-          } catch (error) {
-            // Server component
+          } catch {
+            // Server component - cookie setting might fail in some contexts
           }
         },
       },

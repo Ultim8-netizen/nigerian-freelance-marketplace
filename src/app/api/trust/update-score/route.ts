@@ -15,7 +15,7 @@ const schema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createClient();
+    const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Call the database function to add trust score event
-    const { data, error } = await supabase.rpc('add_trust_score_event', {
+    const { error } = await supabase.rpc('add_trust_score_event', {
       p_user_id: validated.user_id,
       p_event_type: validated.event_type,
       p_score_change: validated.score_change,
@@ -72,7 +72,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.errors[0].message },
+        { success: false, error: error.issues[0]?.message || 'Validation error' },
         { status: 400 }
       );
     }

@@ -15,7 +15,7 @@ export async function GET(
 ) {
   try {
     // 1. Authentication
-    const authResult = await requireAuth(request);
+    const authResult = await requireAuth();
     if (authResult instanceof NextResponse) return authResult;
     const { user } = authResult;
 
@@ -37,9 +37,10 @@ export async function GET(
       );
     }
 
-    const supabase = createClient();
+    // 4. Create Supabase client (await if it returns a Promise)
+    const supabase = await createClient();
 
-    // 4. Fetch order with related data
+    // 5. Fetch order with related data
     const { data: order, error } = await supabase
       .from('orders')
       .select(`
@@ -73,7 +74,7 @@ export async function GET(
       );
     }
 
-    // 5. Authorization check - must be client or freelancer
+    // 6. Authorization check - must be client or freelancer
     if (order.client_id !== user.id && order.freelancer_id !== user.id) {
       logger.warn('Unauthorized order access attempt', { orderId, userId: user.id });
       return NextResponse.json(
@@ -104,7 +105,7 @@ export async function PATCH(
 ) {
   try {
     // 1. Authentication
-    const authResult = await requireAuth(request);
+    const authResult = await requireAuth();
     if (authResult instanceof NextResponse) return authResult;
     const { user } = authResult;
 
@@ -126,9 +127,10 @@ export async function PATCH(
       );
     }
 
-    const supabase = createClient();
+    // 4. Create Supabase client (await if it returns a Promise)
+    const supabase = await createClient();
 
-    // 4. Get order details
+    // 5. Get order details
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .select('*')
@@ -142,7 +144,7 @@ export async function PATCH(
       );
     }
 
-    // 5. Authorization check
+    // 6. Authorization check
     if (order.client_id !== user.id && order.freelancer_id !== user.id) {
       logger.warn('Unauthorized order update attempt', { orderId, userId: user.id });
       return NextResponse.json(
@@ -154,7 +156,7 @@ export async function PATCH(
     const body = await request.json();
     const { action } = body;
 
-    // 6. Handle different actions based on user role
+    // 7. Handle different actions based on user role
     if (action === 'cancel' && order.client_id === user.id) {
       // Client can cancel before freelancer starts work
       if (order.status !== 'pending_payment' && order.status !== 'awaiting_delivery') {
