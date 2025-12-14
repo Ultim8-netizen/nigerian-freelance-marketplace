@@ -368,11 +368,14 @@ export default function HomePage() {
               <Link href="/about" className="hover:text-white transition-colors">
                 About
               </Link>
-              <Link href="/services" className="hover:text-white transition-colors">
-                Services
-              </Link>
               <Link href="/support" className="hover:text-white transition-colors">
                 Support
+              </Link>
+              <Link href="/privacy" className="hover:text-white transition-colors">
+                Privacy
+              </Link>
+              <Link href="/terms" className="hover:text-white transition-colors">
+                Terms
               </Link>
             </div>
           </div>
