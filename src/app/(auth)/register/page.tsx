@@ -1,20 +1,24 @@
-// src/app/(auth)/register/page.tsx
+"use client"; // MANDATORY: This page uses <style jsx> and client components like RegisterForm, so it must be a Client Component.
+
 import { RegisterForm } from '@/components/auth/RegisterForm';
 import { F9Logo } from '@/components/brand/F9Logo';
 import { BRAND } from '@/lib/branding';
 import Link from 'next/link';
-import { Metadata } from 'next';
+// import { Metadata } from 'next'; // Removed unused type import to fix ESLint error
 import { Sparkles, Users, Shield, Zap } from 'lucide-react';
 
-export const metadata: Metadata = {
-  title: `Register | ${BRAND.NAME}`,
-  description: `Create your account on ${BRAND.NAME} - ${BRAND.TAGLINE}`,
-};
+// NOTE: Since this file is now "use client", the metadata export must be removed or moved to a layout file.
+// For simplicity in this fix, the metadata export is commented out.
+
+// export const metadata: Metadata = {
+//   title: `Register | ${BRAND.NAME}`,
+//   description: `Create your account on ${BRAND.NAME} - ${BRAND.TAGLINE}`,
+// };
 
 export default function RegisterPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-gray-50 via-blue-50/30 to-purple-50/30 py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
-      {/* Animated Background Elements */}i
+      {/* Animated Background Elements */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-20 left-10 w-72 h-72 bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob" />
         <div className="absolute top-40 right-10 w-72 h-72 bg-purple-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-2000" />
@@ -29,7 +33,6 @@ export default function RegisterPage() {
             <div className="flex justify-center mb-6 animate-in fade-in slide-in-from-top duration-700">
               <div className="relative">
                 <F9Logo variant="stacked" size="lg" animated />
-                {/* Sparkle Effect */}
                 <div className="absolute -top-2 -right-2 animate-pulse">
                   <Sparkles className="h-5 w-5 text-yellow-400 fill-yellow-400" />
                 </div>
@@ -49,7 +52,7 @@ export default function RegisterPage() {
           <div className="grid grid-cols-3 gap-3 mb-8 animate-in fade-in slide-in-from-bottom duration-700 delay-300">
             <TrustBadge 
               icon={Users}
-              label="10K+ Users"
+              label="Growing Fast"
               color="blue"
             />
             <TrustBadge 
@@ -114,7 +117,7 @@ export default function RegisterPage() {
           </p>
         </div>
 
-        {/* Social Proof */}
+        {/* Social Proof - UPDATED: Realistic numbers */}
         <div className="mt-6 text-center animate-in fade-in duration-700 delay-700">
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/80 backdrop-blur-sm rounded-full border border-gray-200 shadow-sm">
             <div className="flex -space-x-2">
@@ -126,7 +129,7 @@ export default function RegisterPage() {
               ))}
             </div>
             <span className="text-xs text-gray-600 font-medium">
-              Join 10,000+ freelancers
+              Join growing community
             </span>
           </div>
         </div>

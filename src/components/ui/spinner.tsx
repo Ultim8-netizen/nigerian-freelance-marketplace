@@ -1,8 +1,14 @@
-// Visually smoother F9 Premium Spinner
+"use client"; // MANDATORY: Marks the file as a Client Component because it uses hooks (useEffect, useState)
 
 import { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, Variants, Transition } from "framer-motion";
 import { cn } from "@/lib/utils";
+
+// Define the cubic bezier array for "easeInOut" to satisfy strict TypeScript checking within Variants
+const easeInOut: Transition["ease"] = [0.42, 0, 0.58, 1];
+// Define the cubic bezier array for "linear"
+const easeLinear: Transition["ease"] = [0, 0, 1, 1];
+
 
 // ============================================================================
 // Compact Inline Spinner (for buttons, etc.)
@@ -12,6 +18,7 @@ export function Spinner({ className }: { className?: string }) {
   const [activeDot, setActiveDot] = useState(0);
 
   useEffect(() => {
+    // This interval controls the color cycling effect
     const interval = setInterval(() => {
       setActiveDot(prev => (prev + 1) % 3);
     }, 400);
@@ -25,7 +32,7 @@ export function Spinner({ className }: { className?: string }) {
       transition={{
         duration: 1.5,
         repeat: Infinity,
-        ease: "linear",
+        ease: easeLinear, // Using type-safe array for linear ease
       }}
       className={cn("inline-flex items-center justify-center", className)}
     >
@@ -49,7 +56,7 @@ export function Spinner({ className }: { className?: string }) {
           }}
           transition={{
             duration: 0.4,
-            ease: "easeInOut",
+            ease: easeInOut, // Using type-safe array for easeInOut
           }}
         />
       </svg>
@@ -71,10 +78,11 @@ export default function F9SpinnerPro() {
   const showTagline = cycleCount >= totalCyclesForTagline;
 
   useEffect(() => {
+    // Controls the dot color and cycle count
     const interval = setInterval(() => {
       setActiveDot(prev => {
         const next = (prev + 1) % 3;
-        if (next === 0) setCycleCount(c => c + 1);
+        if (next === 0) setCycleCount(c => c + 1); // Increment cycle count when dots loop
         return next;
       });
     }, 400);
@@ -83,18 +91,18 @@ export default function F9SpinnerPro() {
   }, []);
 
   // Slight oscillating scale on the whole F9 block
-  const pulseVariants = {
+  const pulseVariants: Variants = {
     animate: {
       scale: [1, 1.06, 1],
       transition: {
         duration: 1.2,
         repeat: Infinity,
-        ease: "easeInOut",
+        ease: easeInOut, // FIXED: Using array syntax for type safety
       },
     },
   };
 
-  const taglineVariants = {
+  const taglineVariants: Variants = {
     hidden: { opacity: 0 },
     visible: {
       opacity: 1,
@@ -102,7 +110,7 @@ export default function F9SpinnerPro() {
         duration: 1.2,
         repeat: Infinity,
         repeatType: "mirror" as const,
-        ease: "easeInOut",
+        ease: easeInOut, // FIXED: Using array syntax for type safety
       },
     },
   };
@@ -125,7 +133,7 @@ export default function F9SpinnerPro() {
             }}
             transition={{
               duration: 0.35,
-              ease: "easeInOut",
+              ease: easeInOut,
             }}
             className="ml-1"
           >
@@ -140,7 +148,7 @@ export default function F9SpinnerPro() {
             duration: 0.9,
             repeat: Infinity,
             repeatType: "loop" as const,
-            ease: "easeInOut",
+            ease: easeInOut,
           }}
         >
           |
