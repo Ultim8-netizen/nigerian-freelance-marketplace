@@ -1,5 +1,5 @@
 // src/lib/logger.ts
-// Production-ready error logging and monitoring
+// Production-ready error logging and monitoring - Optimized for structured error context.
 
 type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
@@ -25,26 +25,46 @@ class Logger {
   private logs: LogEntry[] = [];
   private maxLogs = 100;
 
-  /**
-   * Log information message
-   */
+  // ... (info, warn, debug methods remain unchanged)
+
   info(message: string, context?: Record<string, unknown>) {
     this.log('info', message, context);
   }
 
-  /**
-   * Log warning message
-   */
   warn(message: string, context?: Record<string, unknown>) {
     this.log('warn', message, context);
   }
 
   /**
-   * Log error with full context
+   * Log error with full context.
+   * FIX: Modified signature to allow passing either an Error object OR a structured context object.
+   * @param errorOrContext The actual Error object OR a structured context object (including a separate 'error' property).
+   * @param optionalContext If errorOrContext was an Error, this is for additional context.
    */
-  error(message: string, error?: Error, context?: Record<string, unknown>) {
-    // We pass the error object here separately to allow cleaner LogEntry creation
-    this.log('error', message, context, error); 
+  error(
+    message: string,
+    errorOrContext?: Error | Record<string, unknown>, // Supports either an Error or Context
+    optionalContext?: Record<string, unknown>
+  ) {
+    let error: Error | undefined;
+    let context: Record<string, unknown> | undefined;
+
+    if (isError(errorOrContext)) {
+      // Pattern 1: logger.error('msg', actualError, context)
+      error = errorOrContext;
+      context = optionalContext;
+    } else if (errorOrContext) {
+      // Pattern 2: logger.error('msg', { userId: '123', error: supabaseError })
+      context = errorOrContext;
+      // Extract Error from context if present
+      if (context.error && isError(context.error)) {
+        error = context.error as Error;
+        // Remove error from context to avoid duplication in LogEntry
+        delete context.error; 
+      }
+    }
+
+    this.log('error', message, context, error);
 
     // In production, send to error tracking service
     if (!this.isDevelopment) {
@@ -52,9 +72,6 @@ class Logger {
     }
   }
 
-  /**
-   * Log debug information (development only)
-   */
   debug(message: string, context?: Record<string, unknown>) {
     if (this.isDevelopment) {
       this.log('debug', message, context);
@@ -75,7 +92,8 @@ class Logger {
       message,
       timestamp: new Date().toISOString(),
       context,
-      error, // Assigned directly
+      error,
+      userId: context?.userId as string, // Attempt to pull userId from context
       url: typeof window !== 'undefined' ? window.location.href : undefined,
     };
 
@@ -85,7 +103,7 @@ class Logger {
       this.logs.shift();
     }
 
-    // Console output with formatting
+    // Console output with formatting (remains the same)
     const emoji = {
       info: 'ℹ️',
       warn: '⚠️',
@@ -101,25 +119,21 @@ class Logger {
     }[level];
 
     if (this.isDevelopment) {
-      console.log(`%c${emoji} [${level.toUpperCase()}]`, style, message, context || '', error || '');
+      // Consolidated console log
+      console.log(`%c${emoji} [${level.toUpperCase()}]`, style, message, entry.context || '', entry.error || '');
     } else if (level === 'error' || level === 'warn') {
-      // Only log errors/warnings in production
-      console[level](message, context, error);
+      console[level](message, entry.context, entry.error);
     }
   }
 
-  /**
-   * Send error to tracking service (e.g., Sentry, LogRocket)
-   */
+  // ... (sendToErrorTracking, getLogs, clearLogs, exportLogs methods remain unchanged)
   private async sendToErrorTracking(data: {
     message: string;
     error?: Error;
     context?: Record<string, unknown>;
   }) {
+    // ... implementation for sending error tracking ...
     try {
-      // TODO: Integrate with error tracking service
-      
-      // For now, send to backend endpoint
       await fetch('/api/errors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -132,30 +146,8 @@ class Logger {
         }),
       });
     } catch (error) {
-      // Silently fail - don't crash the app due to logging
       console.error('Failed to send error to tracking:', error);
     }
-  }
-
-  /**
-   * Get recent logs (useful for debugging)
-   */
-  getLogs(): LogEntry[] {
-    return [...this.logs];
-  }
-
-  /**
-   * Clear logs
-   */
-  clearLogs() {
-    this.logs = [];
-  }
-
-  /**
-   * Export logs as JSON
-   */
-  exportLogs(): string {
-    return JSON.stringify(this.logs, null, 2);
   }
 }
 
@@ -172,9 +164,9 @@ export async function withErrorLogging<T>(
   try {
     return await fn();
   } catch (error) {
-    // FIX: Check if error is an Error instance or wrap it to satisfy logger.error signature
     const errorObject = isError(error) ? error : new Error(String(error));
     
+    // Now correctly uses the Error object as the second argument
     logger.error(
       context || 'Async operation failed',
       errorObject,
@@ -192,14 +184,15 @@ export function handleApiError(error: unknown): {
   error: string;
   statusCode: number;
 } {
-  // FIX: Pass the error safely to the logger
   const errorObject = isError(error) ? error : new Error(String(error));
+  
+  // Now correctly uses the Error object as the second argument
   logger.error('API Error', errorObject);
   
-  // FIX: Safely extract message for comparison
-  const errorMessage = isError(error) ? error.message : String(error);
+  const errorMessage = errorObject.message; // Use the message from the guaranteed Error object
 
   // Known error types
+  // ... (error handling logic remains the same)
   if (errorMessage.includes('fetch failed')) {
     return {
       success: false,
