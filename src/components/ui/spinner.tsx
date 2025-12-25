@@ -1,4 +1,4 @@
-"use client"; // MANDATORY: Marks the file as a Client Component because it uses hooks (useEffect, useState)
+"use client"; // MANDATORY: Uses React hooks (useEffect, useState) - must be Client Component
 
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence, Variants, Transition } from "framer-motion";
@@ -11,7 +11,7 @@ const easeLinear: Transition["ease"] = [0, 0, 1, 1];
 
 
 // ============================================================================
-// Compact Inline Spinner (for buttons, etc.)
+// Compact Inline Spinner (for buttons, loading states, etc.)
 // ============================================================================
 export function Spinner({ className }: { className?: string }) {
   const dotColors = ["#3B82F6", "#EF4444", "#A855F7"];
@@ -32,12 +32,14 @@ export function Spinner({ className }: { className?: string }) {
       transition={{
         duration: 1.5,
         repeat: Infinity,
-        ease: easeLinear, // Using type-safe array for linear ease
+        ease: easeLinear,
       }}
       className={cn("inline-flex items-center justify-center", className)}
     >
       <svg
         className="w-full h-full"
+        width="24"
+        height="24"
         viewBox="0 0 24 24"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
@@ -56,7 +58,7 @@ export function Spinner({ className }: { className?: string }) {
           }}
           transition={{
             duration: 0.4,
-            ease: easeInOut, // Using type-safe array for easeInOut
+            ease: easeInOut,
           }}
         />
       </svg>
@@ -65,7 +67,7 @@ export function Spinner({ className }: { className?: string }) {
 }
 
 // ============================================================================
-// Full-screen F9 Premium Spinner
+// Full-screen F9 Premium Spinner (for page loads)
 // ============================================================================
 export default function F9SpinnerPro() {
   const dotColors = ["#3B82F6", "#EF4444", "#A855F7"];
@@ -97,7 +99,7 @@ export default function F9SpinnerPro() {
       transition: {
         duration: 1.2,
         repeat: Infinity,
-        ease: easeInOut, // FIXED: Using array syntax for type safety
+        ease: easeInOut,
       },
     },
   };
@@ -110,7 +112,7 @@ export default function F9SpinnerPro() {
         duration: 1.2,
         repeat: Infinity,
         repeatType: "mirror" as const,
-        ease: easeInOut, // FIXED: Using array syntax for type safety
+        ease: easeInOut,
       },
     },
   };
