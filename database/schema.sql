@@ -2051,3 +2051,9 @@ $$ LANGUAGE plpgsql;
 
 -- Test the function
 SELECT * FROM get_cloudinary_usage_stats();
+
+Dev User Credentials:
+
+Email: user@example.com
+Password: password123
+Starting Balance: ₦50,000
