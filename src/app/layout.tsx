@@ -5,7 +5,6 @@ import "./globals.css";
 import { QueryProvider } from "@/components/providers/QueryProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { ToastProvider } from "@/components/providers/ToastProvider";
-import { UserProvider } from "@/contexts/UserContext";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { BRAND } from "@/lib/branding";
 
@@ -118,20 +117,22 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
+          {/* 
+            QueryProvider is now the ONLY auth state manager
+            All auth state is handled via useAuth() hook from @/hooks/useAuth.query.ts
+            No more UserContext - TanStack Query handles everything
+          */}
           <QueryProvider>
-            {/* UserProvider will fetch user/profile data internally */}
-            <UserProvider user={null} profile={null}>
-              {/* Top progress bar for page transitions */}
-              <ProgressBar />
-              
-              {/* Main content with smooth transitions */}
-              <div className="relative flex min-h-screen flex-col">
-                {children}
-              </div>
-              
-              {/* Toast notifications */}
-              <ToastProvider />
-            </UserProvider>
+            {/* Top progress bar for page transitions */}
+            <ProgressBar />
+            
+            {/* Main content with smooth transitions */}
+            <div className="relative flex min-h-screen flex-col">
+              {children}
+            </div>
+            
+            {/* Toast notifications */}
+            <ToastProvider />
           </QueryProvider>
         </ThemeProvider>
         

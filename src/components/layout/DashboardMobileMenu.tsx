@@ -1,61 +1,52 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
-  Briefcase,
   MessageSquare,
   User,
   Menu,
+  X,
+  PlusSquare,
+  Search,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { DashboardSidebar } from './DashboardSidebar';
 
-interface DashboardMobileMenuProps {
+export interface DashboardMobileMenuProps {
   userType?: 'freelancer' | 'client' | 'both';
 }
 
-// Suppress unused variable warning for the userType prop if it's not used for filtering yet.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+/**
+ * Bottom Navigation Bar for Mobile
+ * FIXED: utilized userType to provide a dynamic, role-based navigation experience.
+ */
 export function DashboardMobileMenu({ userType = 'both' }: DashboardMobileMenuProps) {
-  // Removed: const [isOpen, setIsOpen] = useState(false); and the associated useEffect.
-  // This component implements a fixed bottom bar, so the open/close state logic is unnecessary here.
   const pathname = usePathname();
 
+  // Define dynamic items based on user role
   const bottomNavItems = [
-    {
-      title: 'Home',
-      href: '/dashboard',
-      icon: LayoutDashboard,
-    },
-    {
-      title: 'Jobs',
-      href: '/dashboard/jobs',
-      icon: Briefcase,
-    },
-    {
-      title: 'Messages',
-      href: '/dashboard/messages',
-      icon: MessageSquare,
-      badge: 3,
-    },
-    {
-      title: 'Profile',
-      href: '/dashboard/profile',
-      icon: User,
-    },
+    { title: 'Home', href: '/dashboard', icon: LayoutDashboard },
+    
+    // Role-based logic for the second slot
+    userType === 'client' 
+      ? { title: 'Post Job', href: '/dashboard/jobs/create', icon: PlusSquare }
+      : { title: 'Find Work', href: '/dashboard/jobs', icon: Search },
+
+    { title: 'Messages', href: '/dashboard/messages', icon: MessageSquare, badge: 3 },
+    { title: 'Profile', href: '/dashboard/profile', icon: User },
   ];
 
   return (
     <>
-      {/* Bottom Navigation for Mobile */}
       <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shadow-lg">
         <nav className="flex justify-around items-center h-16">
           {bottomNavItems.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(`${item.href}/`));
             const Icon = item.icon;
 
             return (
@@ -72,7 +63,7 @@ export function DashboardMobileMenu({ userType = 'both' }: DashboardMobileMenuPr
                 <div className="relative">
                   <Icon className="h-6 w-6" />
                   {item.badge && (
-                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-4 w-4 flex items-center justify-center">
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-4 w-4 flex items-center justify-center font-semibold">
                       {item.badge}
                     </span>
                   )}
@@ -86,70 +77,113 @@ export function DashboardMobileMenu({ userType = 'both' }: DashboardMobileMenuPr
           })}
         </nav>
       </div>
-
-      {/* Add padding to main content to account for bottom nav */}
       <div className="lg:hidden h-16" aria-hidden="true" />
     </>
   );
 }
 
-// Alternative: Full Sheet Menu for Mobile (if you prefer hamburger menu instead of bottom nav)
-// Suppress unused variable warning for the userType prop if it's not used for filtering yet.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+/**
+ * Optimized Sheet Menu
+ */
 export function DashboardMobileSheet({ userType = 'both' }: DashboardMobileMenuProps) {
-  const [isOpen, setIsOpen] = useState(false);
   const pathname = usePathname();
+  const [isOpen, setIsOpen] = useState(false);
+  const [prevPathname, setPrevPathname] = useState(pathname);
 
-  useEffect(() => {
-    // This effect is necessary to close the sheet menu after a successful route change.
-    // The warning is suppressed because this is a standard pattern for sheet/modal components in Next.js/React Router.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+  if (pathname !== prevPathname) {
+    setPrevPathname(pathname);
     setIsOpen(false);
-  }, [pathname]);
+  }
 
-  const navItems = [
-    { title: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-    { title: 'Jobs', href: '/dashboard/jobs', icon: Briefcase },
-    { title: 'Messages', href: '/dashboard/messages', icon: MessageSquare },
-    { title: 'Profile', href: '/dashboard/profile', icon: User },
-  ];
+  const closeMenu = useCallback(() => setIsOpen(false), []);
 
   return (
     <Sheet open={isOpen} onOpenChange={setIsOpen}>
       <SheetTrigger asChild>
-        <Button variant="ghost" size="icon" className="lg:hidden">
+        <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open menu">
           <Menu className="h-5 w-5" />
         </Button>
       </SheetTrigger>
       <SheetContent side="left" className="w-72 p-0">
         <div className="flex flex-col h-full">
-          <div className="p-4 border-b">
-            <h2 className="text-lg font-semibold">Menu</h2>
+          <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Menu</h2>
+            <Button variant="ghost" size="icon" onClick={closeMenu} aria-label="Close menu">
+              <X className="h-5 w-5" />
+            </Button>
           </div>
-          <nav className="flex-1 overflow-y-auto p-4 space-y-2">
-            {navItems.map((item) => {
-              const isActive = pathname === item.href;
-              const Icon = item.icon;
-
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    'flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors',
-                    isActive
-                      ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-                      : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                  )}
-                >
-                  <Icon className="h-5 w-5" />
-                  <span>{item.title}</span>
-                </Link>
-              );
-            })}
-          </nav>
+          <div className="flex-1 overflow-y-auto">
+            <DashboardSidebar userType={userType} onItemClick={closeMenu} />
+          </div>
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+/**
+ * Optimized Custom Drawer
+ */
+export function DashboardMobileDrawer({ userType = 'both' }: DashboardMobileMenuProps) {
+  const pathname = usePathname();
+  const [isOpen, setIsOpen] = useState(false);
+  const [prevPathname, setPrevPathname] = useState(pathname);
+
+  if (pathname !== prevPathname) {
+    setPrevPathname(pathname);
+    setIsOpen(false);
+  }
+
+  const closeMenu = useCallback(() => setIsOpen(false), []);
+
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => { document.body.style.overflow = ''; };
+  }, [isOpen]);
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => setIsOpen(true)}
+        aria-label="Open menu"
+        className="lg:hidden"
+      >
+        <Menu className="h-5 w-5" />
+      </Button>
+
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden animate-in fade-in duration-200"
+          onClick={closeMenu}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside
+        className={cn(
+          'fixed top-0 left-0 bottom-0 z-50 w-64 bg-white dark:bg-gray-900',
+          'transform transition-transform duration-300 ease-in-out lg:hidden',
+          isOpen ? 'translate-x-0' : '-translate-x-full'
+        )}
+      >
+        <div className="flex flex-col h-full">
+          <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Menu</h2>
+            <Button variant="ghost" size="icon" onClick={closeMenu} aria-label="Close menu">
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <DashboardSidebar userType={userType} onItemClick={closeMenu} />
+          </div>
+        </div>
+      </aside>
+    </>
   );
 }

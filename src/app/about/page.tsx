@@ -5,8 +5,7 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { F9Logo } from '@/components/brand/F9Logo';
 import { 
-  Rocket, 
-  ArrowRight, 
+  Rocket,  
   Terminal, 
   ShieldCheck, 
   BadgeCheck, 

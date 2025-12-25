@@ -1,63 +1,347 @@
-// Unified auth hooks using React Query
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/lib/supabase/client';
-import { queryKeys } from '@/lib/query-client';
-import type { Profile } from '@/types/database.types';
+// src/hooks/useAuth.query.ts
+'use client';
 
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useCallback } from 'react';
+import { createClient } from '@/lib/supabase/client';
+import type {AuthChangeEvent, Session } from '@supabase/supabase-js';
+
+// Define Profile type inline to avoid import issues
+export interface Profile {
+  id: string;
+  full_name: string;
+  email: string;
+  phone_number?: string;
+  user_type: 'freelancer' | 'client' | 'both';
+  avatar_url?: string;
+  bio?: string;
+  university?: string;
+  location?: string;
+  wallet_balance: number;
+  total_earned?: number;
+  total_spent?: number;
+  rating?: number;
+  total_reviews?: number;
+  onboarding_completed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// Query keys for consistency
+export const authQueryKeys = {
+  session: ['auth', 'session'] as const,
+  user: ['auth', 'user'] as const,
+  profile: (userId?: string) => ['auth', 'profile', userId] as const,
+};
+
+/**
+ * Core authentication hook - Single source of truth for auth state
+ * Replaces the old UserContext pattern
+ */
 export function useAuth() {
   const queryClient = useQueryClient();
+  const supabase = createClient();
 
-  const { data: session, isLoading } = useQuery({
-    queryKey: queryKeys.auth,
+  // Query for current session
+  const {
+    data: session,
+    isLoading: isSessionLoading,
+    error: sessionError,
+  } = useQuery({
+    queryKey: authQueryKeys.session,
     queryFn: async () => {
-      const { data } = await supabase.auth.getSession();
+      const { data, error } = await supabase.auth.getSession();
+      if (error) throw error;
       return data.session;
     },
+    staleTime: 1000 * 60 * 5, // 5 minutes
+    gcTime: 1000 * 60 * 10, // 10 minutes (formerly cacheTime)
   });
 
-  const { data: profile } = useQuery({
-    queryKey: queryKeys.profile,
+  const user = session?.user ?? null;
+
+  // Query for user profile
+  const {
+    data: profile,
+    isLoading: isProfileLoading,
+    error: profileError,
+  } = useQuery({
+    queryKey: authQueryKeys.profile(user?.id),
     queryFn: async () => {
-      if (!session?.user) return null;
-      const { data } = await supabase
+      if (!user?.id) return null;
+      
+      const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', session.user.id)
+        .eq('id', user.id)
         .single();
+
+      if (error) throw error;
       return data as Profile;
     },
-    enabled: !!session?.user,
+    enabled: !!user?.id,
+    staleTime: 1000 * 60 * 2, // 2 minutes for profile data
   });
 
+  // Listen to Supabase auth changes and sync with React Query
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      async (event: AuthChangeEvent, newSession: Session | null) => {
+        console.log('Auth state changed:', event);
+
+        // Update session in cache immediately
+        queryClient.setQueryData(authQueryKeys.session, newSession);
+
+        // Handle different auth events
+        switch (event) {
+          case 'SIGNED_IN':
+          case 'TOKEN_REFRESHED':
+          case 'USER_UPDATED':
+            // Invalidate profile to refetch with new session
+            if (newSession?.user?.id) {
+              queryClient.invalidateQueries({
+                queryKey: authQueryKeys.profile(newSession.user.id),
+              });
+            }
+            break;
+
+          case 'SIGNED_OUT':
+            // Clear all auth-related data
+            queryClient.setQueryData(authQueryKeys.session, null);
+            queryClient.removeQueries({
+              queryKey: authQueryKeys.profile(undefined),
+            });
+            break;
+
+          case 'PASSWORD_RECOVERY':
+            // Handle password recovery if needed
+            break;
+        }
+      }
+    );
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [supabase.auth, queryClient]);
+
+  // Refresh profile mutation
+  const refreshProfileMutation = useMutation({
+    mutationFn: async () => {
+      if (!user?.id) throw new Error('No user logged in');
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (error) throw error;
+      return data as Profile;
+    },
+    onSuccess: (data) => {
+      // Update cache immediately
+      queryClient.setQueryData(authQueryKeys.profile(user?.id), data);
+    },
+  });
+
+  // Update profile mutation
+  const updateProfileMutation = useMutation({
+    mutationFn: async (updates: Partial<Profile>) => {
+      if (!user?.id) throw new Error('No user logged in');
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({ ...updates, updated_at: new Date().toISOString() })
+        .eq('id', user.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data as Profile;
+    },
+    onMutate: async (updates) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({
+        queryKey: authQueryKeys.profile(user?.id),
+      });
+
+      // Snapshot previous value
+      const previousProfile = queryClient.getQueryData<Profile>(
+        authQueryKeys.profile(user?.id)
+      );
+
+      // Optimistically update
+      if (previousProfile) {
+        queryClient.setQueryData<Profile>(
+          authQueryKeys.profile(user?.id),
+          { ...previousProfile, ...updates }
+        );
+      }
+
+      return { previousProfile };
+    },
+    onError: (err, variables, context) => {
+      // Rollback on error
+      if (context?.previousProfile) {
+        queryClient.setQueryData(
+          authQueryKeys.profile(user?.id),
+          context.previousProfile
+        );
+      }
+    },
+    onSuccess: (data) => {
+      // Update with server data
+      queryClient.setQueryData(authQueryKeys.profile(user?.id), data);
+    },
+  });
+
+  // Login mutation
   const loginMutation = useMutation({
     mutationFn: async (credentials: { email: string; password: string }) => {
       const { data, error } = await supabase.auth.signInWithPassword(credentials);
       if (error) throw error;
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.auth });
-      queryClient.invalidateQueries({ queryKey: queryKeys.profile });
+    onSuccess: (data) => {
+      queryClient.setQueryData(authQueryKeys.session, data.session);
+      if (data.session?.user?.id) {
+        queryClient.invalidateQueries({
+          queryKey: authQueryKeys.profile(data.session.user.id),
+        });
+      }
     },
   });
 
+  // Logout mutation
   const logoutMutation = useMutation({
     mutationFn: async () => {
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.clear(); // Clear all cached data
+      // Clear all cached data
+      queryClient.clear();
     },
   });
 
+  // Signup mutation
+  const signupMutation = useMutation({
+    mutationFn: async (credentials: {
+      email: string;
+      password: string;
+      full_name: string;
+      user_type: 'freelancer' | 'client' | 'both';
+    }) => {
+      const { data, error } = await supabase.auth.signUp({
+        email: credentials.email,
+        password: credentials.password,
+        options: {
+          data: {
+            full_name: credentials.full_name,
+            user_type: credentials.user_type,
+          },
+        },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(authQueryKeys.session, data.session);
+      if (data.session?.user?.id) {
+        queryClient.invalidateQueries({
+          queryKey: authQueryKeys.profile(data.session.user.id),
+        });
+      }
+    },
+  });
+
+  // Callback versions for backward compatibility
+  const refreshProfile = useCallback(async () => {
+    return refreshProfileMutation.mutateAsync();
+  }, [refreshProfileMutation]);
+
+  const updateProfile = useCallback(
+    async (updates: Partial<Profile>) => {
+      return updateProfileMutation.mutateAsync(updates);
+    },
+    [updateProfileMutation]
+  );
+
   return {
+    // Auth state
+    user,
     session,
     profile,
-    isLoading,
+    isLoading: isSessionLoading || isProfileLoading,
     isAuthenticated: !!session,
+    error: sessionError || profileError,
+
+    // Mutations
     login: loginMutation.mutate,
+    loginAsync: loginMutation.mutateAsync,
     logout: logoutMutation.mutate,
+    logoutAsync: logoutMutation.mutateAsync,
+    signup: signupMutation.mutate,
+    signupAsync: signupMutation.mutateAsync,
+    
+    // Profile operations
+    refreshProfile,
+    updateProfile,
+
+    // Loading states
     isLoggingIn: loginMutation.isPending,
+    isLoggingOut: logoutMutation.isPending,
+    isSigningUp: signupMutation.isPending,
+    isUpdatingProfile: updateProfileMutation.isPending,
+    isRefreshingProfile: refreshProfileMutation.isPending,
+
+    // Errors
+    loginError: loginMutation.error,
+    logoutError: logoutMutation.error,
+    signupError: signupMutation.error,
+    updateProfileError: updateProfileMutation.error,
   };
+}
+
+/**
+ * Utility hooks for common use cases
+ * These provide backward compatibility with the old UserContext API
+ */
+
+export function useUser() {
+  const { user, profile, isLoading, refreshProfile, updateProfile } = useAuth();
+  return { user, profile, isLoading, refreshProfile, updateProfile };
+}
+
+export function useProfile() {
+  const { profile, isLoading, refreshProfile, updateProfile } = useAuth();
+  return { profile, isLoading, refreshProfile, updateProfile };
+}
+
+export function useWalletBalance() {
+  const { profile } = useAuth();
+  return profile?.wallet_balance ?? 0;
+}
+
+export function useUserType() {
+  const { profile } = useAuth();
+  return profile?.user_type;
+}
+
+export function useIsFreelancer() {
+  const { profile } = useAuth();
+  return profile?.user_type === 'freelancer' || profile?.user_type === 'both';
+}
+
+export function useIsClient() {
+  const { profile } = useAuth();
+  return profile?.user_type === 'client' || profile?.user_type === 'both';
+}
+
+export function useSession() {
+  const { session, isLoading } = useAuth();
+  return { session, isLoading };
 }
