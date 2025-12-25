@@ -22,7 +22,9 @@ export default async function ServicesPage({
 }: {
   searchParams: SearchParams;
 }) {
-  const supabase = createClient();
+  // FIX: Await the async createClient function
+  const supabase = await createClient();
+  
   const page = parseInt(searchParams.page || '1');
   const perPage = 20;
   const from = (page - 1) * perPage;

@@ -1,4 +1,4 @@
-// src/components/services/ServiceCard.tsx (enhanced version)
+// src/components/services/ServiceCard.tsx
 'use client';
 
 import Link from 'next/link';
@@ -22,7 +22,7 @@ interface ServiceCardProps {
   };
 }
 
-export function EnhancedServiceCard({ service }: ServiceCardProps) {
+export function ServiceCard({ service }: ServiceCardProps) {
   const freelancer = service.freelancer;
   const imageUrl = service.images?.[0] || '/placeholder-service.png';
 
