@@ -1,5 +1,6 @@
 // src/lib/validations.ts
 // Enhanced Zod validation schemas with smart UX innovations and comprehensive security
+// Zod v4 compatible - all deprecation warnings resolved
 
 import { z } from 'zod';
 
@@ -199,30 +200,36 @@ export const validateBudgetRange = (min?: number, max?: number, type?: string) =
 
 /**
  * Registration schema with enhanced password security and field validation
+ * Uses Zod v4 compatible syntax with pipe for email validation
  */
 export const registerSchema = z.object({
   email: z
     .string()
     .trim()
     .toLowerCase()
-    .email('Invalid email address')
-    .max(255, 'Email is too long')
-    .refine((email) => {
-      // Warn about disposable email domains
-      const disposableDomains = ['tempmail.com', '10minutemail.com', 'guerrillamail.com'];
-      return !disposableDomains.some(d => email.endsWith(d));
-    }, {
-      message: 'Please use a permanent email address for account security'
-    }),
+    .pipe(
+      z.email({ error: 'Invalid email address' })
+    )
+    .pipe(
+      z.string()
+        .max(255, { error: 'Email is too long' })
+        .refine((email) => {
+          // Warn about disposable email domains
+          const disposableDomains = ['tempmail.com', '10minutemail.com', 'guerrillamail.com'];
+          return !disposableDomains.some(d => email.endsWith(d));
+        }, {
+          message: 'Please use a permanent email address for account security'
+        })
+    ),
   
   password: z
     .string()
-    .min(PASSWORD_MIN_LENGTH, `Password must be at least ${PASSWORD_MIN_LENGTH} characters`)
-    .max(128, 'Password is too long')
-    .regex(PASSWORD_REQUIREMENTS.uppercase, 'Must contain at least one uppercase letter')
-    .regex(PASSWORD_REQUIREMENTS.lowercase, 'Must contain at least one lowercase letter')
-    .regex(PASSWORD_REQUIREMENTS.number, 'Must contain at least one number')
-    .regex(PASSWORD_REQUIREMENTS.special, 'Must contain at least one special character')
+    .min(PASSWORD_MIN_LENGTH, { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters` })
+    .max(128, { error: 'Password is too long' })
+    .regex(PASSWORD_REQUIREMENTS.uppercase, { error: 'Must contain at least one uppercase letter' })
+    .regex(PASSWORD_REQUIREMENTS.lowercase, { error: 'Must contain at least one lowercase letter' })
+    .regex(PASSWORD_REQUIREMENTS.number, { error: 'Must contain at least one number' })
+    .regex(PASSWORD_REQUIREMENTS.special, { error: 'Must contain at least one special character' })
     .refine((pwd) => {
       const strength = calculatePasswordStrength(pwd);
       return strength.isStrong;
@@ -232,8 +239,8 @@ export const registerSchema = z.object({
   
   full_name: z
     .string()
-    .min(2, 'Name must be at least 2 characters')
-    .max(100, 'Name is too long')
+    .min(2, { error: 'Name must be at least 2 characters' })
+    .max(100, { error: 'Name is too long' })
     .transform(sanitizeString)
     .refine((name) => {
       const validation = validateFullName(name);
@@ -244,25 +251,25 @@ export const registerSchema = z.object({
   
   phone_number: z
     .string()
-    .regex(NIGERIAN_PHONE_REGEX, 'Invalid Nigerian phone number (format: +234XXXXXXXXXX or 0XXXXXXXXXX)')
+    .regex(NIGERIAN_PHONE_REGEX, { error: 'Invalid Nigerian phone number (format: +234XXXXXXXXXX or 0XXXXXXXXXX)' })
     .transform((phone) => {
       // Auto-normalize to +234 format
       return phone.startsWith('0') ? `+234${phone.slice(1)}` : phone;
     }),
   
-  user_type: z.enum(['freelancer', 'client', 'both'], { // FIX: Changed errorMap to message
+  user_type: z.enum(['freelancer', 'client', 'both'], {
     message: 'Please select a valid user type',
   }),
   
   university: z
     .string()
-    .max(200, 'University name is too long')
+    .max(200, { error: 'University name is too long' })
     .transform(sanitizeString)
     .optional(),
   
   location: z
     .string()
-    .max(100, 'Location is too long')
+    .max(100, { error: 'Location is too long' })
     .transform(sanitizeString)
     .optional(),
 });
@@ -275,13 +282,13 @@ export const loginSchema = z.object({
     .string()
     .trim()
     .toLowerCase()
-    .email('Invalid email address'),
+    .pipe(z.email({ error: 'Invalid email address' })),
   
   password: z
     .string()
-    .min(1, 'Password is required'),
+    .min(1, { error: 'Password is required' }),
   
-  remember_me: z.boolean().optional().default(false),
+  remember_me: z.boolean().default(false),
 });
 
 /**
@@ -292,22 +299,22 @@ export const passwordResetRequestSchema = z.object({
     .string()
     .trim()
     .toLowerCase()
-    .email('Invalid email address'),
+    .pipe(z.email({ error: 'Invalid email address' })),
 });
 
 /**
  * Password reset confirmation schema with strength validation
  */
 export const passwordResetSchema = z.object({
-  token: z.string().min(1, 'Reset token is required'),
+  token: z.string().min(1, { error: 'Reset token is required' }),
   password: z
     .string()
-    .min(PASSWORD_MIN_LENGTH, `Password must be at least ${PASSWORD_MIN_LENGTH} characters`)
-    .max(128, 'Password is too long')
-    .regex(PASSWORD_REQUIREMENTS.uppercase, 'Must contain at least one uppercase letter')
-    .regex(PASSWORD_REQUIREMENTS.lowercase, 'Must contain at least one lowercase letter')
-    .regex(PASSWORD_REQUIREMENTS.number, 'Must contain at least one number')
-    .regex(PASSWORD_REQUIREMENTS.special, 'Must contain at least one special character'),
+    .min(PASSWORD_MIN_LENGTH, { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters` })
+    .max(128, { error: 'Password is too long' })
+    .regex(PASSWORD_REQUIREMENTS.uppercase, { error: 'Must contain at least one uppercase letter' })
+    .regex(PASSWORD_REQUIREMENTS.lowercase, { error: 'Must contain at least one lowercase letter' })
+    .regex(PASSWORD_REQUIREMENTS.number, { error: 'Must contain at least one number' })
+    .regex(PASSWORD_REQUIREMENTS.special, { error: 'Must contain at least one special character' }),
   confirmPassword: z.string(),
 }).refine((data) => data.password === data.confirmPassword, {
   message: 'Passwords do not match',
@@ -324,8 +331,8 @@ export const passwordResetSchema = z.object({
 export const serviceSchema = z.object({
   title: z
     .string()
-    .min(10, 'Title must be at least 10 characters')
-    .max(200, 'Title is too long')
+    .min(10, { error: 'Title must be at least 10 characters' })
+    .max(200, { error: 'Title is too long' })
     .transform(sanitizeString)
     .refine((title) => {
       // Encourage descriptive titles
@@ -337,8 +344,8 @@ export const serviceSchema = z.object({
   
   description: z
     .string()
-    .min(50, 'Description must be at least 50 characters')
-    .max(5000, 'Description is too long')
+    .min(50, { error: 'Description must be at least 50 characters' })
+    .max(5000, { error: 'Description is too long' })
     .transform(sanitizeString)
     .refine((desc) => {
       // Encourage detailed descriptions
@@ -350,41 +357,41 @@ export const serviceSchema = z.object({
   
   category: z
     .string()
-    .min(1, 'Category is required')
-    .max(100, 'Category name is too long'),
+    .min(1, { error: 'Category is required' })
+    .max(100, { error: 'Category name is too long' }),
   
   subcategory: z
     .string()
-    .max(100, 'Subcategory name is too long')
+    .max(100, { error: 'Subcategory name is too long' })
     .optional(),
   
   base_price: z
     .number()
-    .int('Price must be a whole number')
-    .min(NAIRA_CONSTRAINTS.MIN_PRICE, `Minimum price is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}`)
-    .max(NAIRA_CONSTRAINTS.MAX_PRICE, `Maximum price is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}`),
+    .int({ error: 'Price must be a whole number' })
+    .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum price is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
+    .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum price is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` }),
   
   delivery_days: z
     .number()
-    .int('Delivery days must be a whole number')
-    .min(1, 'Minimum delivery time is 1 day')
-    .max(90, 'Maximum delivery time is 90 days'),
+    .int({ error: 'Delivery days must be a whole number' })
+    .min(1, { error: 'Minimum delivery time is 1 day' })
+    .max(90, { error: 'Maximum delivery time is 90 days' }),
   
   revisions_included: z
     .number()
-    .int('Revisions must be a whole number')
-    .min(0, 'Revisions cannot be negative')
-    .max(10, 'Maximum 10 revisions allowed'),
+    .int({ error: 'Revisions must be a whole number' })
+    .min(0, { error: 'Revisions cannot be negative' })
+    .max(10, { error: 'Maximum 10 revisions allowed' }),
   
   requirements: z
     .string()
-    .max(2000, 'Requirements text is too long')
+    .max(2000, { error: 'Requirements text is too long' })
     .transform(sanitizeString)
     .optional(),
   
   tags: z
     .array(z.string().max(50))
-    .max(10, 'Maximum 10 tags allowed')
+    .max(10, { error: 'Maximum 10 tags allowed' })
     .refine((tags) => {
       return tags.length >= 3;
     }, {
@@ -399,14 +406,14 @@ export const serviceSchema = z.object({
 export const jobSchema = z.object({
   title: z
     .string()
-    .min(10, 'Title must be at least 10 characters')
-    .max(200, 'Title is too long')
+    .min(10, { error: 'Title must be at least 10 characters' })
+    .max(200, { error: 'Title is too long' })
     .transform(sanitizeString),
   
   description: z
     .string()
-    .min(50, 'Description must be at least 50 characters')
-    .max(10000, 'Description is too long')
+    .min(50, { error: 'Description must be at least 50 characters' })
+    .max(10000, { error: 'Description is too long' })
     .transform(sanitizeString)
     .refine((desc) => {
       const hasDeliverables = /deliverable|requirement|need|must|should/i.test(desc);
@@ -417,34 +424,34 @@ export const jobSchema = z.object({
   
   category: z
     .string()
-    .min(1, 'Category is required')
-    .max(100, 'Category name is too long'),
+    .min(1, { error: 'Category is required' })
+    .max(100, { error: 'Category name is too long' }),
   
-  budget_type: z.enum(['fixed', 'hourly', 'negotiable'], { // FIX: Changed errorMap to message
+  budget_type: z.enum(['fixed', 'hourly', 'negotiable'], {
     message: 'Please select a valid budget type',
   }),
   
   budget_min: z
     .number()
-    .int('Budget must be a whole number')
-    .min(NAIRA_CONSTRAINTS.MIN_PRICE, `Minimum budget is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}`)
-    .max(NAIRA_CONSTRAINTS.MAX_PRICE, `Maximum budget is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}`)
+    .int({ error: 'Budget must be a whole number' })
+    .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum budget is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
+    .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum budget is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` })
     .optional(),
   
   budget_max: z
     .number()
-    .int('Budget must be a whole number')
-    .min(NAIRA_CONSTRAINTS.MIN_PRICE, `Minimum budget is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}`)
-    .max(NAIRA_CONSTRAINTS.MAX_PRICE, `Maximum budget is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}`)
+    .int({ error: 'Budget must be a whole number' })
+    .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum budget is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
+    .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum budget is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` })
     .optional(),
   
-  experience_level: z.enum(['beginner', 'intermediate', 'expert', 'any'], { // FIX: Changed errorMap to message
+  experience_level: z.enum(['beginner', 'intermediate', 'expert', 'any'], {
     message: 'Please select a valid experience level',
   }),
   
   deadline: z
     .string()
-    .datetime({ message: 'Invalid deadline format' })
+    .datetime({ error: 'Invalid deadline format' })
     .optional()
     .refine(
       (date) => {
@@ -469,8 +476,8 @@ export const jobSchema = z.object({
   
   skills_required: z
     .array(z.string().max(50))
-    .min(1, 'At least one skill is required')
-    .max(15, 'Maximum 15 skills allowed')
+    .min(1, { error: 'At least one skill is required' })
+    .max(15, { error: 'Maximum 15 skills allowed' })
     .optional(),
 }).refine(
   (data) => {
@@ -495,12 +502,12 @@ export const jobSchema = z.object({
 export const proposalSchema = z.object({
   job_id: z
     .string()
-    .uuid('Invalid job ID format'),
+    .uuid({ error: 'Invalid job ID format' }),
   
   cover_letter: z
     .string()
-    .min(100, 'Cover letter must be at least 100 characters')
-    .max(3000, 'Cover letter is too long')
+    .min(100, { error: 'Cover letter must be at least 100 characters' })
+    .max(3000, { error: 'Cover letter is too long' })
     .transform(sanitizeString)
     .refine((letter) => {
       // Check for personalization
@@ -520,22 +527,22 @@ export const proposalSchema = z.object({
   
   proposed_price: z
     .number()
-    .int('Price must be a whole number')
-    .min(NAIRA_CONSTRAINTS.MIN_PRICE, `Minimum price is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}`)
-    .max(NAIRA_CONSTRAINTS.MAX_PRICE, `Maximum price is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}`),
+    .int({ error: 'Price must be a whole number' })
+    .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum price is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
+    .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum price is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` }),
   
   delivery_days: z
     .number()
-    .int('Delivery days must be a whole number')
-    .min(1, 'Minimum delivery time is 1 day')
-    .max(90, 'Maximum delivery time is 90 days')
+    .int({ error: 'Delivery days must be a whole number' })
+    .min(1, { error: 'Minimum delivery time is 1 day' })
+    .max(90, { error: 'Maximum delivery time is 90 days' })
     .refine((days) => days >= 3, {
       message: 'Consider offering at least 3 days to ensure quality work'
     }),
   
   portfolio_links: z
-    .array(z.string().url('Invalid URL format'))
-    .max(5, 'Maximum 5 portfolio links allowed')
+    .array(z.string().url({ error: 'Invalid URL format' }))
+    .max(5, { error: 'Maximum 5 portfolio links allowed' })
     .refine((links) => links.length >= 1, {
       message: 'Include at least one portfolio link to strengthen your proposal'
     })
@@ -548,14 +555,14 @@ export const proposalSchema = z.object({
 export const withdrawalSchema = z.object({
   amount: z
     .number()
-    .int('Amount must be a whole number')
-    .min(NAIRA_CONSTRAINTS.MIN_WITHDRAWAL, `Minimum withdrawal is ₦${NAIRA_CONSTRAINTS.MIN_WITHDRAWAL.toLocaleString()}`)
-    .max(NAIRA_CONSTRAINTS.MAX_PRICE, `Maximum withdrawal is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}`),
+    .int({ error: 'Amount must be a whole number' })
+    .min(NAIRA_CONSTRAINTS.MIN_WITHDRAWAL, { error: `Minimum withdrawal is ₦${NAIRA_CONSTRAINTS.MIN_WITHDRAWAL.toLocaleString()}` })
+    .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum withdrawal is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` }),
   
   bank_name: z
     .string()
-    .min(1, 'Bank name is required')
-    .max(100, 'Bank name is too long')
+    .min(1, { error: 'Bank name is required' })
+    .max(100, { error: 'Bank name is too long' })
     .transform(sanitizeString)
     .refine((bank) => {
       // Suggest correct bank names
@@ -573,8 +580,8 @@ export const withdrawalSchema = z.object({
   
   account_name: z
     .string()
-    .min(1, 'Account name is required')
-    .max(100, 'Account name is too long')
+    .min(1, { error: 'Account name is required' })
+    .max(100, { error: 'Account name is too long' })
     .transform(sanitizeString)
     .refine((name) => {
       // Ensure account name looks legitimate
@@ -585,7 +592,7 @@ export const withdrawalSchema = z.object({
   
   narration: z
     .string()
-    .max(200, 'Narration is too long')
+    .max(200, { error: 'Narration is too long' })
     .transform(sanitizeString)
     .optional(),
 });
@@ -600,18 +607,18 @@ export const withdrawalSchema = z.object({
 export const reviewSchema = z.object({
   order_id: z
     .string()
-    .uuid('Invalid order ID format'),
+    .uuid({ error: 'Invalid order ID format' }),
   
   rating: z
     .number()
-    .int('Rating must be a whole number')
-    .min(1, 'Minimum rating is 1')
-    .max(5, 'Maximum rating is 5'),
+    .int({ error: 'Rating must be a whole number' })
+    .min(1, { error: 'Minimum rating is 1' })
+    .max(5, { error: 'Maximum rating is 5' }),
   
   comment: z
     .string()
-    .min(10, 'Review must be at least 10 characters')
-    .max(1000, 'Review is too long')
+    .min(10, { error: 'Review must be at least 10 characters' })
+    .max(1000, { error: 'Review is too long' })
     .transform(sanitizeString)
     .refine((comment) => {
       const wordCount = comment.split(/\s+/).length;

@@ -2057,3 +2057,270 @@ Dev User Credentials:
 Email: user@example.com
 Password: password123
 Starting Balance: ₦50,000
+
+DO $$
+DECLARE
+  v_user_id UUID;
+  v_identity_id UUID;
+  v_existing_user UUID;
+  v_existing_profile UUID;
+  v_existing_wallet UUID;
+  v_existing_identity UUID;
+BEGIN
+  -- Step 1: Check if user already exists in auth.users
+  SELECT id INTO v_existing_user
+  FROM auth.users
+  WHERE email = 'user@example.com';
+
+  IF v_existing_user IS NOT NULL THEN
+    RAISE NOTICE '✅ User already exists with ID: %', v_existing_user;
+    v_user_id := v_existing_user;
+    
+    -- Update password to ensure it's correct
+    UPDATE auth.users
+    SET 
+      encrypted_password = crypt('password123', gen_salt('bf', 12)),
+      email_confirmed_at = NOW(),
+      updated_at = NOW()
+    WHERE id = v_user_id;
+    
+    RAISE NOTICE '✅ Password updated for existing user';
+  ELSE
+    -- Step 2: Create new auth user
+    v_user_id := gen_random_uuid();
+    
+    INSERT INTO auth.users (
+      instance_id,
+      id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      created_at,
+      updated_at,
+      confirmation_token,
+      recovery_token,
+      email_change_token_new,
+      email_change
+    ) VALUES (
+      '00000000-0000-0000-0000-000000000000',
+      v_user_id,
+      'authenticated',
+      'authenticated',
+      'user@example.com',
+      crypt('password123', gen_salt('bf', 12)),
+      NOW(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Dev User"}'::jsonb,
+      NOW(),
+      NOW(),
+      '',
+      '',
+      '',
+      ''
+    );
+    
+    RAISE NOTICE '✅ Auth user created with ID: %', v_user_id;
+  END IF;
+
+  -- Step 3: Delete any stray profile with same email (safety check)
+  DELETE FROM public.profiles
+  WHERE email = 'user@example.com' AND id != v_user_id;
+
+  -- Step 3b: Check if profile exists for this user_id
+  SELECT id INTO v_existing_profile
+  FROM public.profiles
+  WHERE id = v_user_id;
+
+  IF v_existing_profile IS NOT NULL THEN
+    -- Update existing profile
+    UPDATE public.profiles
+    SET
+      email = 'user@example.com',
+      full_name = 'Dev User',
+      phone_number = '+2348012345678',
+      phone_verified = true,
+      user_type = 'both',
+      bio = 'Development test user with full access to all features',
+      university = 'University of Lagos',
+      location = 'Lagos, Lagos',
+      email_verified = true,
+      identity_verified = true,
+      student_verified = false,
+      liveness_verified = false,
+      freelancer_rating = 4.5,
+      client_rating = 4.5,
+      total_jobs_completed = 10,
+      total_jobs_posted = 5,
+      account_status = 'active',
+      trust_score = 50,
+      trust_level = 'verified',
+      updated_at = NOW()
+    WHERE id = v_user_id;
+    
+    RAISE NOTICE '✅ Profile updated';
+  ELSE
+    -- Insert new profile
+    INSERT INTO public.profiles (
+      id,
+      email,
+      full_name,
+      phone_number,
+      phone_verified,
+      user_type,
+      bio,
+      university,
+      location,
+      email_verified,
+      identity_verified,
+      student_verified,
+      liveness_verified,
+      freelancer_rating,
+      client_rating,
+      total_jobs_completed,
+      total_jobs_posted,
+      account_status,
+      trust_score,
+      trust_level,
+      created_at,
+      updated_at
+    ) VALUES (
+      v_user_id,
+      'user@example.com',
+      'Dev User',
+      '+2348012345678',
+      true,
+      'both',
+      'Development test user with full access to all features',
+      'University of Lagos',
+      'Lagos, Lagos',
+      true,
+      true,
+      false,
+      false,
+      4.5,
+      4.5,
+      10,
+      5,
+      'active',
+      50,
+      'verified',
+      NOW(),
+      NOW()
+    );
+    
+    RAISE NOTICE '✅ Profile created';
+  END IF;
+
+  -- Step 4: Handle wallet (check if exists, then update or insert)
+  SELECT id INTO v_existing_wallet
+  FROM public.wallets
+  WHERE user_id = v_user_id;
+
+  IF v_existing_wallet IS NOT NULL THEN
+    -- Update existing wallet
+    UPDATE public.wallets
+    SET
+      balance = 50000.00,
+      pending_clearance = 0.00,
+      total_earned = 0.00,
+      total_withdrawn = 0.00,
+      updated_at = NOW()
+    WHERE user_id = v_user_id;
+    
+    RAISE NOTICE '✅ Wallet updated with ₦50,000';
+  ELSE
+    -- Insert new wallet
+    INSERT INTO public.wallets (
+      user_id,
+      balance,
+      pending_clearance,
+      total_earned,
+      total_withdrawn,
+      created_at,
+      updated_at
+    ) VALUES (
+      v_user_id,
+      50000.00,
+      0.00,
+      0.00,
+      0.00,
+      NOW(),
+      NOW()
+    );
+    
+    RAISE NOTICE '✅ Wallet created with ₦50,000';
+  END IF;
+
+  -- Step 5: Handle identity record in auth.identities
+  -- Check if identity already exists for this user
+  SELECT id INTO v_existing_identity
+  FROM auth.identities
+  WHERE user_id = v_user_id AND provider = 'email';
+
+  IF v_existing_identity IS NOT NULL THEN
+    -- Update existing identity
+    UPDATE auth.identities
+    SET
+      identity_data = jsonb_build_object(
+        'sub', v_user_id::text,
+        'email', 'user@example.com'
+      ),
+      last_sign_in_at = NOW(),
+      updated_at = NOW()
+    WHERE id = v_existing_identity;
+    
+    RAISE NOTICE '✅ Identity record updated';
+  ELSE
+    -- Generate identity ID first
+    v_identity_id := gen_random_uuid();
+    
+    -- Insert new identity with REQUIRED provider_id column
+    -- provider_id must be set to the identity id (Supabase requirement)
+    INSERT INTO auth.identities (
+      id,
+      user_id,
+      provider_id,
+      identity_data,
+      provider,
+      last_sign_in_at,
+      created_at,
+      updated_at
+    ) VALUES (
+      v_identity_id,
+      v_user_id,
+      v_identity_id,
+      jsonb_build_object(
+        'sub', v_user_id::text,
+        'email', 'user@example.com'
+      ),
+      'email',
+      NOW(),
+      NOW(),
+      NOW()
+    );
+    
+    RAISE NOTICE '✅ Identity record created with provider_id';
+  END IF;
+
+  -- Final success message
+  RAISE NOTICE '';
+  RAISE NOTICE '═══════════════════════════════════════════';
+  RAISE NOTICE '✅ DEV USER SETUP COMPLETE!';
+  RAISE NOTICE '═══════════════════════════════════════════';
+  RAISE NOTICE '';
+  RAISE NOTICE 'Credentials:';
+  RAISE NOTICE '  Email:    user@example.com';
+  RAISE NOTICE '  Password: password123';
+  RAISE NOTICE '  Balance:  ₦50,000';
+  RAISE NOTICE '  User ID:  %', v_user_id;
+  RAISE NOTICE '';
+  RAISE NOTICE '🎉 You can now login at http://localhost:3000/login';
+  RAISE NOTICE '';
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE EXCEPTION 'Failed to create dev user: %', SQLERRM;
+END $$;

@@ -1,143 +1,212 @@
-// src/app/(auth)/login/page.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { loginSchema } from '@/lib/validations';
-import { AuthService } from '@/lib/auth/auth-utils';
+import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
-import Link from 'next/link';
+import { Checkbox } from '@/components/ui/checkbox'; // Assuming you have this, otherwise see note below
+import { AlertCircle, Loader2, Beaker } from 'lucide-react';
 
-// ============================================================================
-// Development Mode Configuration
-// ============================================================================
-const isDevelopment = process.env.NODE_ENV === 'development';
-
-/**
- * FIX: Removed 'as const' and added explicit typing.
- * This tells TypeScript these are standard strings that match your form's expected shape.
- */
-const DEV_CREDENTIALS = {
-  email: 'user@example.com',
-  password: 'password123',
-};
-
-// ============================================================================
-// Component
-// ============================================================================
-
-interface LoginFormData {
-  email: string;
-  password: string;
-}
+// Infer the type directly from the schema
+type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function LoginPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isDev, setIsDev] = useState(false);
 
-  // Initialize form with dev credentials if in development mode
-  const { register, handleSubmit, formState: { errors } } = useForm<LoginFormData>({
+  const supabase = createClient();
+
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    watch, // Added to handle checkbox state if needed
+    formState: { errors },
+  } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
-    defaultValues: isDevelopment ? DEV_CREDENTIALS : { email: '', password: '' },
+    // FIX: defaultValues must match LoginFormData exactly to satisfy TypeScript
+    defaultValues: {
+      email: '',
+      password: '',
+      remember_me: false, 
+    }
   });
+
+  // Check for Dev Mode on Mount
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      setIsDev(true);
+    }
+  }, []);
+
+  const handleDevFill = () => {
+    // Fill credentials and trigger validation
+    setValue('email', 'user@example.com', { shouldValidate: true });
+    setValue('password', 'password123', { shouldValidate: true });
+  };
 
   const onSubmit = async (data: LoginFormData) => {
     setIsLoading(true);
-    setError(null);
+    setAuthError(null);
 
     try {
-      await AuthService.login(data);
-      
-      const profile = await AuthService.getProfile();
-      
-      if (profile?.user_type === 'freelancer') {
-        router.push('/freelancer/dashboard');
-      } else {
-        router.push('/client/dashboard');
+      const { error } = await supabase.auth.signInWithPassword({
+        email: data.email,
+        password: data.password,
+      });
+
+      if (error) {
+        throw error;
       }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+
+      // Handle 'remember_me' logic here if you have custom persistence logic
+      // Supabase handles session persistence automatically by default, 
+      // but you can use data.remember_me to toggle local/session storage if using custom auth flow.
+
+      router.push('/services');
+      router.refresh();
+    } catch (error: unknown) {
+      console.error('Login error:', error);
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : 'Failed to sign in';
+      setAuthError(errorMessage);
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4">
-      <Card className="w-full max-w-md p-6 relative">
-        {/* Development Mode Indicator */}
-        {isDevelopment && (
-          <div className="absolute top-4 right-4 px-3 py-1 bg-yellow-100 border border-yellow-300 rounded-full">
-            <span className="text-xs font-semibold text-yellow-800">DEV MODE</span>
+    <div className="container mx-auto flex items-center justify-center min-h-[calc(100vh-4rem)] px-4 py-8">
+      <Card className="max-w-md w-full p-8 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-xl rounded-2xl">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold bg-linear-to-r from-primary to-blue-600 bg-clip-text text-transparent mb-2">
+            Welcome Back
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400">
+            Sign in to access your dashboard
+          </p>
+        </div>
+
+        {/* Dev Mode Toolbar */}
+        {isDev && (
+          <div className="mb-6 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+            <div className="flex items-center gap-2 text-blue-700 text-sm font-medium">
+              <Beaker className="w-4 h-4" />
+              <span>Dev Mode Active</span>
+            </div>
+            <Button 
+              type="button" 
+              variant="outline" 
+              size="sm" 
+              onClick={handleDevFill}
+              className="h-7 text-xs border-blue-300 text-blue-700 hover:bg-blue-100"
+            >
+              Fill Test User
+            </Button>
           </div>
         )}
 
-        <h2 className="text-2xl font-bold mb-6">Welcome Back</h2>
-        
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
-            {error}
+        {/* Error Display */}
+        {authError && (
+          <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-center gap-3 text-red-600 dark:text-red-400">
+            <AlertCircle className="w-5 h-5 shrink-0" />
+            <p className="text-sm font-medium">{authError}</p>
           </div>
         )}
 
-        {isDevelopment && (
-          <div className="bg-blue-50 border border-blue-200 text-blue-700 px-4 py-3 rounded mb-4 text-sm">
-            <p className="font-semibold mb-1">🛠️ Development Mode</p>
-            <p>Credentials are pre-filled for quick testing.</p>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">Email</label>
+        {/* Login Form */}
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+          <div className="space-y-2">
+            <Label htmlFor="email">Email Address</Label>
             <Input
-              {...register('email')}
+              id="email"
               type="email"
-              placeholder="your@email.com"
+              placeholder="name@example.com"
+              {...register('email')}
+              className={errors.email ? 'border-red-500 focus-visible:ring-red-500' : ''}
               disabled={isLoading}
-              autoComplete="email"
             />
             {errors.email && (
-              <p className="text-red-500 text-sm mt-1">{errors.email.message as string}</p>
+              <p className="text-sm text-red-500 mt-1">{errors.email.message}</p>
             )}
           </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">Password</label>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="password">Password</Label>
+              <Link
+                href="/forgot-password"
+                className="text-sm font-medium text-primary hover:text-primary/80 transition-colors"
+              >
+                Forgot password?
+              </Link>
+            </div>
             <Input
-              {...register('password')}
+              id="password"
               type="password"
               placeholder="••••••••"
+              {...register('password')}
+              className={errors.password ? 'border-red-500 focus-visible:ring-red-500' : ''}
               disabled={isLoading}
-              autoComplete="current-password"
             />
             {errors.password && (
-              <p className="text-red-500 text-sm mt-1">{errors.password.message as string}</p>
+              <p className="text-sm text-red-500 mt-1">{errors.password.message}</p>
             )}
           </div>
 
-          <Button type="submit" className="w-full" disabled={isLoading}>
-            {isLoading ? 'Signing in...' : 'Sign In'}
+          {/* Remember Me Checkbox - Added to match schema */}
+          <div className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="remember_me"
+              className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              {...register('remember_me')}
+              disabled={isLoading}
+            />
+            <Label 
+              htmlFor="remember_me" 
+              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+            >
+              Remember me
+            </Label>
+          </div>
+
+          <Button
+            type="submit"
+            className="w-full h-11 text-base font-semibold shadow-lg hover:shadow-xl transition-all duration-200"
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                Signing in...
+              </>
+            ) : (
+              'Sign In'
+            )}
           </Button>
         </form>
 
-        <div className="mt-4 text-center">
-          <Link href="/forgot-password" className="text-sm text-blue-600 hover:underline">
-            Forgot password?
+        <div className="mt-8 text-center text-sm text-gray-500 dark:text-gray-400">
+          Don&apos;t have an account?{' '}
+          <Link
+            href="/register"
+            className="font-semibold text-primary hover:text-primary/80 transition-colors hover:underline"
+          >
+            Create account
           </Link>
         </div>
-
-        <p className="text-center mt-6 text-gray-600">
-          Don&apos;t have an account?{' '}
-          <Link href="/register" className="text-blue-600 hover:underline">
-            Sign up
-          </Link>
-        </p>
       </Card>
     </div>
   );
