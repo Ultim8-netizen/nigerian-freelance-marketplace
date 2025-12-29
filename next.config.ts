@@ -25,6 +25,18 @@ const nextConfig: NextConfig = {
   },
 
   async headers() {
+    const isDev = process.env.NODE_ENV === 'development';
+    
+    // Build connect-src based on environment
+    const connectSrc = [
+      "'self'",
+      "https://*.supabase.co",
+      "https://api.flutterwave.com",
+      "https://res.cloudinary.com",
+      // Allow local Supabase in development
+      ...(isDev ? ["http://127.0.0.1:54321", "ws://127.0.0.1:54321", "http://localhost:54321", "ws://localhost:54321"] : []),
+    ].join(' ');
+
     return [
       {
         source: '/:path*',
@@ -37,7 +49,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https: blob:",
               "font-src 'self' data:",
-              "connect-src 'self' https://*.supabase.co https://api.flutterwave.com https://res.cloudinary.com",
+              `connect-src ${connectSrc}`,
               "frame-ancestors 'none'",
             ].join('; '),
           },

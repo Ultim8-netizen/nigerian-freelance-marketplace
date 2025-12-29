@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/supabase
+!/supabase/migrations/
 
 # next.js
 /.next/

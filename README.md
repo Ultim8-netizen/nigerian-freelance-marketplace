@@ -1,266 +1,204 @@
-F9 – Hustle Forward
+F9 - Hustle Forward 🇳🇬
+Nigeria's Premier Student Freelance & Marketplace Platform
 
-A Nigerian-first freelance and marketplace platform connecting skills, services, and small businesses with those who need them.
+F9 is a specialized platform designed to bridge the gap between talented Nigerian students and the gig economy. Unlike traditional freelance platforms, F9 removes structural barriers (like complex ID requirements for entry) by utilizing a Trust Score system and Liveness Verification, allowing students to trade skills, services, and products securely within their university communities and beyond.
 
-Overview
+🚀 Key Features
+💼 Freelance Hub
+Service Listings: Freelancers can post detailed service offerings with packages and pricing.
 
-F9 is a lightweight, Nigeria-centric freelance and digital marketplace platform designed to remove the structural barriers Nigerians face on foreign platforms.
-It provides a unified space where users can:
+Job Board: Clients can post custom jobs; freelancers can submit proposals.
 
-Offer freelance services
+Escrow Payments: All service transactions are secured via an escrow system to protect both parties.
 
-Hire freelancers
+Smart Matching: Filter by university, state, and skill level.
 
-Advertise and sell physical products (student businesses, campus vendors, small-scale traders)
+🛍️ Student Marketplace
+Buy & Sell: A dedicated space for physical goods (textbooks, gadgets, fashion).
 
-Buy items directly from sellers across campuses and communities
+Campus-Centric: optimized for local pickups and campus deliveries.
 
-At its core, F9 is a neutral connection channel. It does not impose restrictions on visibility or access. Every user can interact freely; F9 simply provides the link, the tools, and basic safety layers.
+Seller Ratings: Verified reviews and trust badges for vendors.
 
-Core Vision
+🛡️ Trust & Safety
+Liveness Verification: AI-powered biometric face detection (using MediaPipe) to verify humanity without needing immediate government ID.
 
-To create an open, accessible platform for the overlooked majority—students, small business owners, and everyday Nigerians—where skills, services, and goods can flow freely without unnecessary institutional barriers.
+Trust Score: A dynamic scoring system (0-100) based on behavior, completion rates, and verification status.
 
-F9 prioritizes seamless onboarding, low cost, and Nigerian realities:
-poor network, payment friction, distrust of BVN/NIN requirements, and limited visibility for small vendors.
+Dispute Resolution: Built-in tools for handling order conflicts.
 
-Key Features
-1. Freelance Hub
+💳 Payments
+Flutterwave Integration: Native support for Nigerian payment methods (Card, USSD, Bank Transfer).
 
-A simple, fast system for:
+Wallet System: Internal wallet for managing earnings and withdrawals.
 
-Posting tasks
+🛠️ Tech Stack
+Frontend & Framework
 
-Offering services
+Next.js 16 (App Router)
 
-Negotiating prices directly
+React 19
 
-Completing jobs with built-in escrow protection
+TypeScript
 
-Users set their own rates. The platform takes no control over pricing decisions.
+Tailwind CSS (v4)
 
-2. Digital Marketplace
+Framer Motion (Animations)
 
-A dedicated space where users can:
+Shadcn/UI & Radix UI (Component Library)
 
-Upload products
+Backend & Database
 
-Set prices
+Supabase (PostgreSQL, Auth, Realtime)
 
-Receive orders
+TanStack Query (Data Fetching & State Management)
 
-Get rated by buyers
+Zod (Data Validation)
 
-Gain visibility beyond WhatsApp contact lists
+Infrastructure & Services
 
-This feature supports student sellers, small-scale businesses, and campus-based traders.
+Flutterwave (Payment Processing)
 
-3. Unified Search
+Cloudinary (Image Optimization & Storage)
 
-Users can search:
+Upstash (Redis) (Rate Limiting)
 
-Services (freelance)
+Google MediaPipe (Face Detection/Liveness)
 
-Goods (marketplace)
+⚙️ Prerequisites
+Before you begin, ensure you have the following installed:
 
-Vendors or freelancers
+Node.js (v18.0.0 or higher)
 
-Keywords
+npm or yarn
 
-Prices
+Git
 
-Ratings
+🚀 Getting Started
+1. Clone the Repository
+Bash
 
-Search results are sorted by trust score, relevance, distance, and user activity.
+git clone https://github.com/your-username/f9-marketplace.git
+cd f9-marketplace
+2. Install Dependencies
+Bash
 
-4. Trust System (Without NIN)
-Identity Layer: Liveness Verification
+npm install
+# or
+yarn install
+3. Environment Configuration
+Create a .env.local file in the root directory. You can copy the template from .env.example:
 
-F9 uses liveness checks to confirm that each verified user is a real human.
-No government ID needed.
+Bash
 
-Badge: Verified Human
+cp .env.example .env.local
+Fill in the following required variables:
 
-Reputation Layer: Trust Score
+Code snippet
 
-A dynamic score based on:
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 
-Liveness verification
+# Flutterwave (Payments)
+NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY=your_flw_public_key
+FLUTTERWAVE_SECRET_KEY=your_flw_secret_key
+FLUTTERWAVE_ENCRYPTION_KEY=your_flw_enc_key
+FLUTTERWAVE_WEBHOOK_SECRET=your_webhook_secret
 
-Phone/email verification
+# Cloudinary (Images)
+NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME=your_cloud_name
+NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET=marketplace_unsigned
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
 
-Successful jobs/orders
+# Upstash Redis (Rate Limiting)
+UPSTASH_REDIS_REST_URL=your_redis_url
+UPSTASH_REDIS_REST_TOKEN=your_redis_token
 
-Ratings
+# App Config
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+ENCRYPTION_KEY=32_byte_hex_string
+4. Database Setup
+Go to your Supabase Dashboard.
 
-Timeliness
+Navigate to the SQL Editor.
 
-Low dispute count
+Copy the content from database/schema.sql.
 
-Account age and consistent activity
+Run the script to create tables, RLS policies, functions, and triggers.
 
-Trust tiers affect visibility only.
-They never restrict access to jobs, buyers, or interactions.
+5. Run the Development Server
+Bash
 
-Trust Levels
+npm run dev
+Open http://localhost:3000 with your browser.
 
-New User
+📂 Project Structure
+Plaintext
 
-Verified User (liveness verified)
+src/
+├── app/                  # Next.js App Router pages and API routes
+│   ├── (auth)/           # Authentication routes (login, register)
+│   ├── (dashboard)/      # Protected dashboard routes (client/freelancer)
+│   ├── api/              # Backend API endpoints
+│   ├── marketplace/      # Marketplace product pages
+│   ├── services/         # Freelance service browsing
+│   └── verification/     # Liveness verification pages
+├── components/           # Reusable React components
+│   ├── ui/               # Base UI elements (buttons, inputs)
+│   ├── cloudinary/       # Image uploaders
+│   └── ...
+├── contexts/             # React Contexts (User state)
+├── hooks/                # Custom hooks (useAuth, useOrders)
+├── lib/                  # Utilities and library configurations
+│   ├── api/              # Middleware & Error handling
+│   ├── flutterwave/      # Payment logic
+│   ├── mediapipe/        # Face detection logic
+│   └── supabase/         # Database clients
+└── types/                # TypeScript definitions
+🧪 Scripts
+npm run dev: Starts the development server.
 
-Trusted
+npm run build: Builds the application for production.
 
-Top Rated
+npm run start: Starts the production server.
 
-Elite (behaviour-based, invite-only)
+npm run lint: Runs ESLint checks.
 
-Badges are informational tools to guide user decision-making. Users retain full freedom to interact with anyone.
+npm run type-check: Runs TypeScript compiler check.
 
-5. Escrow Protection
+npm run format: Formats code using Prettier.
 
-All paid tasks use an escrow system:
+🔒 Security Features
+RLS (Row Level Security): All database access is scoped to the authenticated user via Supabase policies.
 
-Buyer pays upfront
+Rate Limiting: API routes are protected by Upstash Redis to prevent abuse.
 
-Funds are held securely
+Input Sanitization: All user inputs are sanitized using DOMPurify and Zod validation.
 
-Released after job approval
+CSRF Protection: Custom CSRF handling for API routes.
 
-This protects both sides without adding friction.
+Secure Uploads: Signed Cloudinary uploads preventing unauthorized file hosting.
 
-6. Optimized for Nigerian Network Conditions
+🤝 Contributing
+Contributions are welcome! Please follow these steps:
 
-F9 was designed with unstable connectivity in mind:
+Fork the repository.
 
-Minimal API calls
+Create a feature branch (git checkout -b feature/AmazingFeature).
 
-Caching and offline-friendly components
+Commit your changes (git commit -m 'Add some AmazingFeature').
 
-Lightweight UI
+Push to the branch (git push origin feature/AmazingFeature).
 
-Graceful fallback for timeouts
+Open a Pull Request.
 
-Fast-loading images
+Please ensure you run npm run type-check and npm run lint before pushing.
 
-Local-first interactions where possible
+📄 License
+This project is proprietary and confidential. Copyright © 2025 F9 Marketplace. All rights reserved.
 
-7. Payment Integration
-
-Flutterwave powers payments, supporting:
-
-Verve
-
-Visa/Mastercard
-
-Bank transfers
-
-USSD
-
-Mobile money options
-
-This ensures local compatibility and reliability.
-
-8. Marketplace Ratings & Feedback
-
-Each listing and vendor has:
-
-Star rating
-
-Written feedback
-
-Trust tier
-
-Delivery record
-
-Users can compare multiple providers offering the same product or service.
-
-9. Developer Philosophy
-
-F9 has three non-negotiable principles:
-
-A. Absolute Neutrality
-
-The platform connects people; it does not gatekeep access.
-
-B. Minimal Barriers
-
-No NIN, no BVN, no institutional obstacles.
-
-C. User Choice
-
-Badges inform decisions—users are free to interact with anyone at their own discretion.
-
-The platform is not responsible for choices made by users after reasonable safety tools have been provided. This is clearly stated in the user agreement.
-
-10. Monetization Strategy
-Freelance Platform
-
-Monetized from day one to offset:
-
-Liveness verification costs
-
-Server expenses
-
-Escrow operations
-
-Marketplace
-
-Free during early stages to encourage adoption and rapid growth.
-
-Future optional revenue streams:
-
-Promoted listings
-
-Vendor-specific enhancements
-
-Cosmetic upgrades (for future virtual market expansion)
-
-11. Future Expansion: Virtual Marketplace (Long-Term Plan)
-
-A hybrid pixel/3D real-time virtual market:
-
-Avatars representing users
-
-Stall representations for sellers
-
-Real-time online/offline presence
-
-Optional paid cosmetics (skins, upgraded shops, branding)
-
-Location-based scaling with user permission
-
-Enhanced discovery and engagement loop
-
-This feature will be implemented only after stable traction.
-
-12. Technology Stack
-
-(Adjust based on your implementation)
-
-Frontend: Next.js, React, Tailwind
-
-Backend: Serverless functions (e.g., Vercel, Supabase functions, Cloudflare Workers)
-
-Database: Supabase / Postgres
-
-Storage: Supabase or Cloudflare R2
-
-Payments: Flutterwave
-
-Verification: Liveness detection (third-party or custom model)
-
-Hosting: Free-tier serverless infrastructure where possible
-
-13. Current Development Stage
-
-Core freelance features: Complete
-
-Marketplace: In development
-
-Trust system: Implemented
-
-Testing and debugging: Ongoing
-
-14. License
-
-Private / All rights reserved
+📞 Support
+For support, email support@f9.ng or visit our Support Page.
