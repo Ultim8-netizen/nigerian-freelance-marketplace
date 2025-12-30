@@ -67,6 +67,7 @@ export async function middleware(request: NextRequest) {
     '/freelancer',
     '/client',
     '/onboarding',
+    '/marketplace',
   ];
   
   const apiProtectedPaths = [

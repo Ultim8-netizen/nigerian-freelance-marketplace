@@ -1,75 +1,69 @@
 // src/app/services/page.tsx
-// Services browsing page with search, filters, and location proximity
-
 import { createClient } from '@/lib/supabase/server';
 import { ServiceCard } from '@/components/services/ServiceCard';
 import { ServicesFilters } from '@/components/services/ServicesFilters';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { DashboardNav } from '@/components/layout/DashboardNav';
 
-interface SearchParams {
-  category?: string;
-  search?: string;
-  min_price?: string;
-  max_price?: string;
-  state?: string;
-  city?: string;
-  page?: string;
-}
-
-export default async function ServicesPage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
+export default async function ServicesPage(props: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
-  // FIX: Await the async createClient function
-  const supabase = await createClient();
+  // Await searchParams for Next.js 15 compatibility
+  const searchParams = await props.searchParams;
   
-  const page = parseInt(searchParams.page || '1');
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  // Fetch profile for navigation
+  let profile = null;
+  if (user) {
+    const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+    profile = data;
+  }
+
+  // Safe parameter parsing
+  const category = typeof searchParams.category === 'string' ? searchParams.category : undefined;
+  const search = typeof searchParams.search === 'string' ? searchParams.search : undefined;
+  const minPrice = typeof searchParams.min_price === 'string' ? searchParams.min_price : undefined;
+  const maxPrice = typeof searchParams.max_price === 'string' ? searchParams.max_price : undefined;
+  const state = typeof searchParams.state === 'string' ? searchParams.state : undefined;
+  const city = typeof searchParams.city === 'string' ? searchParams.city : undefined;
+  const page = typeof searchParams.page === 'string' ? parseInt(searchParams.page) : 1;
+
   const perPage = 20;
   const from = (page - 1) * perPage;
   const to = from + perPage - 1;
 
+  // Build query
   let query = supabase
     .from('services')
     .select(`
       *,
       freelancer:profiles!services_freelancer_id_fkey(
-        id,
-        full_name,
-        profile_image_url,
-        freelancer_rating,
-        total_jobs_completed
+        id, full_name, profile_image_url, freelancer_rating, total_jobs_completed
       )
     `, { count: 'exact' })
     .eq('is_active', true);
 
-  // Text search across title, description, and category
-  if (searchParams.search) {
-    query = query.or(
-      `title.ilike.%${searchParams.search}%,description.ilike.%${searchParams.search}%,category.ilike.%${searchParams.search}%`
-    );
+  // Apply filters
+  if (search) {
+    query = query.or(`title.ilike.%${search}%,description.ilike.%${search}%,category.ilike.%${search}%`);
   }
-
-  // Category filter (partial match for flexibility)
-  if (searchParams.category) {
-    query = query.ilike('category', `%${searchParams.category}%`);
+  if (category) {
+    query = query.ilike('category', `%${category}%`);
   }
-
-  // Price range filters
-  if (searchParams.min_price) {
-    query = query.gte('base_price', parseFloat(searchParams.min_price));
+  if (minPrice) {
+    query = query.gte('base_price', parseFloat(minPrice));
   }
-  if (searchParams.max_price) {
-    query = query.lte('base_price', parseFloat(searchParams.max_price));
+  if (maxPrice) {
+    query = query.lte('base_price', parseFloat(maxPrice));
   }
-
-  // Location filter (for proximity, not requirement)
-  if (searchParams.state) {
-    query = query.ilike('service_location', `%${searchParams.state}%`);
+  if (state) {
+    query = query.ilike('service_location', `%${state}%`);
   }
-  if (searchParams.city && searchParams.state) {
-    query = query.ilike('service_location', `%${searchParams.city}%`);
+  if (city && state) {
+    query = query.ilike('service_location', `%${city}%`);
   }
 
   const { data: services, count, error } = await query
@@ -81,44 +75,56 @@ export default async function ServicesPage({
   }
 
   const totalPages = Math.ceil((count || 0) / perPage);
+  const popularCategories = ['Academic Services', 'Tech & Digital', 'Creative Services', 'Personal Services'];
 
-  // Get popular categories for quick filters
-  const popularCategories = [
-    'Academic Services',
-    'Tech & Digital',
-    'Creative Services',
-    'Personal Services',
-  ];
-
-  // Build query string helper for pagination
+  // Build query string for pagination
   const buildQueryString = (newPage?: number) => {
     const params = new URLSearchParams();
-    if (searchParams.category) params.set('category', searchParams.category);
-    if (searchParams.search) params.set('search', searchParams.search);
-    if (searchParams.min_price) params.set('min_price', searchParams.min_price);
-    if (searchParams.max_price) params.set('max_price', searchParams.max_price);
-    if (searchParams.state) params.set('state', searchParams.state);
-    if (searchParams.city) params.set('city', searchParams.city);
+    if (category) params.set('category', category);
+    if (search) params.set('search', search);
+    if (minPrice) params.set('min_price', minPrice);
+    if (maxPrice) params.set('max_price', maxPrice);
+    if (state) params.set('state', state);
+    if (city) params.set('city', city);
     if (newPage) params.set('page', newPage.toString());
     return params.toString();
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      {/* Navigation */}
+      {user && profile ? (
+        <DashboardNav user={user} profile={profile} />
+      ) : (
+        <header className="bg-white border-b p-4 flex justify-between items-center">
+          <Link href="/" className="font-bold text-2xl text-blue-600">F9</Link>
+          <div className="flex gap-4">
+            <Link href="/login"><Button variant="ghost">Login</Button></Link>
+            <Link href="/register"><Button>Sign Up</Button></Link>
+          </div>
+        </header>
+      )}
+
       <div className="container mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="mb-8">
+        {/* Header with branding */}
+        <div className="mb-8 bg-linear-to-r from-red-600 via-blue-600 to-purple-600 p-8 rounded-2xl text-white shadow-lg">
           <h1 className="text-3xl font-bold mb-2">Browse Services</h1>
-          <p className="text-gray-600">
-            Find talented students offering services across Nigeria
-          </p>
+          <p className="text-blue-100">Find talented students offering services across Nigeria</p>
         </div>
 
-        {/* Filters Sidebar & Content */}
         <div className="flex flex-col lg:flex-row gap-6">
           {/* Filters Sidebar */}
           <aside className="lg:w-64 shrink-0">
-            <ServicesFilters currentFilters={searchParams} />
+            <ServicesFilters 
+              currentFilters={{ 
+                category, 
+                search, 
+                min_price: minPrice, 
+                max_price: maxPrice, 
+                state, 
+                city 
+              }} 
+            />
           </aside>
 
           {/* Main Content */}
@@ -126,62 +132,36 @@ export default async function ServicesPage({
             {/* Quick Category Pills */}
             <div className="mb-6 flex gap-2 flex-wrap">
               <Link href="/services">
-                <Button
-                  variant={!searchParams.category ? 'default' : 'outline'}
-                  size="sm"
-                >
+                <Button variant={!category ? 'default' : 'outline'} size="sm" className={!category ? "bg-blue-600 text-white" : "hover:bg-blue-50"}>
                   All Services
                 </Button>
               </Link>
-              {popularCategories.map((category) => (
-                <Link
-                  key={category}
-                  href={`/services?category=${encodeURIComponent(category)}`}
-                >
-                  <Button
-                    variant={
-                      searchParams.category === category ? 'default' : 'outline'
-                    }
+              {popularCategories.map((cat) => (
+                <Link key={cat} href={`/services?category=${encodeURIComponent(cat)}`}>
+                  <Button 
+                    variant={category === cat ? 'default' : 'outline'} 
                     size="sm"
+                    className={category === cat ? "bg-blue-600 text-white" : "hover:bg-blue-50"}
                   >
-                    {category}
+                    {cat}
                   </Button>
                 </Link>
               ))}
             </div>
 
             {/* Active Filters Display */}
-            {(searchParams.search ||
-              searchParams.state ||
-              searchParams.min_price ||
-              searchParams.max_price) && (
+            {(search || state || minPrice || maxPrice) && (
               <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                 <div className="flex items-center justify-between">
                   <div className="text-sm text-blue-800">
                     <span className="font-medium">Active filters:</span>
-                    {searchParams.search && (
-                      <span className="ml-2">
-                        Search: &quot;{searchParams.search}&quot;
-                      </span>
-                    )}
-                    {searchParams.state && (
-                      <span className="ml-2">Location: {searchParams.state}</span>
-                    )}
-                    {searchParams.min_price && (
-                      <span className="ml-2">
-                        Min: ₦{searchParams.min_price}
-                      </span>
-                    )}
-                    {searchParams.max_price && (
-                      <span className="ml-2">
-                        Max: ₦{searchParams.max_price}
-                      </span>
-                    )}
+                    {search && <span className="ml-2">Search: &quot;{search}&quot;</span>}
+                    {state && <span className="ml-2">Location: {state}</span>}
+                    {minPrice && <span className="ml-2">Min: ₦{minPrice}</span>}
+                    {maxPrice && <span className="ml-2">Max: ₦{maxPrice}</span>}
                   </div>
                   <Link href="/services">
-                    <Button variant="ghost" size="sm">
-                      Clear all
-                    </Button>
+                    <Button variant="ghost" size="sm">Clear all</Button>
                   </Link>
                 </div>
               </div>
@@ -190,9 +170,7 @@ export default async function ServicesPage({
             {/* Results Count */}
             <div className="mb-4 text-sm text-gray-600">
               {count ? (
-                <span>
-                  Showing {from + 1}-{Math.min(to + 1, count)} of {count} services
-                </span>
+                <span>Showing {from + 1}-{Math.min(to + 1, count)} of {count} services</span>
               ) : (
                 <span>No services found</span>
               )}
@@ -206,31 +184,15 @@ export default async function ServicesPage({
                 ))}
               </div>
             ) : (
-              <div className="text-center py-12">
+              <div className="text-center py-12 bg-white rounded-lg border border-gray-200 shadow-sm">
                 <div className="text-gray-400 mb-4">
-                  <svg
-                    className="mx-auto h-12 w-12"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
+                  <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                 </div>
-                <h3 className="text-lg font-medium text-gray-900 mb-2">
-                  No services found
-                </h3>
-                <p className="text-gray-500 mb-4">
-                  Try adjusting your filters or search terms
-                </p>
-                <Link href="/services">
-                  <Button variant="outline">Clear filters</Button>
-                </Link>
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No services found</h3>
+                <p className="text-gray-500 mb-4">Try adjusting your filters or search terms</p>
+                <Link href="/services"><Button variant="outline">Clear filters</Button></Link>
               </div>
             )}
 
@@ -244,7 +206,6 @@ export default async function ServicesPage({
                 )}
                 
                 <div className="flex items-center gap-2">
-                  {/* Show page numbers */}
                   {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                     let pageNum;
                     if (totalPages <= 5) {
@@ -258,14 +219,8 @@ export default async function ServicesPage({
                     }
 
                     return (
-                      <Link
-                        key={pageNum}
-                        href={`/services?${buildQueryString(pageNum)}`}
-                      >
-                        <Button
-                          variant={page === pageNum ? 'default' : 'outline'}
-                          size="sm"
-                        >
+                      <Link key={pageNum} href={`/services?${buildQueryString(pageNum)}`}>
+                        <Button variant={page === pageNum ? 'default' : 'outline'} size="sm">
                           {pageNum}
                         </Button>
                       </Link>

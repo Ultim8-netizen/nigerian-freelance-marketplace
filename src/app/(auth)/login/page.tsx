@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useForm } from 'react-hook-form';
+import { useForm, SubmitHandler } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { loginSchema } from '@/lib/validations';
@@ -12,10 +12,16 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox'; // Assuming you have this, otherwise see note below
 import { AlertCircle, Loader2, Beaker } from 'lucide-react';
 
-// Infer the type directly from the schema
+// Define the form data type with remember_me as optional for input
+type LoginFormInput = {
+  email: string;
+  password: string;
+  remember_me?: boolean;
+};
+
+// Infer output type from schema
 type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function LoginPage() {
@@ -30,15 +36,13 @@ export default function LoginPage() {
     register,
     handleSubmit,
     setValue,
-    watch, // Added to handle checkbox state if needed
     formState: { errors },
-  } = useForm<LoginFormData>({
+  } = useForm<LoginFormInput, unknown, LoginFormData>({
     resolver: zodResolver(loginSchema),
-    // FIX: defaultValues must match LoginFormData exactly to satisfy TypeScript
     defaultValues: {
       email: '',
       password: '',
-      remember_me: false, 
+      remember_me: false,
     }
   });
 
@@ -55,7 +59,7 @@ export default function LoginPage() {
     setValue('password', 'password123', { shouldValidate: true });
   };
 
-  const onSubmit = async (data: LoginFormData) => {
+  const onSubmit: SubmitHandler<LoginFormInput> = async (data) => {
     setIsLoading(true);
     setAuthError(null);
 
@@ -73,7 +77,7 @@ export default function LoginPage() {
       // Supabase handles session persistence automatically by default, 
       // but you can use data.remember_me to toggle local/session storage if using custom auth flow.
 
-      router.push('/services');
+      router.push('/dashboard');
       router.refresh();
     } catch (error: unknown) {
       console.error('Login error:', error);
@@ -165,7 +169,7 @@ export default function LoginPage() {
             )}
           </div>
 
-          {/* Remember Me Checkbox - Added to match schema */}
+          {/* Remember Me Checkbox */}
           <div className="flex items-center space-x-2">
             <input
               type="checkbox"
