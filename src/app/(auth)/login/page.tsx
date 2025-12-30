@@ -73,6 +73,24 @@ export default function LoginPage() {
         throw error;
       }
 
+      // ✅ NEW: Ensure profile exists before redirecting to dashboard
+      try {
+        const profileResponse = await fetch('/api/auth/create-profile', {
+          method: 'POST',
+        });
+
+        if (!profileResponse.ok) {
+          console.warn(
+            'Profile creation warning:',
+            await profileResponse.text()
+          );
+          // Don't throw - dashboard will handle it gracefully
+        }
+      } catch (profileError) {
+        console.warn('Profile creation failed:', profileError);
+        // Continue anyway - dashboard will redirect to onboarding if needed
+      }
+
       // Handle 'remember_me' logic here if you have custom persistence logic
       // Supabase handles session persistence automatically by default, 
       // but you can use data.remember_me to toggle local/session storage if using custom auth flow.

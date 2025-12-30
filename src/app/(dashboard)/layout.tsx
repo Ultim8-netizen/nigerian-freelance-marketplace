@@ -7,6 +7,7 @@ import { cookies } from 'next/headers';
 import { DashboardNav } from '@/components/layout/DashboardNav';
 import { DashboardSidebar } from '@/components/layout/DashboardSidebar';
 import { DashboardMobileMenu } from '@/components/layout/DashboardMobileMenu';
+import { DashboardErrorFallback } from '@/components/layout/DashboardErrorFallback';
 import { UserProvider } from '@/contexts/UserContext';
 import { Toaster } from '@/components/ui/toaster';
 import { AlertCircle } from 'lucide-react';
@@ -89,39 +90,17 @@ export default async function DashboardLayout({
       error: profileError,
     });
     
-    // Check if profile doesn't exist at all
+    // Check if profile doesn't exist at all (PGRST116 = not found)
     if (profileError?.code === 'PGRST116') {
-      // No profile found - redirect to profile creation
+      // No profile found - redirect to onboarding
       redirect('/onboarding?step=create-profile');
     }
     
-    // Other errors - show error page
+    // Other errors - show error UI with client component
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 text-center">
-          <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-            Unable to Load Dashboard
-          </h1>
-          <p className="text-gray-600 dark:text-gray-400 mb-6">
-            We encountered an error loading your profile. Please try again.
-          </p>
-          <div className="flex gap-3 justify-center">
-            <a
-              href="/login"
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Back to Login
-            </a>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        </div>
-      </div>
+      <DashboardErrorFallback 
+        message="We encountered an error loading your profile. Please try again."
+      />
     );
   }
 
