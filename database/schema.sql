@@ -2324,3 +2324,15 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   RAISE EXCEPTION 'Failed to create dev user: %', SQLERRM;
 END $$;
+
+-- Add the missing onboarding_completed column
+ALTER TABLE profiles 
+ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE;
+
+-- Update existing users to have this set to FALSE (or TRUE if you prefer)
+UPDATE profiles 
+SET onboarding_completed = FALSE 
+WHERE onboarding_completed IS NULL;
+
+-- Fix potential caching issues by reloading schema cache
+NOTIFY pgrst, 'reload schema';

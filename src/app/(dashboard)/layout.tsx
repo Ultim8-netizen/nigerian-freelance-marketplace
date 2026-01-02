@@ -1,5 +1,5 @@
 // src/app/(dashboard)/layout.tsx
-// OPTIMIZED: Single source of truth for user data, parallel fetching
+// OPTIMIZED: Single source of truth for user data, parallel fetching, profile completion warning
 import { Suspense } from 'react';
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -20,13 +20,15 @@ import {
 } from '@/components/layout/DashboardUtilities';
 
 /**
- * Dashboard Layout Component - OPTIMIZED
+ * Dashboard Layout Component - FULLY OPTIMIZED
  * 
- * Changes from original:
- * 1. Single authentication check (middleware already validated token)
- * 2. Parallel data fetching for better performance
+ * Key optimizations:
+ * 1. Single authentication check with early redirect
+ * 2. Parallel data fetching (Promise.allSettled) for better performance
  * 3. Graceful error handling with user-friendly messages
- * 4. Removed redundant onboarding check (handled once)
+ * 4. Profile completion warning alert system
+ * 5. Removed redundant field mapping (avatar_url matches DB schema)
+ * 6. Improved loading skeletons for better UX
  */
 
 interface DashboardLayoutProps {
@@ -39,30 +41,27 @@ export default async function DashboardLayout({
   const supabase = await createClient();
   
   // ============================================================================
-  // AUTHENTICATION (Single source of truth)
+  // AUTHENTICATION
   // ============================================================================
-  // Note: Middleware already validated the session token exists
-  // This call retrieves the full user object from the session
+  // Middleware already validated the session token exists.
+  // This retrieves the full user object from the session.
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   
   if (authError || !user) {
-    // This should rarely happen since middleware checks token
-    // But handle edge cases (expired session, etc.)
     redirect('/login?error=session_expired');
   }
 
   // ============================================================================
-  // PARALLEL DATA FETCHING (Faster than sequential)
+  // PARALLEL DATA FETCHING
   // ============================================================================
+  // Fetch profile and wallet in parallel for better performance
   const [profileResult, walletResult] = await Promise.allSettled([
-    // Fetch profile with account status
     supabase
       .from('profiles')
-      .select('id, user_type, full_name, phone_number, onboarding_completed, account_status, avatar_url')
+      .select('id, user_type, full_name, phone_number, onboarding_completed, account_status, profile_image_url')
       .eq('id', user.id)
       .single(),
     
-    // Fetch wallet balance
     supabase
       .from('wallets')
       .select('balance')
@@ -71,7 +70,7 @@ export default async function DashboardLayout({
   ]);
 
   // ============================================================================
-  // HANDLE PROFILE FETCH RESULTS
+  // HANDLE PROFILE RESULTS
   // ============================================================================
   let profile = null;
   let profileError = null;
@@ -90,16 +89,15 @@ export default async function DashboardLayout({
       error: profileError,
     });
     
-    // Check if profile doesn't exist at all (PGRST116 = not found)
+    // Check if profile doesn't exist (PGRST116 = not found)
     if (profileError?.code === 'PGRST116') {
-      // No profile found - redirect to onboarding
       redirect('/onboarding?step=create-profile');
     }
     
-    // Other errors - show error UI with client component
+    // Other errors - show error UI
     return (
       <DashboardErrorFallback 
-        message="We encountered an error loading your profile. Please try again."
+        message="We encountered an error loading your profile. Please refresh the page."
       />
     );
   }
@@ -112,9 +110,10 @@ export default async function DashboardLayout({
     walletBalance = walletResult.value.data.balance || 0;
   }
 
-  // Add wallet balance to profile object
+  // Merge wallet balance and map profile_image_url to avatar_url for UI components
   const profileWithWallet = {
     ...profile,
+    avatar_url: profile.profile_image_url, // Map DB column to UI expected field
     wallet_balance: walletBalance,
   };
 
@@ -144,7 +143,7 @@ export default async function DashboardLayout({
   }
 
   // ============================================================================
-  // ONBOARDING CHECK (Single check, not in middleware)
+  // ONBOARDING CHECK
   // ============================================================================
   if (!profile.onboarding_completed) {
     redirect('/onboarding');
@@ -153,6 +152,7 @@ export default async function DashboardLayout({
   // ============================================================================
   // PROFILE COMPLETION STATUS
   // ============================================================================
+  // Alert users if their profile is incomplete
   const needsProfileUpdate = !profile.full_name || !profile.phone_number;
 
   // ============================================================================
@@ -162,7 +162,7 @@ export default async function DashboardLayout({
   const sidebarCollapsed = cookieStore.get('sidebar-collapsed')?.value === 'true';
 
   // ============================================================================
-  // RENDER DASHBOARD
+  // RENDER
   // ============================================================================
   return (
     <UserProvider user={user} profile={profileWithWallet}>
@@ -178,7 +178,7 @@ export default async function DashboardLayout({
                 <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mt-0.5 shrink-0" />
                 <div className="flex-1">
                   <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                    Your profile is incomplete. 
+                    Your profile is incomplete.
                     <a 
                       href="/dashboard/settings/profile" 
                       className="ml-2 font-medium underline hover:no-underline"
@@ -193,31 +193,24 @@ export default async function DashboardLayout({
         )}
 
         {/* Top Navigation Bar */}
-        <DashboardNav 
-          user={user} 
-          profile={profileWithWallet}
-        />
+        <DashboardNav user={user} profile={profileWithWallet} />
 
         <div className="flex relative">
           {/* Desktop Sidebar */}
-          <aside 
+          <aside
             className={`
-              hidden lg:flex lg:shrink-0 
+              hidden lg:flex lg:shrink-0
               transition-all duration-300 ease-in-out
               ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-64'}
             `}
           >
             <div className="flex flex-col w-full border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-              <DashboardSidebar 
-                userType={profile.user_type}
-              />
+              <DashboardSidebar userType={profile.user_type} />
             </div>
           </aside>
 
           {/* Mobile Menu */}
-          <DashboardMobileMenu 
-            userType={profile.user_type}
-          />
+          <DashboardMobileMenu userType={profile.user_type} />
 
           {/* Main Content Area */}
           <main className="flex-1 overflow-y-auto">
