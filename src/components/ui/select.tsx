@@ -1,5 +1,5 @@
 // src/components/ui/select.tsx
-// Radix-based Select component (fully accessible, shadcn-style)
+// Radix-based Select component with system dark mode support
 
 "use client";
 
@@ -19,8 +19,15 @@ export const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-10 w-full items-center justify-between rounded-md border border-gray-300 bg-white px-3 py-2 text-sm",
+      // Base styles
+      "flex h-10 w-full items-center justify-between rounded-md border px-3 py-2 text-sm",
+      // Light mode
+      "border-gray-300 bg-white text-gray-900",
+      // Dark mode overrides
+      "dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100",
+      // Focus states
       "focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+      // Disabled states
       "disabled:cursor-not-allowed disabled:opacity-50",
       className
     )}
@@ -40,7 +47,12 @@ export const SelectContent = React.forwardRef<
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        "z-50 min-w-32 overflow-hidden rounded-md border bg-white shadow-md",
+        // Base styles
+        "z-50 min-w-32 overflow-hidden rounded-md border shadow-md",
+        // Light mode
+        "border-gray-300 bg-white text-gray-900",
+        // Dark mode overrides
+        "dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100",
         className
       )}
       {...props}
@@ -60,8 +72,13 @@ export const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
+      // Base styles
       "relative flex w-full cursor-pointer select-none items-center rounded-sm px-8 py-2 text-sm outline-none",
-      "focus:bg-gray-100",
+      // Light mode focus
+      "focus:bg-gray-100 focus:text-gray-900",
+      // Dark mode focus
+      "dark:focus:bg-gray-800 dark:focus:text-gray-100",
+      // Disabled states
       "data-disabled:pointer-events-none data-disabled:opacity-50",
       className
     )}

@@ -33,6 +33,8 @@ const nextConfig: NextConfig = {
       "https://*.supabase.co",
       "https://api.flutterwave.com",
       "https://res.cloudinary.com",
+      "https://nominatim.openstreetmap.org",
+      "https://ipapi.co",
       // Allow local Supabase in development
       ...(isDev ? ["http://127.0.0.1:54321", "ws://127.0.0.1:54321", "http://localhost:54321", "ws://localhost:54321"] : []),
     ].join(' ');

@@ -1,17 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { LocationSelector } from '@/components/location/LocationSelector';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { type UserLocation } from '@/types/location.types';
 import { MapPin, Users, Briefcase, Shield, Loader2, CheckCircle } from 'lucide-react';
 
-// The temporary LocationState interface has been removed as we align with UserLocation.
-
 export function LocationSetupStep() {
-  const router = useRouter();
   // Using the standard UserLocation type now
   const [location, setLocation] = useState<UserLocation | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -34,35 +30,34 @@ export function LocationSetupStep() {
     setError('');
 
     try {
-      // Save location
-      const response = await fetch('/api/profile/location', {
+      // 1. Save location
+      const locationResponse = await fetch('/api/profile/location', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(location),
       });
 
-      const result = await response.json();
-
-      if (response.ok) {
-        // Mark onboarding as complete
-        const completeResponse = await fetch('/api/profile/complete-onboarding', {
-          method: 'POST',
-        });
-
-        if (completeResponse.ok) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          router.push('/dashboard');
-          router.refresh();
-        } else {
-          setError('Failed to complete onboarding');
-        }
-      } else {
-        setError(result.error || 'Failed to save location');
+      if (!locationResponse.ok) {
+        const err = await locationResponse.json();
+        throw new Error(err.error || 'Failed to save location');
       }
-    } catch (error) {
-      console.error('Failed to save location:', error);
-      setError('Something went wrong. Please try again.');
-    } finally {
+
+      // 2. Mark onboarding as complete
+      const completeResponse = await fetch('/api/profile/complete-onboarding', {
+        method: 'POST',
+      });
+
+      if (!completeResponse.ok) {
+        throw new Error('Failed to complete onboarding');
+      }
+
+      // 3. SUCCESS - Force hard navigation to clear caches and re-trigger server-side checks
+      window.location.href = '/dashboard';
+      
+    } catch (error: unknown) {
+      console.error('Setup failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Something went wrong. Please try again.';
+      setError(errorMessage);
       setIsSaving(false);
     }
   };
@@ -77,17 +72,17 @@ export function LocationSetupStep() {
         method: 'POST',
       });
 
-      if (completeResponse.ok) {
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        router.push('/dashboard');
-        router.refresh();
-      } else {
-        setError('Failed to continue. Please try again.');
-        setIsSkipping(false);
+      if (!completeResponse.ok) {
+        throw new Error('Failed to continue. Please try again.');
       }
-    } catch (error) {
+
+      // Force hard navigation to clear caches and re-trigger server-side checks
+      window.location.href = '/dashboard';
+      
+    } catch (error: unknown) {
       console.error('Failed to skip onboarding:', error);
-      setError('Something went wrong. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : 'Something went wrong. Please try again.';
+      setError(errorMessage);
       setIsSkipping(false);
     }
   };

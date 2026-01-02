@@ -2336,3 +2336,27 @@ WHERE onboarding_completed IS NULL;
 
 -- Fix potential caching issues by reloading schema cache
 NOTIFY pgrst, 'reload schema';
+
+-- 1. Fix Profile Insertion Policy
+DROP POLICY IF EXISTS "Users can insert their own profile" ON profiles;
+CREATE POLICY "Users can insert their own profile" 
+ON profiles FOR INSERT 
+WITH CHECK (auth.uid() = id);
+
+-- 2. Fix Profile Update Policy (ensure it exists)
+DROP POLICY IF EXISTS "Users can update own profile" ON profiles;
+CREATE POLICY "Users can update own profile" 
+ON profiles FOR UPDATE 
+USING (auth.uid() = id);
+
+-- 3. Allow User Locations Insertion (Fixes location save error)
+DROP POLICY IF EXISTS "Users can manage own location" ON user_locations;
+CREATE POLICY "Users can manage own location" 
+ON user_locations FOR ALL 
+USING (user_id = auth.uid());
+
+-- 4. Fix Wallet Creation (If needed)
+DROP POLICY IF EXISTS "Users can create own wallet" ON wallets;
+CREATE POLICY "Users can create own wallet" 
+ON wallets FOR INSERT 
+WITH CHECK (user_id = auth.uid());
