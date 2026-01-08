@@ -2360,3 +2360,27 @@ DROP POLICY IF EXISTS "Users can create own wallet" ON wallets;
 CREATE POLICY "Users can create own wallet" 
 ON wallets FOR INSERT 
 WITH CHECK (user_id = auth.uid());
+
+-- Allow users to insert their own profile
+DROP POLICY IF EXISTS "Users can insert their own profile" ON profiles;
+CREATE POLICY "Users can insert their own profile" 
+ON profiles FOR INSERT 
+WITH CHECK (auth.uid() = id);
+
+-- Allow users to insert their own location data
+DROP POLICY IF EXISTS "Users can manage own location" ON user_locations;
+CREATE POLICY "Users can manage own location" 
+ON user_locations FOR ALL 
+USING (user_id = auth.uid());
+
+-- Allow users to insert their own profile row
+DROP POLICY IF EXISTS "Users can insert their own profile" ON profiles;
+CREATE POLICY "Users can insert their own profile" 
+ON profiles FOR INSERT 
+WITH CHECK (auth.uid() = id);
+
+-- Allow users to insert their own location data
+DROP POLICY IF EXISTS "Users can manage own location" ON user_locations;
+CREATE POLICY "Users can manage own location" 
+ON user_locations FOR ALL 
+USING (user_id = auth.uid());

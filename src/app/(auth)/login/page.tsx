@@ -8,6 +8,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { loginSchema } from '@/lib/validations';
 import { createClient } from '@/lib/supabase/client';
+import { SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -30,7 +31,7 @@ export default function LoginPage() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [isDev, setIsDev] = useState(false);
 
-  const supabase = createClient();
+  const [supabase] = useState(() => createClient() as SupabaseClient);
 
   const {
     register,
@@ -64,37 +65,24 @@ export default function LoginPage() {
     setAuthError(null);
 
     try {
+      // 1. Authenticate
       const { error } = await supabase.auth.signInWithPassword({
         email: data.email,
         password: data.password,
       });
+      if (error) throw error;
 
-      if (error) {
-        throw error;
+      // 2. Ensure Profile Exists
+      const profileResponse = await fetch('/api/auth/create-profile', {
+        method: 'POST',
+      });
+      if (!profileResponse.ok) {
+        // STOP here if profile fails. Do not redirect.
+        const errData = await profileResponse.json();
+        throw new Error(errData.error || "Login succeeded but profile creation failed. Please contact support.");
       }
 
-      // ✅ NEW: Ensure profile exists before redirecting to dashboard
-      try {
-        const profileResponse = await fetch('/api/auth/create-profile', {
-          method: 'POST',
-        });
-
-        if (!profileResponse.ok) {
-          console.warn(
-            'Profile creation warning:',
-            await profileResponse.text()
-          );
-          // Don't throw - dashboard will handle it gracefully
-        }
-      } catch (profileError) {
-        console.warn('Profile creation failed:', profileError);
-        // Continue anyway - dashboard will redirect to onboarding if needed
-      }
-
-      // Handle 'remember_me' logic here if you have custom persistence logic
-      // Supabase handles session persistence automatically by default, 
-      // but you can use data.remember_me to toggle local/session storage if using custom auth flow.
-
+      // 3. Only redirect if BOTH succeed
       router.push('/dashboard');
       router.refresh();
     } catch (error: unknown) {

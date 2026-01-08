@@ -37,16 +37,19 @@ export async function PUT(request: NextRequest) {
 
     const supabase = await createClient();
 
-    // Update profile with location
+    // Upsert profile with location (insert if not exists, update if exists)
     const { error: updateError } = await supabase
       .from('profiles')
-      .update({
+      .upsert({
+        id: user.id, // Mandatory for upsert
+        email: user.email, // Ensure email is present
+        full_name: user.user_metadata?.full_name || '', // Ensure name is present
         location: validatedData.city 
           ? `${validatedData.city}, ${validatedData.state}`
           : validatedData.state,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', user.id);
+      .select();
 
     if (updateError) {
       return NextResponse.json(

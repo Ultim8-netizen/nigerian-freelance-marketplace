@@ -1,4 +1,5 @@
 // src/app/layout.tsx
+import { Suspense } from 'react';
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
@@ -123,8 +124,10 @@ export default function RootLayout({
             No more UserContext - TanStack Query handles everything
           */}
           <QueryProvider>
-            {/* Top progress bar for page transitions */}
-            <ProgressBar />
+            {/* Wrap ProgressBar in Suspense for better hydration handling */}
+            <Suspense fallback={null}>
+              <ProgressBar />
+            </Suspense>
             
             {/* Main content with smooth transitions */}
             <div className="relative flex min-h-screen flex-col">
