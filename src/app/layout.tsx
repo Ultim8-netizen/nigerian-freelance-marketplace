@@ -1,4 +1,5 @@
 // src/app/layout.tsx
+// FIXED: Removed inline script causing hydration issues
 import { Suspense } from 'react';
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
@@ -7,6 +8,7 @@ import { QueryProvider } from "@/components/providers/QueryProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { ToastProvider } from "@/components/providers/ToastProvider";
 import { ProgressBar } from "@/components/ui/ProgressBar";
+import { ScrollProgressIndicator } from "@/components/ui/ScrollProgressIndicator";
 import { BRAND } from "@/lib/branding";
 
 const geistSans = Geist({
@@ -129,6 +131,11 @@ export default function RootLayout({
               <ProgressBar />
             </Suspense>
             
+            {/* Scroll progress indicator - client-side only component */}
+            <Suspense fallback={null}>
+              <ScrollProgressIndicator />
+            </Suspense>
+            
             {/* Main content with smooth transitions */}
             <div className="relative flex min-h-screen flex-col">
               {children}
@@ -138,32 +145,6 @@ export default function RootLayout({
             <ToastProvider />
           </QueryProvider>
         </ThemeProvider>
-        
-        {/* Scroll to top button functionality with F9 branding */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              // Smooth scroll behavior
-              document.documentElement.style.scrollBehavior = 'smooth';
-              
-              // Add scroll progress indicator with F9 brand gradient
-              window.addEventListener('scroll', () => {
-                const winScroll = document.body.scrollTop || document.documentElement.scrollTop;
-                const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
-                const scrolled = (winScroll / height) * 100;
-                
-                let progressBar = document.getElementById('scroll-progress');
-                if (!progressBar) {
-                  progressBar = document.createElement('div');
-                  progressBar.id = 'scroll-progress';
-                  progressBar.style.cssText = 'position:fixed;top:0;left:0;height:3px;background:linear-gradient(to right,${BRAND.COLORS.GRADIENT_START},${BRAND.COLORS.GRADIENT_MID},${BRAND.COLORS.GRADIENT_END});z-index:9999;transition:width 0.1s ease';
-                  document.body.appendChild(progressBar);
-                }
-                progressBar.style.width = scrolled + '%';
-              });
-            `,
-          }}
-        />
       </body>
     </html>
   );

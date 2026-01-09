@@ -1,5 +1,5 @@
 // src/app/(dashboard)/layout.tsx
-// OPTIMIZED: Single source of truth for user data, parallel fetching, profile completion warning
+// FIXED: Ensured proper HTML structure to prevent hydration errors
 import { Suspense } from 'react';
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -20,7 +20,7 @@ import {
 } from '@/components/layout/DashboardUtilities';
 
 /**
- * Dashboard Layout Component - FULLY OPTIMIZED
+ * Dashboard Layout Component - FULLY OPTIMIZED & HYDRATION-SAFE
  * 
  * Key optimizations:
  * 1. Single authentication check with early redirect
@@ -29,6 +29,8 @@ import {
  * 4. Profile completion warning alert system
  * 5. Removed redundant field mapping (avatar_url matches DB schema)
  * 6. Improved loading skeletons for better UX
+ * 7. FIXED: Proper HTML structure to prevent hydration errors
+ * 8. FIXED: All interactive components properly wrapped in Suspense
  */
 
 interface DashboardLayoutProps {
@@ -162,30 +164,32 @@ export default async function DashboardLayout({
   const sidebarCollapsed = cookieStore.get('sidebar-collapsed')?.value === 'true';
 
   // ============================================================================
-  // RENDER
+  // RENDER - FIXED HTML STRUCTURE
   // ============================================================================
   return (
     <UserProvider user={user} profile={profileWithWallet}>
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
-        {/* Session Expiry Warning */}
-        <SessionExpiryWarning />
+        {/* Session Expiry Warning - Client component in Suspense */}
+        <Suspense fallback={null}>
+          <SessionExpiryWarning />
+        </Suspense>
 
-        {/* Profile Completion Alert */}
+        {/* Profile Completion Alert - Proper HTML structure */}
         {needsProfileUpdate && (
           <div className="bg-yellow-50 dark:bg-yellow-900/20 border-b border-yellow-200 dark:border-yellow-800">
             <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-3">
               <div className="flex items-start space-x-3 p-3 rounded-lg border border-yellow-300 dark:border-yellow-700 bg-yellow-100 dark:bg-yellow-900/30">
                 <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mt-0.5 shrink-0" />
                 <div className="flex-1">
-                  <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                    Your profile is incomplete.
+                  <span className="text-sm text-yellow-800 dark:text-yellow-200">
+                    Your profile is incomplete.{' '}
                     <a 
                       href="/dashboard/settings/profile" 
-                      className="ml-2 font-medium underline hover:no-underline"
+                      className="font-medium underline hover:no-underline"
                     >
                       Complete your profile
                     </a>
-                  </p>
+                  </span>
                 </div>
               </div>
             </div>
@@ -212,40 +216,46 @@ export default async function DashboardLayout({
           {/* Mobile Menu */}
           <DashboardMobileMenu userType={profile.user_type} />
 
-          {/* Main Content Area */}
+          {/* Main Content Area - FIXED: Proper section structure */}
           <main className="flex-1 overflow-y-auto">
             <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-              {/* Breadcrumb */}
-              <div className="mb-6">
-                <Suspense fallback={<BreadcrumbSkeleton />}>
-                  <DashboardBreadcrumb />
+              {/* Breadcrumb - FIXED: Not wrapped in block elements that could cause nesting issues */}
+              <Suspense fallback={<BreadcrumbSkeleton />}>
+                <DashboardBreadcrumb />
+              </Suspense>
+
+              {/* Page Content - FIXED: Proper spacing without extra wrappers */}
+              <div className="mt-6">
+                <Suspense fallback={<DashboardLoadingSkeleton />}>
+                  <div className="animate-fade-in">
+                    {children}
+                  </div>
                 </Suspense>
               </div>
-
-              {/* Page Content */}
-              <Suspense fallback={<DashboardLoadingSkeleton />}>
-                <div className="animate-fade-in">
-                  {children}
-                </div>
-              </Suspense>
             </div>
 
-            {/* Scroll to Top Button */}
-            <ScrollToTop />
+            {/* Scroll to Top Button - Client-side component */}
+            <Suspense fallback={null}>
+              <ScrollToTop />
+            </Suspense>
           </main>
         </div>
 
-        {/* Global Components */}
+        {/* Global Components - All client-side, properly isolated */}
         <Toaster />
-        <OfflineIndicator />
-        <KeyboardShortcutsHelper />
+        <Suspense fallback={null}>
+          <OfflineIndicator />
+        </Suspense>
+        <Suspense fallback={null}>
+          <KeyboardShortcutsHelper />
+        </Suspense>
       </div>
     </UserProvider>
   );
 }
 
 // ============================================================================
-// LOADING SKELETONS
+// LOADING SKELETONS - Pure server-rendered components
 // ============================================================================
 
 function DashboardLoadingSkeleton() {
@@ -296,9 +306,9 @@ function DashboardLoadingSkeleton() {
 
 function BreadcrumbSkeleton() {
   return (
-    <div className="flex items-center space-x-2">
+    <div className="flex items-center space-x-2" role="status" aria-label="Loading breadcrumb">
       <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-16 animate-pulse" />
-      <span className="text-gray-400">/</span>
+      <span className="text-gray-400" aria-hidden="true">/</span>
       <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-24 animate-pulse" />
     </div>
   );

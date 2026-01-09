@@ -42,6 +42,7 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   badge?: string | null;
   highlight?: boolean;
+  roles?: ('freelancer' | 'client')[]; // Track which roles show this item
 }
 
 // Helper functions for useSyncExternalStore to track online status
@@ -68,7 +69,7 @@ export function DashboardSidebar({
 }: DashboardSidebarProps) {
   const pathname = usePathname();
   
-  // FIX: Modern way to handle browser APIs without useEffect/setState
+  // Modern way to handle browser APIs without useEffect/setState
   const isOnline = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   
   const [showKeyboardHelper, setShowKeyboardHelper] = useState(false);
@@ -96,39 +97,143 @@ export function DashboardSidebar({
   }, []);
 
   const navItems = useMemo(() => {
-    const common: NavItem[] = [
-      { title: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-      { title: 'Marketplace', href: '/marketplace', icon: ShoppingBag, badge: 'New' },
-      { title: 'Messages', href: '/dashboard/messages', icon: MessageSquare, badge: '3' },
-      { title: 'Wallet', href: '/dashboard/wallet', icon: Wallet },
-    ];
-
-    const freelancer: NavItem[] = [
-      { title: 'My Services', href: '/dashboard/services', icon: ShoppingBag },
-      { title: 'Browse Jobs', href: '/dashboard/jobs', icon: Briefcase, badge: 'New' },
-      { title: 'My Proposals', href: '/dashboard/proposals', icon: FileText },
-      { title: 'Active Orders', href: '/dashboard/orders', icon: Clock, badge: '2' },
-      { title: 'Reviews', href: '/dashboard/reviews', icon: Star },
-    ];
-
-    const client: NavItem[] = [
-      { title: 'Post a Job', href: '/dashboard/jobs/new', icon: PlusCircle, highlight: true },
-      { title: 'My Jobs', href: '/dashboard/my-jobs', icon: Briefcase },
-      { title: 'Browse Services', href: '/dashboard/browse', icon: ShoppingBag },
-      { title: 'Active Orders', href: '/dashboard/orders', icon: Clock, badge: '1' },
-      { title: 'Hired Freelancers', href: '/dashboard/freelancers', icon: Users },
-    ];
-
-    const analytics: NavItem[] = [
-      { title: 'Analytics', href: '/dashboard/analytics', icon: BarChart3 },
-      { title: 'Settings', href: '/dashboard/settings', icon: Settings },
-    ];
-
-    let items = [...common];
-    if (userType === 'freelancer' || userType === 'both') items = [...items, ...freelancer];
-    if (userType === 'client' || userType === 'both') items = [...items, ...client];
+    // Define all navigation items with role-based routing
+    // FIX: Consistent path structure to prevent 404s
     
-    return [...items, ...analytics];
+    const allItems: NavItem[] = [
+      // Common items (visible to both)
+      { 
+        title: 'Dashboard', 
+        href: userType === 'client' ? '/client/dashboard' : '/freelancer/dashboard', 
+        icon: LayoutDashboard,
+        roles: ['client', 'freelancer']
+      },
+      { 
+        title: 'Marketplace', 
+        href: '/marketplace', 
+        icon: ShoppingBag, 
+        badge: 'New',
+        roles: ['client', 'freelancer']
+      },
+      { 
+        title: 'Messages', 
+        href: '/messages', 
+        icon: MessageSquare, 
+        badge: '3',
+        roles: ['client', 'freelancer']
+      },
+      { 
+        title: 'Wallet', 
+        href: userType === 'client' ? '/client/wallet' : '/freelancer/earnings', 
+        icon: Wallet,
+        roles: ['client', 'freelancer']
+      },
+
+      // Freelancer-specific items
+      { 
+        title: 'My Services', 
+        href: '/freelancer/services', 
+        icon: ShoppingBag,
+        roles: ['freelancer']
+      },
+      { 
+        title: 'Browse Jobs', 
+        href: '/freelancer/jobs', 
+        icon: Briefcase, 
+        badge: 'New',
+        roles: ['freelancer']
+      },
+      { 
+        title: 'My Proposals', 
+        href: '/freelancer/proposals', 
+        icon: FileText,
+        roles: ['freelancer']
+      },
+      { 
+        title: 'Active Orders', 
+        href: '/freelancer/orders', 
+        icon: Clock, 
+        badge: '2',
+        roles: ['freelancer']
+      },
+      { 
+        title: 'Reviews', 
+        href: '/freelancer/reviews', 
+        icon: Star,
+        roles: ['freelancer']
+      },
+
+      // Client-specific items
+      { 
+        title: 'Post a Job', 
+        href: '/client/post-job', 
+        icon: PlusCircle, 
+        highlight: true,
+        roles: ['client']
+      },
+      { 
+        title: 'My Jobs', 
+        href: '/client/jobs', 
+        icon: Briefcase,
+        roles: ['client']
+      },
+      { 
+        title: 'Browse Services', 
+        href: '/services', 
+        icon: ShoppingBag,
+        roles: ['client']
+      },
+      { 
+        title: 'Active Orders', 
+        href: '/client/orders', 
+        icon: Clock, 
+        badge: '1',
+        roles: ['client']
+      },
+      { 
+        title: 'Hired Freelancers', 
+        href: '/client/freelancers', 
+        icon: Users,
+        roles: ['client']
+      },
+
+      // Analytics & Settings (available to both)
+      { 
+        title: 'Analytics', 
+        href: '/analytics', 
+        icon: BarChart3,
+        roles: ['client', 'freelancer']
+      },
+      { 
+        title: 'Settings', 
+        href: '/settings', 
+        icon: Settings,
+        roles: ['client', 'freelancer']
+      },
+    ];
+
+    // Filter items based on userType
+    const filteredItems = allItems.filter(item => {
+      if (userType === 'both') {
+        return true; // Show all items for 'both' type
+      }
+      return item.roles?.includes(userType) ?? false;
+    });
+
+    // Remove duplicate "Active Orders" when displaying 'both'
+    // Keep freelancer version and label client version differently if needed
+    if (userType === 'both') {
+      const activeOrdersIndexes = filteredItems
+        .map((item, idx) => item.title === 'Active Orders' ? idx : -1)
+        .filter(idx => idx !== -1);
+      
+      if (activeOrdersIndexes.length > 1) {
+        // Keep both but rename the client one for clarity
+        filteredItems[activeOrdersIndexes[1]].title = 'Client Orders';
+      }
+    }
+
+    return filteredItems;
   }, [userType]);
 
   return (
