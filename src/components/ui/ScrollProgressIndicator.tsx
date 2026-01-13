@@ -1,53 +1,47 @@
 'use client';
-import { useSyncExternalStore } from 'react';
+import { useState, useEffect } from 'react';
 import { BRAND } from '@/lib/branding';
 
 /**
  * Scroll Progress Indicator Component
  * Displays a fixed progress bar at the top of the page showing scroll progress.
- * Uses useSyncExternalStore for hydration-safe client-side rendering.
+ * Uses mounted state for safe SSR hydration.
  */
 
-// Stable subscribe function with RAF optimization
-const subscribe = (callback: () => void) => {
-  let rafId: number | null = null;
-
-  const handleScroll = () => {
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-    }
-    rafId = requestAnimationFrame(callback);
-  };
-
-  window.addEventListener('scroll', handleScroll, { passive: true });
-
-  return () => {
-    window.removeEventListener('scroll', handleScroll);
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-    }
-  };
-};
-
-// Get current scroll progress
-const getSnapshot = () => {
-  const winScroll = document.documentElement.scrollTop;
-  const height =
-    document.documentElement.scrollHeight -
-    document.documentElement.clientHeight;
-
-  return height > 0 ? (winScroll / height) * 100 : 0;
-};
-
-// Server snapshot must return same value as client on hydration
-const getServerSnapshot = () => 0;
-
 export function ScrollProgressIndicator() {
-  const scrollProgress = useSyncExternalStore(
-    subscribe,
-    getSnapshot,
-    getServerSnapshot
-  );
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMounted(true);
+    let rafId: number | null = null;
+
+    const handleScroll = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      rafId = requestAnimationFrame(() => {
+        const winScroll = document.documentElement.scrollTop;
+        const height =
+          document.documentElement.scrollHeight -
+          document.documentElement.clientHeight;
+        const progress = height > 0 ? (winScroll / height) * 100 : 0;
+        setScrollProgress(progress);
+      });
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, []);
+
+  if (!mounted) return null;
 
   return (
     <div

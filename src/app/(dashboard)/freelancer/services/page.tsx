@@ -40,68 +40,73 @@ export default async function FreelancerServicesPage() {
       </div>
 
       {services && services.length > 0 ? (
-        <div className="grid grid-cols-1 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* CLICKABLE ADD CARD */}
+          <Link href="/freelancer/services/new" className="block h-full min-h-[300px]">
+            <Card className="h-full flex flex-col items-center justify-center border-2 border-dashed border-gray-300 hover:border-blue-500 hover:bg-blue-50 transition-all cursor-pointer group p-6">
+              <div className="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                <Plus className="w-8 h-8 text-blue-600" />
+              </div>
+              <h3 className="font-semibold text-lg text-gray-900">Add New Service</h3>
+              <p className="text-sm text-gray-500 mt-2 text-center">Offer a new skill to clients</p>
+            </Card>
+          </Link>
+
           {services.map((service) => (
-            <Card key={service.id} className="p-6 hover:shadow-lg transition-shadow">
-              <div className="flex gap-4 justify-between items-start">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <h2 className="text-lg font-semibold">{service.title}</h2>
-                    {service.is_active ? (
-                      <Badge variant="success">Active</Badge>
-                    ) : (
-                      <Badge variant="outline">Inactive</Badge>
-                    )}
+            <Card key={service.id} className="p-6 hover:shadow-lg transition-shadow flex flex-col h-full">
+              <div className="flex-1">
+                <div className="flex items-center justify-between mb-2 gap-2">
+                  <h2 className="text-lg font-semibold line-clamp-1">{service.title}</h2>
+                  <Badge variant={service.is_active ? "success" : "outline"}>
+                    {service.is_active ? 'Active' : 'Inactive'}
+                  </Badge>
+                </div>
+
+                <p className="text-gray-600 text-sm mb-4 line-clamp-2">
+                  {service.description}
+                </p>
+
+                <div className="flex flex-wrap gap-4 text-sm text-gray-500 mb-4">
+                  <span className="font-medium text-gray-900">
+                    {formatCurrency(service.base_price)}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <ShoppingCart className="w-4 h-4" />
+                    <span>{service.orders_count || 0}</span>
                   </div>
-
-                  <p className="text-gray-600 text-sm mb-3 line-clamp-2">
-                    {service.description}
-                  </p>
-
-                  <div className="flex flex-wrap gap-4 text-sm text-gray-500 mb-3">
-                    <div className="flex items-center gap-1">
-                      <span className="font-medium text-gray-900">
-                        {formatCurrency(service.base_price)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <ShoppingCart className="w-4 h-4" />
-                      <span>{service.orders_count || 0} orders</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Eye className="w-4 h-4" />
-                      <span>{service.views_count || 0} views</span>
-                    </div>
-                    {service.rating && (
-                      <div className="flex items-center gap-1">
-                        <Star className="w-4 h-4 fill-yellow-400 text-yellow-400" />
-                        <span>{service.rating.toFixed(1)} ({service.reviews_count || 0})</span>
-                      </div>
-                    )}
+                  <div className="flex items-center gap-1">
+                    <Eye className="w-4 h-4" />
+                    <span>{service.views_count || 0}</span>
                   </div>
-
-                  {service.category && (
-                    <Badge variant="outline" className="text-xs">
-                      {service.category}
-                    </Badge>
+                  {service.rating && (
+                    <div className="flex items-center gap-1">
+                      <Star className="w-4 h-4 fill-yellow-400 text-yellow-400" />
+                      <span>{service.rating.toFixed(1)} ({service.reviews_count || 0})</span>
+                    </div>
                   )}
                 </div>
 
-                <div className="flex gap-2">
-                  <Link href={`/services/${service.id}`}>
-                    <Button variant="outline" size="sm">
-                      View
-                    </Button>
-                  </Link>
-                  <Link href={`/freelancer/services/${service.id}/edit`}>
-                    <Button variant="outline" size="sm">
-                      <Edit2 className="w-4 h-4" />
-                    </Button>
-                  </Link>
-                  <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700">
-                    <Trash2 className="w-4 h-4" />
+                {service.category && (
+                  <Badge variant="outline" className="text-xs">
+                    {service.category}
+                  </Badge>
+                )}
+              </div>
+
+              <div className="flex gap-2 mt-auto pt-4 border-t">
+                <Link href={`/services/${service.id}`} className="flex-1">
+                  <Button variant="outline" size="sm" className="w-full">
+                    View
                   </Button>
-                </div>
+                </Link>
+                <Link href={`/freelancer/services/${service.id}/edit`}>
+                  <Button variant="outline" size="sm" className="px-2">
+                    <Edit2 className="w-4 h-4" />
+                  </Button>
+                </Link>
+                <Button variant="outline" size="sm" className="px-2 text-red-600 hover:text-red-700">
+                  <Trash2 className="w-4 h-4" />
+                </Button>
               </div>
             </Card>
           ))}
