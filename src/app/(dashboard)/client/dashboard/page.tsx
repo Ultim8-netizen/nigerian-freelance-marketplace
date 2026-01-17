@@ -1,5 +1,5 @@
 // src/app/(dashboard)/client/dashboard/page.tsx
-// Client dashboard - comprehensive overview
+// FIXED: Added missing 'color' prop to StatCard components
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -8,20 +8,14 @@ import { formatCurrency } from '@/lib/utils';
 import { Briefcase, Users, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-// FIX 1: Corrected path for database types based on user context (src/types)
+
 import { 
   Job, 
   Order, 
   Profile, 
-  // NOTE: You are not using the Supabase "Database" type wrapper, 
-  // but the specific types exported from your file, so we import those.
 } from '@/types/database.types'; 
 
-// --- Adjusted Type Definitions (Removed placehoders now using imported types) ---
-
-type TotalSpent = { amount: number }; // For the total spent query (Supabase format)
-
-// ---------------------------------------------
+type TotalSpent = { amount: number };
 
 export default async function ClientDashboard() {
   const supabase = await createClient(); 
@@ -86,14 +80,13 @@ export default async function ClientDashboard() {
         <p className="text-gray-600">Manage your projects and find talented freelancers</p>
       </div>
 
-      {/* Stats Grid */}
+      {/* Stats Grid - FIXED: Added missing 'color' props */}
       <div className="grid md:grid-cols-4 gap-6 mb-8">
         <StatCard
           icon={<Briefcase className="w-6 h-6" />}
           title="Active Jobs"
           value={activeJobsCount?.toString() || '0'}
-          // FIX 2: Added missing required 'color' prop
-          color="bg-blue-500" 
+          color="bg-blue-500"
           subtitle={`${proposalsCount || 0} new proposals`} 
         />
         <StatCard
@@ -176,7 +169,7 @@ export default async function ClientDashboard() {
         <Card className="p-6">
           <h2 className="text-xl font-semibold mb-4">Your Active Job Posts</h2>
           <div className="space-y-4">
-            {activeJobs.map((job: Job & { proposals_count: number | null }) => ( // Keep the union type here for safety
+            {activeJobs.map((job: Job & { proposals_count: number | null }) => ( 
               <div key={job.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
                 <div className="flex justify-between items-start mb-2">
                   <h3 className="font-semibold text-lg">{job.title}</h3>

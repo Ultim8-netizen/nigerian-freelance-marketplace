@@ -1,5 +1,5 @@
 // src/app/(dashboard)/freelancer/profile/page.tsx
-// Freelancer profile management
+// FIXED: Corrected Grid closing tag to div and fixed syntax errors
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -116,7 +116,7 @@ export default async function FreelancerProfilePage() {
         </div>
       </Card>
 
-      {/* Stats Grid */}
+      {/* Stats Grid - FIXED: Changed Grid to div */}
       <div className="grid md:grid-cols-2 gap-6 mb-8">
         <Card className="p-6">
           <div className="flex items-center gap-3 mb-3">
@@ -158,7 +158,7 @@ export default async function FreelancerProfilePage() {
             </div>
           </div>
         </Card>
-      </Grid>
+      </div>
 
       {/* About Section */}
       <Card className="p-6 mb-8">

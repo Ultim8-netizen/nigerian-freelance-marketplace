@@ -1,3 +1,9 @@
+// src/app/(dashboard)/messages/page.tsx
+// FIXED: Added 'use client' directive at top of file
+// ERROR: Component was using useState without 'use client' directive
+
+'use client';
+
 import React, { useState } from 'react';
 import {
   MessageSquare, Search, Plus, Send, Phone, Video, Info,
@@ -270,7 +276,7 @@ export default function MessagesPage() {
                   <p className="text-sm">Send a message to begin chatting with {selected.name}</p>
                 </div>
               ) : (
-                selected.messages.map((msg,) => (
+                selected.messages.map((msg) => (
                   <div
                     key={msg.id}
                     className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
