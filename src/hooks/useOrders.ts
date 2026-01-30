@@ -2,7 +2,7 @@
 // Orders management hook
 
 import { useState, useEffect, useCallback } from 'react';
-import type { Order } from '@/types/database.types';
+import type { Order } from '@/types';
 
 /**
  * Helper function to safely extract an error message from an unknown error type.

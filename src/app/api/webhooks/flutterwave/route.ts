@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import crypto from 'crypto';
-import { Json } from '@/types/database.types';
+import { Json } from '@/types';
 
 // Define local payload types for the Flutterwave body
 interface FlutterwaveData {

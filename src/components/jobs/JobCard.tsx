@@ -4,14 +4,14 @@
 'use client';
 
 import Link from 'next/link';
-import { Job } from '@/types/database.types';
+import type { JobWithClient } from '@/types/extended.types';
 import { formatCurrency, formatRelativeTime } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { MapPin, Clock, DollarSign, Users } from 'lucide-react';
 
 interface JobCardProps {
-  job: Job;
+  job: JobWithClient;
 }
 
 export function JobCard({ job }: JobCardProps) {
@@ -80,8 +80,10 @@ export function JobCard({ job }: JobCardProps) {
         )}
 
         <div className="flex justify-between items-center text-sm text-gray-500">
-          <span>{formatRelativeTime(job.created_at)}</span>
-          <span>{job.proposals_count} proposals</span>
+          <span>
+            {job.created_at ? formatRelativeTime(job.created_at) : 'Recently posted'}
+          </span>
+          <span>{job.proposals_count ?? 0} proposals</span>
         </div>
       </Card>
     </Link>

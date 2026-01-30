@@ -3,7 +3,7 @@
 
 import Link from 'next/link';
 import Image from 'next/image';
-import { Service } from '@/types/database.types';
+import { Service } from '@/types';
 import { formatCurrency, getInitials } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { VerifiedIcon } from '@/components/verification/VerifiedBadge';
@@ -17,14 +17,17 @@ interface ServiceCardProps {
       profile_image_url?: string;
       freelancer_rating: number;
       total_jobs_completed: number;
-      nin_verified?: boolean;
+      liveness_verified?: boolean;
     };
   };
 }
 
 export function ServiceCard({ service }: ServiceCardProps) {
   const freelancer = service.freelancer;
-  const imageUrl = service.images?.[0] || '/placeholder-service.png';
+  
+  // Type assertion for images array
+  const images = service.images as string[] | null;
+  const imageUrl = images?.[0] || '/placeholder-service.png';
 
   return (
     <Link href={`/services/${service.id}`}>

@@ -3,7 +3,7 @@
 
 'use client';
 
-import { Order } from '@/types/database.types';
+import type { OrderWithRelations } from '@/types/extended.types';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -11,9 +11,9 @@ import { Button } from '@/components/ui/button';
 import { Clock, User, DollarSign } from 'lucide-react';
 
 interface OrderCardProps {
-  order: Order;
+  order: OrderWithRelations;
   userType: 'client' | 'freelancer';
-  onAction?: (action: string, order: Order) => void;
+  onAction?: (action: string, order: OrderWithRelations) => void;
 }
 
 export function OrderCard({ order, userType, onAction }: OrderCardProps) {
@@ -30,6 +30,9 @@ export function OrderCard({ order, userType, onAction }: OrderCardProps) {
   };
 
   const otherParty = userType === 'client' ? order.freelancer : order.client;
+  
+  // Get status with fallback
+  const status = order.status || 'pending_payment';
 
   return (
     <Card className="p-6">
@@ -38,8 +41,8 @@ export function OrderCard({ order, userType, onAction }: OrderCardProps) {
           <p className="text-sm text-gray-500 mb-1">{order.order_number}</p>
           <h3 className="font-semibold text-lg">{order.title}</h3>
         </div>
-        <Badge className={getStatusColor(order.status)}>
-          {order.status.replace('_', ' ').toUpperCase()}
+        <Badge className={getStatusColor(status)}>
+          {status.replace('_', ' ').toUpperCase()}
         </Badge>
       </div>
 
@@ -52,7 +55,9 @@ export function OrderCard({ order, userType, onAction }: OrderCardProps) {
           </p>
           <div className="flex items-center gap-2 mt-1">
             <User className="w-4 h-4" />
-            <span className="font-medium">{otherParty?.full_name}</span>
+            <span className="font-medium">
+              {otherParty?.full_name || 'Not assigned'}
+            </span>
           </div>
         </div>
 
@@ -81,7 +86,7 @@ export function OrderCard({ order, userType, onAction }: OrderCardProps) {
       </div>
 
       <div className="flex gap-2">
-        {order.status === 'awaiting_delivery' && userType === 'freelancer' && (
+        {status === 'awaiting_delivery' && userType === 'freelancer' && (
           <Button
             onClick={() => onAction?.('deliver', order)}
             className="flex-1"
@@ -90,7 +95,7 @@ export function OrderCard({ order, userType, onAction }: OrderCardProps) {
           </Button>
         )}
 
-        {order.status === 'delivered' && userType === 'client' && (
+        {status === 'delivered' && userType === 'client' && (
           <>
             <Button
               onClick={() => onAction?.('approve', order)}

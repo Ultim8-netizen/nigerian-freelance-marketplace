@@ -1,7 +1,7 @@
 // src/lib/supabase/server.ts
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
-import { Database } from '@/types/database.types'; // Import the new type
+import { Database } from '@/types'; // Import the new type
 
 export const createClient = async () => {
   const cookieStore = await cookies();

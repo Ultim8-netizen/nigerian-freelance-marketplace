@@ -2384,3 +2384,158 @@ DROP POLICY IF EXISTS "Users can manage own location" ON user_locations;
 CREATE POLICY "Users can manage own location" 
 ON user_locations FOR ALL 
 USING (user_id = auth.uid());
+
+-- Migration: Add notification_settings and theme_preference to profiles table
+-- This migration adds support for saving notification preferences and theme choices
+
+-- Add notification_settings column (JSONB for flexibility)
+ALTER TABLE profiles 
+ADD COLUMN IF NOT EXISTS notification_settings JSONB DEFAULT '{
+  "email_messages": true,
+  "email_orders": true,
+  "email_reviews": true,
+  "push_notifications": true
+}'::jsonb;
+
+-- Add theme_preference column
+ALTER TABLE profiles 
+ADD COLUMN IF NOT EXISTS theme_preference TEXT CHECK (theme_preference IN ('light', 'dark', 'system'));
+
+-- Add comment for notification_settings
+COMMENT ON COLUMN profiles.notification_settings IS 'User notification preferences stored as JSON';
+
+-- Add comment for theme_preference
+COMMENT ON COLUMN profiles.theme_preference IS 'User preferred theme: light, dark, or system';
+
+-- Create index on theme_preference for faster queries (optional but recommended)
+CREATE INDEX IF NOT EXISTS idx_profiles_theme_preference ON profiles(theme_preference);
+
+-- Update existing rows to have default notification settings if NULL
+UPDATE profiles 
+SET notification_settings = '{
+  "email_messages": true,
+  "email_orders": true,
+  "email_reviews": true,
+  "push_notifications": true
+}'::jsonb
+WHERE notification_settings IS NULL;
+
+-- Verify the migration
+DO $$
+BEGIN
+  -- Check if columns exist
+  IF EXISTS (
+    SELECT 1 
+    FROM information_schema.columns 
+    WHERE table_name = 'profiles' 
+    AND column_name = 'notification_settings'
+  ) THEN
+    RAISE NOTICE 'notification_settings column added successfully';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 
+    FROM information_schema.columns 
+    WHERE table_name = 'profiles' 
+    AND column_name = 'theme_preference'
+  ) THEN
+    RAISE NOTICE 'theme_preference column added successfully';
+  END IF;
+END $$;
+
+ALTER TABLE profiles 
+ALTER COLUMN id SET NOT NULL;
+
+DO $$
+DECLARE
+  v_is_nullable TEXT;
+BEGIN
+  SELECT is_nullable INTO v_is_nullable
+  FROM information_schema.columns
+  WHERE table_name = 'profiles' AND column_name = 'id';
+  
+  IF v_is_nullable = 'NO' THEN
+    RAISE NOTICE '✅ profiles.id is correctly marked as NOT NULL';
+  ELSE
+    RAISE NOTICE '❌ profiles.id is still nullable - there may be data issues';
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  v_null_count INT;
+BEGIN
+  SELECT COUNT(*) INTO v_null_count
+  FROM profiles
+  WHERE id IS NULL;
+  
+  IF v_null_count = 0 THEN
+    RAISE NOTICE '✅ No NULL values found in profiles.id';
+  ELSE
+    RAISE NOTICE '⚠️  Found % NULL values in profiles.id', v_null_count;
+  END IF;
+END $$;
+
+ALTER TABLE jobs
+ALTER COLUMN client_id SET NOT NULL;
+
+-- Check orders.client_id and orders.freelancer_id
+ALTER TABLE orders
+ALTER COLUMN client_id SET NOT NULL,
+ALTER COLUMN freelancer_id SET NOT NULL;
+
+-- Check proposals.job_id and proposals.freelancer_id
+ALTER TABLE proposals
+ALTER COLUMN job_id SET NOT NULL,
+ALTER COLUMN freelancer_id SET NOT NULL;
+
+-- Check services.freelancer_id
+ALTER TABLE services
+ALTER COLUMN freelancer_id SET NOT NULL;
+
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================================
+-- FIX: Ensure all PRIMARY KEY columns are explicitly NOT NULL
+-- This forces Supabase to correctly generate non-nullable types
+-- ============================================================================
+
+-- Step 1: Profiles table - Ensure id is NOT NULL
+ALTER TABLE profiles 
+ALTER COLUMN id SET NOT NULL;
+
+-- Step 2: Verify the constraint was applied
+SELECT column_name, is_nullable 
+FROM information_schema.columns
+WHERE table_name = 'profiles' AND column_name = 'id';
+
+-- Step 3: Mark other critical columns as NOT NULL
+ALTER TABLE jobs
+ALTER COLUMN client_id SET NOT NULL;
+
+ALTER TABLE orders
+ALTER COLUMN client_id SET NOT NULL,
+ALTER COLUMN freelancer_id SET NOT NULL;
+
+ALTER TABLE proposals
+ALTER COLUMN job_id SET NOT NULL,
+ALTER COLUMN freelancer_id SET NOT NULL;
+
+ALTER TABLE services
+ALTER COLUMN freelancer_id SET NOT NULL;
+
+-- Step 4: Force Supabase to reload schema cache
+-- This notifies PostgREST to clear its internal type cache
+NOTIFY pgrst, 'reload schema';
+
+-- Step 5: Verification - Check all columns are marked NOT NULL
+SELECT 
+  table_name,
+  column_name,
+  is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public'
+AND table_name IN ('profiles', 'jobs', 'orders', 'proposals', 'services')
+AND column_name IN ('id', 'client_id', 'freelancer_id', 'job_id')
+ORDER BY table_name, column_name;
+

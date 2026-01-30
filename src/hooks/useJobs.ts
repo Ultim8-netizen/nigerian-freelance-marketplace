@@ -2,7 +2,7 @@
 // Jobs management hook
 
 import { useState, useEffect, useCallback } from 'react';
-import type { Job, PaginatedResponse } from '@/types/database.types'; // Removed unused 'Proposal' type
+import type { Job, PaginatedResponse } from '@/types'; // Removed unused 'Proposal' type
 
 /**
  * Helper function to safely extract an error message from an unknown error type.

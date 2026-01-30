@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { JobCard } from '@/components/jobs/JobCard';
-import { Job } from '@/types/database.types';
+import { Job } from '@/types';
 import { Card } from '@/components/ui/card';
 import { Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';

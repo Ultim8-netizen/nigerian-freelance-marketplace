@@ -2,7 +2,7 @@
 // Services management hook
 
 import { useState, useEffect, useCallback } from 'react';
-import type { Service } from '@/types/database.types';
+import type { Service } from '@/types';
 
 /**
  * Helper function to safely extract an error message from an unknown error type.

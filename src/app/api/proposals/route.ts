@@ -8,13 +8,15 @@ import { proposalSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeUuid, sanitizeUrl } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
+import type { ProposalInsert, NotificationInsert } from '@/types';
 
 export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
       roles: ['freelancer', 'both'],
-      rateLimit: 'submitProposal',});
+      rateLimit: 'submitProposal',
+    });
 
     if (error) return error;
     if (!user) {
@@ -52,6 +54,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // TypeScript now correctly infers the type
     if (job.status !== 'open') {
       return NextResponse.json(
         { success: false, error: 'Job is no longer accepting proposals' },
@@ -83,37 +86,65 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create proposal
+    // Create proposal with proper typing
+    const proposalData: ProposalInsert = {
+      freelancer_id: user.id,
+      job_id: validatedData.job_id,
+      cover_letter: validatedData.cover_letter,
+      proposed_price: validatedData.proposed_price,
+      delivery_days: validatedData.delivery_days,
+      portfolio_items: validatedData.portfolio_links,
+      status: 'pending',
+    };
+
     const { data, error: proposalError } = await supabase
       .from('proposals')
-      .insert({
-        freelancer_id: user.id,
-        job_id: validatedData.job_id,
-        cover_letter: validatedData.cover_letter,
-        proposed_price: validatedData.proposed_price,
-        delivery_days: validatedData.delivery_days,
-        portfolio_links: validatedData.portfolio_links,
-        status: 'pending',
-      })
+      .insert(proposalData)
       .select()
       .single();
 
     if (proposalError) {
-      logger.error('Proposal creation failed', proposalError, { userId: user.id });
+      logger.error('Proposal creation failed', { 
+        error: proposalError.message,
+        code: proposalError.code,
+        userId: user.id 
+      });
       throw proposalError;
     }
 
     // Increment proposals count
-    await supabase.rpc('increment_proposals_count', { job_id: validatedData.job_id });
+    const { error: rpcError } = await supabase.rpc('increment_proposals_count', { 
+      p_job_id: validatedData.job_id 
+    });
 
-    // Notify client
-    await supabase.from('notifications').insert({
+    if (rpcError) {
+      logger.warn('Failed to increment proposal count', { 
+        error: rpcError.message,
+        code: rpcError.code
+      });
+      // Don't fail the whole operation if this fails
+    }
+
+    // Notify client with proper typing
+    const notificationData: NotificationInsert = {
       user_id: job.client_id,
       type: 'new_proposal',
       title: 'New Proposal Received',
       message: 'You received a new proposal for your job posting',
       link: `/client/jobs/${validatedData.job_id}`,
-    });
+    };
+
+    const { error: notifError } = await supabase
+      .from('notifications')
+      .insert(notificationData);
+
+    if (notifError) {
+      logger.warn('Failed to send notification', { 
+        error: notifError.message,
+        code: notifError.code
+      });
+      // Don't fail the whole operation if notification fails
+    }
 
     logger.info('Proposal submitted successfully', {
       proposalId: data.id,

@@ -1,5 +1,5 @@
 // src/app/(dashboard)/client/dashboard/page.tsx
-// FIXED: Added missing 'color' prop to StatCard components
+// FIXED: Proper type handling for Order with freelancer relation and nullable status
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -13,9 +13,14 @@ import {
   Job, 
   Order, 
   Profile, 
-} from '@/types/database.types'; 
+} from '@/types'; 
 
 type TotalSpent = { amount: number };
+
+// FIXED: Define proper type for Order with freelancer relation
+type OrderWithFreelancer = Order & {
+  freelancer: Profile | null;
+};
 
 export default async function ClientDashboard() {
   const supabase = await createClient(); 
@@ -40,12 +45,12 @@ export default async function ClientDashboard() {
     .eq('client_id', user.id)
     .eq('status', 'open') as { data: (Job & { proposals_count: number | null })[] | null, count: number | null };
   
-  // Get ongoing orders
+  // Get ongoing orders - FIXED: Properly type the result with freelancer relation
   const { data: ongoingOrders, count: ongoingCount } = await supabase
     .from('orders')
     .select('*, freelancer:profiles!orders_freelancer_id_fkey(*)', { count: 'exact' })
     .eq('client_id', user.id)
-    .in('status', ['awaiting_delivery', 'delivered']) as { data: Order[] | null, count: number | null };
+    .in('status', ['awaiting_delivery', 'delivered']) as { data: OrderWithFreelancer[] | null, count: number | null };
 
   // Get completed orders
   const { count: completedCount } = await supabase
@@ -80,7 +85,7 @@ export default async function ClientDashboard() {
         <p className="text-gray-600">Manage your projects and find talented freelancers</p>
       </div>
 
-      {/* Stats Grid - FIXED: Added missing 'color' props */}
+      {/* Stats Grid */}
       <div className="grid md:grid-cols-4 gap-6 mb-8">
         <StatCard
           icon={<Briefcase className="w-6 h-6" />}
@@ -133,14 +138,16 @@ export default async function ClientDashboard() {
           <h2 className="text-xl font-semibold mb-4">Recent Activity</h2>
           {ongoingOrders && ongoingOrders.length > 0 ? (
             <div className="space-y-3">
-              {ongoingOrders.slice(0, 3).map((order: Order) => ( 
+              {ongoingOrders.slice(0, 3).map((order: OrderWithFreelancer) => ( 
                 <div key={order.id} className="border-l-4 border-blue-500 pl-3 py-2">
                   <p className="font-medium">{order.title}</p>
                   <p className="text-sm text-gray-600">
-                    With {order.freelancer?.full_name}
+                    {/* FIXED: Now properly accessing freelancer relation */}
+                    With {order.freelancer?.full_name || 'Unknown freelancer'}
                   </p>
                   <p className="text-xs text-gray-500">
-                    Status: {order.status.replace('_', ' ')}
+                    {/* FIXED: Handle nullable status properly */}
+                    Status: {order.status ? order.status.replace('_', ' ') : 'Unknown'}
                   </p>
                 </div>
               ))}
@@ -174,7 +181,7 @@ export default async function ClientDashboard() {
                 <div className="flex justify-between items-start mb-2">
                   <h3 className="font-semibold text-lg">{job.title}</h3>
                   <span className="text-sm text-blue-600 font-medium">
-                    {job.proposals_count} proposals 
+                    {job.proposals_count || 0} proposals 
                   </span>
                 </div>
                 <p className="text-gray-600 text-sm mb-3 line-clamp-2">{job.description}</p>

@@ -4,7 +4,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { getInitials } from '@/lib/utils';
 import Link from 'next/link';
-import { Profile } from '@/types/database.types';
+import { Profile } from '@/types';
 
 interface OrderWithFreelancer {
   freelancer: Profile | null;

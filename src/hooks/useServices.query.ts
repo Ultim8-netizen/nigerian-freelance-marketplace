@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/query-client';
-// import type { Service } from '@/types/database.types'; // Removed: 'Service' is defined but never used.
+// import type { Service } from '@/types'; // Removed: 'Service' is defined but never used.
 
 interface PaginatedData<T> {
   success: boolean;

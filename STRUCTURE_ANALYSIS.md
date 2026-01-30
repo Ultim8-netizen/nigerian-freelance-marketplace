@@ -590,7 +590,7 @@ Path alias config:        ✅ Correctly set in tsconfig.json
 // Default: Using @ alias for internal imports
 import { useUser } from '@/contexts/UserContext';
 import { formatNaira } from '@/lib/utils';
-import type { Service } from '@/types/database.types';
+import type { Service } from '@/types';
 import { sanitizeHtml } from '@/lib/security/sanitize';
 
 // External packages: Direct imports

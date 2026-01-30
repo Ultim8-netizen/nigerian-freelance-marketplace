@@ -4,34 +4,18 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import type {AuthChangeEvent, Session } from '@supabase/supabase-js';
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
+import type { Profile } from '@/types/index';
 
-// Define Profile type inline to avoid import issues
-export interface Profile {
-  id: string;
-  full_name: string;
-  email: string;
-  phone_number?: string;
-  user_type: 'freelancer' | 'client' | 'both';
-  avatar_url?: string;
-  bio?: string;
-  university?: string;
-  location?: string;
-  wallet_balance: number;
-  total_earned?: number;
-  total_spent?: number;
-  rating?: number;
-  total_reviews?: number;
-  onboarding_completed: boolean;
-  created_at: string;
-  updated_at: string;
-}
+// Profile type is now imported from auto-generated types
+// This ensures it always stays in sync with the database schema
 
 // Query keys for consistency
 export const authQueryKeys = {
   session: ['auth', 'session'] as const,
   user: ['auth', 'user'] as const,
   profile: (userId?: string) => ['auth', 'profile', userId] as const,
+  wallet: (userId?: string) => ['auth', 'wallet', userId] as const,
 };
 
 /**
@@ -83,6 +67,33 @@ export function useAuth() {
     staleTime: 1000 * 60 * 2, // 2 minutes for profile data
   });
 
+  // Query for user wallet
+  const {
+    data: wallet,
+    isLoading: isWalletLoading,
+    error: walletError,
+  } = useQuery({
+    queryKey: authQueryKeys.wallet(user?.id),
+    queryFn: async () => {
+      if (!user?.id) return null;
+      
+      const { data, error } = await supabase
+        .from('wallets')
+        .select('*')
+        .eq('user_id', user.id)
+        .single();
+
+      if (error) {
+        // If wallet doesn't exist, return null instead of throwing
+        if (error.code === 'PGRST116') return null;
+        throw error;
+      }
+      return data;
+    },
+    enabled: !!user?.id,
+    staleTime: 1000 * 60 * 2, // 2 minutes for wallet data
+  });
+
   // Listen to Supabase auth changes and sync with React Query
   useEffect(() => {
     const {
@@ -112,6 +123,9 @@ export function useAuth() {
             queryClient.setQueryData(authQueryKeys.session, null);
             queryClient.removeQueries({
               queryKey: authQueryKeys.profile(undefined),
+            });
+            queryClient.removeQueries({
+              queryKey: authQueryKeys.wallet(undefined),
             });
             break;
 
@@ -144,6 +158,26 @@ export function useAuth() {
     onSuccess: (data) => {
       // Update cache immediately
       queryClient.setQueryData(authQueryKeys.profile(user?.id), data);
+    },
+  });
+
+  // Refresh wallet mutation
+  const refreshWalletMutation = useMutation({
+    mutationFn: async () => {
+      if (!user?.id) throw new Error('No user logged in');
+
+      const { data, error } = await supabase
+        .from('wallets')
+        .select('*')
+        .eq('user_id', user.id)
+        .single();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      // Update cache immediately
+      queryClient.setQueryData(authQueryKeys.wallet(user?.id), data);
     },
   });
 
@@ -270,11 +304,16 @@ export function useAuth() {
     [updateProfileMutation]
   );
 
+  const refreshWallet = useCallback(async () => {
+    return refreshWalletMutation.mutateAsync();
+  }, [refreshWalletMutation]);
+
   return {
     // Auth state
     user,
     session,
     profile,
+    wallet,
     isLoading: isSessionLoading || isProfileLoading,
     isAuthenticated: !!session,
     error: sessionError || profileError,
@@ -291,18 +330,24 @@ export function useAuth() {
     refreshProfile,
     updateProfile,
 
+    // Wallet operations
+    refreshWallet,
+
     // Loading states
     isLoggingIn: loginMutation.isPending,
     isLoggingOut: logoutMutation.isPending,
     isSigningUp: signupMutation.isPending,
     isUpdatingProfile: updateProfileMutation.isPending,
     isRefreshingProfile: refreshProfileMutation.isPending,
+    isLoadingWallet: isWalletLoading,
+    isRefreshingWallet: refreshWalletMutation.isPending,
 
     // Errors
     loginError: loginMutation.error,
     logoutError: logoutMutation.error,
     signupError: signupMutation.error,
     updateProfileError: updateProfileMutation.error,
+    walletError,
   };
 }
 
@@ -321,14 +366,24 @@ export function useProfile() {
   return { profile, isLoading, refreshProfile, updateProfile };
 }
 
+export function useWallet() {
+  const { wallet, isLoadingWallet, refreshWallet, walletError } = useAuth();
+  return { 
+    wallet, 
+    isLoading: isLoadingWallet, 
+    refreshWallet, 
+    error: walletError 
+  };
+}
+
 export function useWalletBalance() {
-  const { profile } = useAuth();
-  return profile?.wallet_balance ?? 0;
+  const { wallet } = useAuth();
+  return wallet?.balance ?? 0;
 }
 
 export function useUserType() {
   const { profile } = useAuth();
-  return profile?.user_type;
+  return profile?.user_type as 'freelancer' | 'client' | 'both' | null | undefined;
 }
 
 export function useIsFreelancer() {

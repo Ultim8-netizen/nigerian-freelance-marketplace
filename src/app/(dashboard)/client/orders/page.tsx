@@ -6,7 +6,7 @@ import { redirect } from 'next/navigation';
 import { OrderCard } from '@/components/orders/OrderCard';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Order } from '@/types/database.types';
+import { Order } from '@/types';
 
 export default async function ClientOrdersPage() {
   const supabase = await createClient();

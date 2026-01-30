@@ -1,5 +1,6 @@
 // src/components/jobs/CreateJobForm.tsx
-// FIXED: Updated Supabase import pattern
+// FIXED: Proper type safety, user ID handling, and component design
+// Component correctly manages its own authentication state
 
 'use client';
 
@@ -37,11 +38,29 @@ const CATEGORIES = [
   'Administrative Support',
 ];
 
+/**
+ * CreateJobForm Component
+ * 
+ * This component handles job posting form UI and submission.
+ * It manages its own authentication state by fetching the current user.
+ * 
+ * NOTE: This component does NOT accept userId as a prop.
+ * Instead, it retrieves the user ID directly from Supabase auth.
+ * This is the correct pattern for client components.
+ * 
+ * Props: None (component is self-contained)
+ */
 export function CreateJobForm() {
+  // ============================================================================
+  // Supabase Client Initialization
+  // ============================================================================
+  // Create Supabase client with public env variables
+  // These are safe to expose in the browser
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
+  
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [skillInput, setSkillInput] = useState('');
@@ -59,13 +78,19 @@ export function CreateJobForm() {
     deadline: '',
   });
 
+  // ============================================================================
+  // Form Input Handlers
+  // ============================================================================
+  
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => {
     const { name, value } = e.target;
     setFormData((prev) => ({
       ...prev,
-      [name]: name === 'budget_min' || name === 'budget_max' ? (value ? parseFloat(value) : '') : value,
+      [name]: name === 'budget_min' || name === 'budget_max' 
+        ? (value ? parseFloat(value) : '') 
+        : value,
     }));
   };
 
@@ -86,19 +111,34 @@ export function CreateJobForm() {
     }));
   };
 
+  // ============================================================================
+  // Form Submission Handler
+  // ============================================================================
+  // FIXED: Proper type checking and userId extraction
+  
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
 
     try {
+      // Get current user from Supabase auth
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      
+      // ✅ FIX: Explicit type check for user and user.id
+      // This ensures TypeScript knows user.id is definitely a string
+      if (!user || !user.id) {
         alert('You must be logged in to post a job');
+        router.push('/auth/login');
         return;
       }
 
+      // ✅ KEY FIX: Extract userId into a variable
+      // This makes the type completely explicit when passing to database
+      const userId = user.id;
+
+      // Insert job into database with the explicitly typed userId
       const { error } = await supabase.from('jobs').insert({
-        client_id: user.id,
+        client_id: userId,  // ✅ Using extracted variable, not user.id
         title: formData.title,
         description: formData.description,
         category: formData.category,
@@ -114,6 +154,7 @@ export function CreateJobForm() {
       });
 
       if (error) {
+        console.error('Supabase error:', error);
         alert(`Error creating job: ${error.message}`);
         return;
       }

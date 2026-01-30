@@ -9,19 +9,12 @@ import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
 import { formatCurrency, formatRelativeTime } from '@/lib/utils';
 import { Plus, Users, Eye, Clock } from 'lucide-react';
+import type { Job as BaseJob } from '@/types';
 
-interface Job {
-  id: string;
-  title: string;
-  description: string;
-  status: string;
-  proposals_count: number;
-  views_count: number;
-  budget_min: number | null;
-  created_at: string;
-  required_skills: string[] | null;
-  client_id: string;
-}
+// Extended type to match the actual query response
+type JobWithProposals = BaseJob & {
+  proposals: Array<{ count: number }>;
+};
 
 export default async function ClientJobsPage() {
   const supabase = await createClient();
@@ -41,7 +34,9 @@ export default async function ClientJobsPage() {
     .eq('client_id', user.id)
     .order('created_at', { ascending: false });
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: string | null) => {
+    if (!status) return 'bg-gray-100 text-gray-800';
+    
     const colors: Record<string, string> = {
       open: 'bg-green-100 text-green-800',
       in_progress: 'bg-blue-100 text-blue-800',
@@ -68,14 +63,14 @@ export default async function ClientJobsPage() {
 
       {jobs && jobs.length > 0 ? (
         <div className="space-y-4">
-          {jobs.map((job: Job) => (
+          {jobs.map((job: JobWithProposals) => (
             <Card key={job.id} className="p-6 hover:shadow-lg transition-shadow">
               <div className="flex justify-between items-start mb-4">
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
                     <h2 className="text-xl font-semibold">{job.title}</h2>
                     <Badge className={getStatusColor(job.status)}>
-                      {job.status}
+                      {job.status || 'Unknown'}
                     </Badge>
                   </div>
                   <p className="text-gray-600 mb-4 line-clamp-2">{job.description}</p>
@@ -87,17 +82,19 @@ export default async function ClientJobsPage() {
                     </div>
                     <div className="flex items-center gap-1">
                       <Eye className="w-4 h-4" />
-                      <span>{job.views_count} views</span>
+                      <span>{job.views_count || 0} views</span>
                     </div>
                     {job.budget_min && (
                       <div className="flex items-center gap-1">
                         <span>Budget: {formatCurrency(job.budget_min)}</span>
                       </div>
                     )}
-                    <div className="flex items-center gap-1">
-                      <Clock className="w-4 h-4" />
-                      <span>Posted {formatRelativeTime(job.created_at)}</span>
-                    </div>
+                    {job.created_at && (
+                      <div className="flex items-center gap-1">
+                        <Clock className="w-4 h-4" />
+                        <span>Posted {formatRelativeTime(job.created_at)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
                 
