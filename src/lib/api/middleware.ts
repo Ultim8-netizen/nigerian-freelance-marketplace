@@ -160,8 +160,11 @@ export async function requireOwnership(
     }
 
     // Only fetch the owner column for efficiency
+    // FIX: Type assertion for dynamic table name - TS2769
+    // Since 'table' is a runtime string, we use 'as never' to satisfy TypeScript
+    // while maintaining runtime flexibility for any valid table name
     const { data: resource, error } = await supabase
-      .from(table)
+      .from(table as never)
       .select(ownerColumn)
       .eq('id', resourceId)
       .maybeSingle(); // Use maybeSingle to avoid errors on not found
@@ -330,7 +333,6 @@ export async function resetRateLimit(
 ): Promise<boolean> {
   try {
     const redisClient = getRedisClient();
-    // FIX: Removed unused 'prefix' variable and addressed ESLint warning
     
     // Delete all keys matching the pattern
     const pattern = `rl:${limiterType}:${identifier}*`;

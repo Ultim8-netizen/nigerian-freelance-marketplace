@@ -20,6 +20,13 @@ const revisionSchema = z.object({
     .max(500, 'Revision note cannot exceed 500 characters'),
 });
 
+// Typed shape of the complete_order_with_payment RPC response
+interface OrderCompletionResult {
+  success: boolean;
+  error?: string;
+  [key: string]: unknown;
+}
+
 /**
  * POST - Approve delivered work and release payment
  * This endpoint atomically:
@@ -71,9 +78,9 @@ export async function POST(
 
     if (order.status !== 'delivered') {
       return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Order must be delivered before approval' 
+        {
+          success: false,
+          error: 'Order must be delivered before approval',
         },
         { status: 400 }
       );
@@ -81,7 +88,7 @@ export async function POST(
 
     // ATOMIC: Complete order and release payment using database function
     // This ensures all operations succeed or fail together
-    const { data: result, error: rpcError } = await supabase
+    const { data: rpcResult, error: rpcError } = await supabase
       .rpc('complete_order_with_payment', {
         p_order_id: orderId,
         p_client_rating: validatedData.rating,
@@ -94,20 +101,23 @@ export async function POST(
     if (rpcError) {
       console.error('Order completion error:', rpcError);
       return NextResponse.json(
-        { 
-          success: false, 
+        {
+          success: false,
           error: 'Failed to complete order',
-          details: process.env.NODE_ENV === 'development' ? rpcError.message : undefined
+          details: process.env.NODE_ENV === 'development' ? rpcError.message : undefined,
         },
         { status: 500 }
       );
     }
 
+    // Cast Json return type to known shape
+    const result = rpcResult as OrderCompletionResult;
+
     if (!result?.success) {
       return NextResponse.json(
-        { 
-          success: false, 
-          error: result?.error || 'Order completion failed' 
+        {
+          success: false,
+          error: result?.error || 'Order completion failed',
         },
         { status: 500 }
       );
@@ -116,30 +126,30 @@ export async function POST(
     return NextResponse.json({
       success: true,
       message: 'Order completed and payment released',
-      data: result
+      data: result,
     });
-
   } catch (error) {
     console.error('Approval error:', error);
 
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { 
-          success: false, 
+        {
+          success: false,
           error: 'Invalid input',
-          details: error.issues[0]?.message || 'Validation failed'
+          details: error.issues[0]?.message || 'Validation failed',
         },
         { status: 400 }
       );
     }
 
     return NextResponse.json(
-      { 
-        success: false, 
+      {
+        success: false,
         error: 'Internal server error',
-        details: process.env.NODE_ENV === 'development' && error instanceof Error 
-          ? error.message 
-          : undefined
+        details:
+          process.env.NODE_ENV === 'development' && error instanceof Error
+            ? error.message
+            : undefined,
       },
       { status: 500 }
     );
@@ -167,7 +177,7 @@ export async function PATCH(
 
     const orderId = params.id;
     const body = await request.json();
-    
+
     // Validate revision request data
     const validatedData = revisionSchema.parse(body);
     const revisionNote = validatedData.revision_note;
@@ -195,19 +205,23 @@ export async function PATCH(
 
     if (order.status !== 'delivered') {
       return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Can only request revisions on delivered orders' 
+        {
+          success: false,
+          error: 'Can only request revisions on delivered orders',
         },
         { status: 400 }
       );
     }
 
-    if (order.revision_count >= order.max_revisions) {
+    // Null-coalesce nullable schema fields to safe defaults
+    const revisionCount = order.revision_count ?? 0;
+    const maxRevisions = order.max_revisions ?? 0;
+
+    if (revisionCount >= maxRevisions) {
       return NextResponse.json(
-        { 
-          success: false, 
-          error: `Maximum revisions reached (${order.max_revisions})` 
+        {
+          success: false,
+          error: `Maximum revisions reached (${maxRevisions})`,
         },
         { status: 400 }
       );
@@ -218,8 +232,7 @@ export async function PATCH(
       .from('orders')
       .update({
         status: 'revision_requested',
-        revision_count: order.revision_count + 1,
-        revision_note: revisionNote,
+        revision_count: revisionCount + 1,
         updated_at: new Date().toISOString(),
       })
       .eq('id', orderId);
@@ -229,27 +242,24 @@ export async function PATCH(
       throw updateError;
     }
 
-    // Create notification for freelancer with revision details
+    // Notify freelancer with revision details
     await supabase.from('notifications').insert({
       user_id: order.freelancer_id,
       type: 'revision_requested',
       title: 'Revision Requested',
       message: `Client requested revision for: ${order.title}`,
       link: `/freelancer/orders/${orderId}`,
-      metadata: {
-        revision_count: order.revision_count + 1,
-        max_revisions: order.max_revisions,
-        revision_note: revisionNote,
-      },
     });
 
-    // Create activity log entry for revision request
-    await supabase.from('order_activities').insert({
-      order_id: orderId,
+    // Log revision request to audit_logs (order_activities table does not exist in schema)
+    await supabase.from('audit_logs').insert({
       user_id: user.id,
       action: 'revision_requested',
-      description: `Revision ${order.revision_count + 1} of ${order.max_revisions} requested`,
+      resource_type: 'order',
+      resource_id: orderId,
       metadata: {
+        revision_count: revisionCount + 1,
+        max_revisions: maxRevisions,
         revision_note: revisionNote,
       },
     });
@@ -258,33 +268,33 @@ export async function PATCH(
       success: true,
       message: 'Revision requested',
       data: {
-        revision_count: order.revision_count + 1,
-        max_revisions: order.max_revisions,
+        revision_count: revisionCount + 1,
+        max_revisions: maxRevisions,
         revision_note: revisionNote,
-      }
+      },
     });
-
   } catch (error) {
     console.error('Revision request error:', error);
-    
+
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { 
-          success: false, 
+        {
+          success: false,
           error: 'Invalid input',
-          details: error.issues[0]?.message || 'Validation failed'
+          details: error.issues[0]?.message || 'Validation failed',
         },
         { status: 400 }
       );
     }
 
     return NextResponse.json(
-      { 
-        success: false, 
+      {
+        success: false,
         error: 'Failed to request revision',
-        details: process.env.NODE_ENV === 'development' && error instanceof Error 
-          ? error.message 
-          : undefined
+        details:
+          process.env.NODE_ENV === 'development' && error instanceof Error
+            ? error.message
+            : undefined,
       },
       { status: 500 }
     );

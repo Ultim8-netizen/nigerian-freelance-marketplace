@@ -1,7 +1,8 @@
 // src/lib/security/audit.ts
 
-import { NextRequest } from 'next/server'; // Assumed import for NextRequest type
-import { createClient } from '@/lib/supabase/server'; // Updated import path to match file location
+import { NextRequest } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import type { Json } from '@/types/database.types';
 
 /**
  * Logs an audit event to the 'audit_logs' table in Supabase.
@@ -10,7 +11,7 @@ import { createClient } from '@/lib/supabase/server'; // Updated import path to 
  * @param action A short description of the action (e.g., 'user_created', 'order_updated').
  * @param resourceType The type of resource affected (e.g., 'user', 'product', 'order').
  * @param resourceId The ID of the affected resource.
- * @param metadata Optional additional data related to the event.
+ * @param metadata Optional additional data related to the event. Must be JSON-serializable.
  * @param request Optional NextRequest object to extract IP and User-Agent headers.
  */
 export async function logAuditEvent(
@@ -18,7 +19,7 @@ export async function logAuditEvent(
   action: string,
   resourceType: string,
   resourceId: string,
-  metadata?: Record<string, unknown>, // Fix: Replaced 'any' with a more specific type
+  metadata?: Json,
   request?: NextRequest
 ) {
   const supabase = await createClient();

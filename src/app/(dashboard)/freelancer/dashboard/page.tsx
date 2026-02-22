@@ -8,12 +8,7 @@ import { formatCurrency } from '@/lib/utils';
 import { DollarSign, Package, Clock, Star } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-
-type Order = {
-  id: string;
-  title: string;
-  status: string;
-};
+import type { Order } from '@/types';
 
 export default async function FreelancerDashboard() {
   const supabase = await createClient();
@@ -110,7 +105,7 @@ export default async function FreelancerDashboard() {
                 <div key={order.id} className="border-l-4 border-blue-500 pl-3 py-2">
                   <p className="font-medium">{order.title}</p>
                   <p className="text-sm text-gray-600">
-                    Status: {order.status.replace('_', ' ')}
+                    Status: {order.status ? order.status.replace('_', ' ') : 'Unknown'}
                   </p>
                 </div>
               ))}

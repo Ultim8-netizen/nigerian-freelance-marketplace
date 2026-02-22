@@ -7,7 +7,6 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatCurrency } from '@/lib/utils';
 import { DollarSign, TrendingUp, AlertCircle, Download } from 'lucide-react';
-import Link from 'next/link';
 
 export default async function EarningsPage() {
   const supabase = await createClient();
@@ -24,21 +23,36 @@ export default async function EarningsPage() {
     .eq('user_id', user.id)
     .single();
 
-  // Get completed orders
+  // Get completed orders - use delivered_at instead of completed_at
   const { data: completedOrders } = await supabase
     .from('orders')
-    .select('amount, completed_at')
+    .select('amount, delivered_at')
     .eq('freelancer_id', user.id)
-    .eq('status', 'completed')
-    .order('completed_at', { ascending: false });
+    .eq('status', 'delivered')
+    .not('delivered_at', 'is', null)
+    .order('delivered_at', { ascending: false });
 
   // Calculate earnings stats
-  const totalEarnings = completedOrders?.reduce((sum, o) => sum + o.amount, 0) || 0;
+  const totalEarnings = completedOrders?.reduce((sum, o) => sum + (o.amount || 0), 0) || 0;
+  
   const thisMonth = completedOrders?.filter(o => {
-    const date = new Date(o.completed_at);
+    if (!o.delivered_at) return false;
+    const date = new Date(o.delivered_at);
     const now = new Date();
     return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
-  }).reduce((sum, o) => sum + o.amount, 0) || 0;
+  }).reduce((sum, o) => sum + (o.amount || 0), 0) || 0;
+
+  const thisMonthOrders = completedOrders?.filter(o => {
+    if (!o.delivered_at) return false;
+    const date = new Date(o.delivered_at);
+    const now = new Date();
+    return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+  }).length || 0;
+
+  // Safe wallet values
+  const availableBalance = wallet?.balance ?? 0;
+  const pendingClearance = wallet?.pending_clearance ?? 0;
+  const minimumWithdrawal = 5000;
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -55,7 +69,7 @@ export default async function EarningsPage() {
             <DollarSign className="w-5 h-5 text-green-600" />
           </div>
           <p className="text-3xl font-bold text-green-600">
-            {formatCurrency(wallet?.balance || 0)}
+            {formatCurrency(availableBalance)}
           </p>
           <p className="text-xs text-gray-500 mt-2">Ready to withdraw</p>
         </Card>
@@ -66,7 +80,7 @@ export default async function EarningsPage() {
             <AlertCircle className="w-5 h-5 text-orange-600" />
           </div>
           <p className="text-3xl font-bold text-orange-600">
-            {formatCurrency(wallet?.pending_clearance || 0)}
+            {formatCurrency(pendingClearance)}
           </p>
           <p className="text-xs text-gray-500 mt-2">14-day holding period</p>
         </Card>
@@ -94,25 +108,21 @@ export default async function EarningsPage() {
         <div className="h-2 bg-gray-200 rounded-full">
           <div 
             className="h-2 bg-blue-600 rounded-full"
-            style={{ width: '65%' }}
+            style={{ width: totalEarnings > 0 ? `${Math.min((thisMonth / totalEarnings) * 100, 100)}%` : '0%' }}
           />
         </div>
         <p className="text-sm text-gray-600 mt-2">
-          {completedOrders?.filter(o => {
-            const date = new Date(o.completed_at);
-            const now = new Date();
-            return date.getMonth() === now.getMonth();
-          }).length || 0} orders completed
+          {thisMonthOrders} orders completed
         </p>
       </Card>
 
       {/* Withdrawal Section */}
       <Card className="p-6 mb-8 border-green-200 bg-green-50">
         <h2 className="text-lg font-semibold mb-4">Withdraw Funds</h2>
-        {wallet && wallet.balance > 5000 ? (
+        {availableBalance >= minimumWithdrawal ? (
           <div>
             <p className="text-sm text-gray-700 mb-4">
-              You have {formatCurrency(wallet.balance)} available to withdraw.
+              You have {formatCurrency(availableBalance)} available to withdraw.
             </p>
             <Button className="bg-green-600 hover:bg-green-700">
               <Download className="w-4 h-4 mr-2" />
@@ -122,7 +132,9 @@ export default async function EarningsPage() {
         ) : (
           <div className="text-sm text-gray-700">
             <p>Minimum withdrawal amount is ₦5,000</p>
-            <p className="mt-2">You need {formatCurrency(5000 - (wallet?.balance || 0))} more to withdraw</p>
+            <p className="mt-2">
+              You need {formatCurrency(Math.max(minimumWithdrawal - availableBalance, 0))} more to withdraw
+            </p>
           </div>
         )}
       </Card>
@@ -144,9 +156,12 @@ export default async function EarningsPage() {
                 {completedOrders.slice(0, 10).map((order, i) => (
                   <tr key={i} className="border-b last:border-0">
                     <td className="py-2 text-gray-600">
-                      {new Date(order.completed_at).toLocaleDateString('en-NG')}
+                      {order.delivered_at 
+                        ? new Date(order.delivered_at).toLocaleDateString('en-NG')
+                        : 'N/A'
+                      }
                     </td>
-                    <td className="py-2 font-medium">{formatCurrency(order.amount)}</td>
+                    <td className="py-2 font-medium">{formatCurrency(order.amount || 0)}</td>
                     <td className="py-2">
                       <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded">
                         Completed

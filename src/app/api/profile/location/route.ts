@@ -32,19 +32,29 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    // Guard: user.email is string | undefined in Supabase Auth,
+    // but profiles.email requires string
+    if (!user.email) {
+      return NextResponse.json(
+        { success: false, error: 'User account has no email address' },
+        { status: 400 }
+      );
+    }
+
     const body = await request.json();
     const validatedData = locationSchema.parse(body);
 
     const supabase = await createClient();
 
     // Upsert profile with location (insert if not exists, update if exists)
+    // user.email is now narrowed to string
     const { error: updateError } = await supabase
       .from('profiles')
       .upsert({
-        id: user.id, // Mandatory for upsert
-        email: user.email, // Ensure email is present
-        full_name: user.user_metadata?.full_name || '', // Ensure name is present
-        location: validatedData.city 
+        id: user.id,
+        email: user.email,
+        full_name: user.user_metadata?.full_name || '',
+        location: validatedData.city
           ? `${validatedData.city}, ${validatedData.state}`
           : validatedData.state,
         updated_at: new Date().toISOString(),
@@ -58,7 +68,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // Store detailed location in separate table (optional)
+    // Store detailed location in separate table
     await supabase
       .from('user_locations')
       .upsert({

@@ -67,109 +67,116 @@ export default async function ReviewsPage() {
       {/* Reviews List */}
       <div className="space-y-4">
         {reviews && reviews.length > 0 ? (
-          reviews.map((review) => (
-            <Card key={review.id} className="p-6 hover:shadow-md transition-shadow">
-              <div className="flex gap-4 mb-4">
-                <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center font-bold shrink-0">
-                  {review.reviewer?.full_name?.charAt(0).toUpperCase() || 'C'}
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <h3 className="font-semibold text-gray-900 dark:text-white">
-                      {review.reviewer?.full_name || 'Client'}
-                    </h3>
-                    <div className="flex gap-1">
-                      {[...Array(5)].map((_, i) => (
-                        <Star
-                          key={i}
-                          className={`w-4 h-4 ${
-                            i < review.rating
-                              ? 'fill-yellow-400 text-yellow-400'
-                              : 'text-gray-300'
-                          }`}
-                        />
-                      ))}
-                    </div>
+          reviews.map((review) => {
+            const createdAt = review.created_at ?? new Date().toISOString();
+            const communicationRating = review.communication_rating ?? 0;
+            const qualityRating = review.quality_rating ?? 0;
+            const professionalismRating = review.professionalism_rating ?? 0;
+
+            return (
+              <Card key={review.id} className="p-6 hover:shadow-md transition-shadow">
+                <div className="flex gap-4 mb-4">
+                  <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center font-bold shrink-0">
+                    {review.reviewer?.full_name?.charAt(0).toUpperCase() || 'C'}
                   </div>
-                  {review.order?.title && (
-                    <p className="text-sm text-gray-600 dark:text-gray-400 flex items-center gap-1">
-                      <MessageCircle className="w-3 h-3" />
-                      Project: {review.order.title}
-                    </p>
-                  )}
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <h3 className="font-semibold text-gray-900 dark:text-white">
+                        {review.reviewer?.full_name || 'Client'}
+                      </h3>
+                      <div className="flex gap-1">
+                        {[...Array(5)].map((_, i) => (
+                          <Star
+                            key={i}
+                            className={`w-4 h-4 ${
+                              i < review.rating
+                                ? 'fill-yellow-400 text-yellow-400'
+                                : 'text-gray-300'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    {review.order?.title && (
+                      <p className="text-sm text-gray-600 dark:text-gray-400 flex items-center gap-1">
+                        <MessageCircle className="w-3 h-3" />
+                        Project: {review.order.title}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
 
-              {review.review_text && (
-                <p className="text-gray-700 dark:text-gray-300 mb-4">{review.review_text}</p>
-              )}
+                {review.review_text && (
+                  <p className="text-gray-700 dark:text-gray-300 mb-4">{review.review_text}</p>
+                )}
 
-              {/* Detailed Ratings */}
-              {(review.communication_rating || review.quality_rating || review.professionalism_rating) && (
-                <div className="grid grid-cols-3 gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
-                  {review.communication_rating && (
-                    <div className="text-sm">
-                      <p className="text-gray-600 dark:text-gray-400 text-xs">Communication</p>
-                      <div className="flex gap-1 mt-1">
-                        {[...Array(5)].map((_, i) => (
-                          <Star
-                            key={i}
-                            className={`w-3 h-3 ${
-                              i < review.communication_rating
-                                ? 'fill-blue-400 text-blue-400'
-                                : 'text-gray-300'
-                            }`}
-                          />
-                        ))}
+                {/* Detailed Ratings */}
+                {(communicationRating || qualityRating || professionalismRating) && (
+                  <div className="grid grid-cols-3 gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+                    {communicationRating > 0 && (
+                      <div className="text-sm">
+                        <p className="text-gray-600 dark:text-gray-400 text-xs">Communication</p>
+                        <div className="flex gap-1 mt-1">
+                          {[...Array(5)].map((_, i) => (
+                            <Star
+                              key={i}
+                              className={`w-3 h-3 ${
+                                i < communicationRating
+                                  ? 'fill-blue-400 text-blue-400'
+                                  : 'text-gray-300'
+                              }`}
+                            />
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                  {review.quality_rating && (
-                    <div className="text-sm">
-                      <p className="text-gray-600 dark:text-gray-400 text-xs">Quality</p>
-                      <div className="flex gap-1 mt-1">
-                        {[...Array(5)].map((_, i) => (
-                          <Star
-                            key={i}
-                            className={`w-3 h-3 ${
-                              i < review.quality_rating
-                                ? 'fill-blue-400 text-blue-400'
-                                : 'text-gray-300'
-                            }`}
-                          />
-                        ))}
+                    )}
+                    {qualityRating > 0 && (
+                      <div className="text-sm">
+                        <p className="text-gray-600 dark:text-gray-400 text-xs">Quality</p>
+                        <div className="flex gap-1 mt-1">
+                          {[...Array(5)].map((_, i) => (
+                            <Star
+                              key={i}
+                              className={`w-3 h-3 ${
+                                i < qualityRating
+                                  ? 'fill-blue-400 text-blue-400'
+                                  : 'text-gray-300'
+                              }`}
+                            />
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                  {review.professionalism_rating && (
-                    <div className="text-sm">
-                      <p className="text-gray-600 dark:text-gray-400 text-xs">Professionalism</p>
-                      <div className="flex gap-1 mt-1">
-                        {[...Array(5)].map((_, i) => (
-                          <Star
-                            key={i}
-                            className={`w-3 h-3 ${
-                              i < review.professionalism_rating
-                                ? 'fill-blue-400 text-blue-400'
-                                : 'text-gray-300'
-                            }`}
-                          />
-                        ))}
+                    )}
+                    {professionalismRating > 0 && (
+                      <div className="text-sm">
+                        <p className="text-gray-600 dark:text-gray-400 text-xs">Professionalism</p>
+                        <div className="flex gap-1 mt-1">
+                          {[...Array(5)].map((_, i) => (
+                            <Star
+                              key={i}
+                              className={`w-3 h-3 ${
+                                i < professionalismRating
+                                  ? 'fill-blue-400 text-blue-400'
+                                  : 'text-gray-300'
+                              }`}
+                            />
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-              )}
+                    )}
+                  </div>
+                )}
 
-              <p className="text-xs text-gray-500 mt-4">
-                {new Date(review.created_at).toLocaleDateString('en-NG', {
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                })}
-              </p>
-            </Card>
-          ))
+                <p className="text-xs text-gray-500 mt-4">
+                  {new Date(createdAt).toLocaleDateString('en-NG', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                  })}
+                </p>
+              </Card>
+            );
+          })
         ) : (
           <Card className="p-12 text-center">
             <div className="max-w-md mx-auto">

@@ -33,9 +33,11 @@ export async function GET(request: NextRequest) {
       .limit(10);
 
     // Get requirements for next level
+    // trust_level is string | null | undefined; getNextLevel accepts string | undefined,
+    // so null-coalesce to collapse null → undefined
     const { data: requirements } = await supabase
-      .rpc('get_trust_level_requirements', { 
-        p_trust_level: getNextLevel(profile?.trust_level) 
+      .rpc('get_trust_level_requirements', {
+        p_trust_level: getNextLevel(profile?.trust_level ?? undefined),
       });
 
     return NextResponse.json({

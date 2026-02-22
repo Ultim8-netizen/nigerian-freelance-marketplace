@@ -5,6 +5,34 @@ import { ServicesFilters } from '@/components/services/ServicesFilters';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { DashboardNav } from '@/components/layout/DashboardNav';
+import type { ServiceWithFreelancerRaw, ServiceDisplay } from '@/types/extended.types';
+
+/**
+ * Transform raw service data from Supabase to display format.
+ *
+ * Converts:
+ * - null profile_image_url → undefined
+ * - null freelancer_rating → 0
+ * - null total_jobs_completed → 0
+ *
+ * Ensures full compatibility with ServiceCard component prop expectations.
+ */
+function transformServiceForDisplay(
+  service: ServiceWithFreelancerRaw
+): ServiceDisplay {
+  return {
+    ...service,
+    freelancer: service.freelancer
+      ? {
+          id: service.freelancer.id,
+          full_name: service.freelancer.full_name,
+          profile_image_url: service.freelancer.profile_image_url ?? undefined,
+          freelancer_rating: service.freelancer.freelancer_rating ?? 0,
+          total_jobs_completed: service.freelancer.total_jobs_completed ?? 0,
+        }
+      : undefined,
+  };
+}
 
 export default async function ServicesPage(props: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
@@ -66,13 +94,16 @@ export default async function ServicesPage(props: {
     query = query.ilike('service_location', `%${city}%`);
   }
 
-  const { data: services, count, error } = await query
+  const { data: rawServices, count, error } = await query
     .order('created_at', { ascending: false })
     .range(from, to);
 
   if (error) {
     console.error('Error fetching services:', error);
   }
+
+  // Transform services to display format with proper typing
+  const services: ServiceDisplay[] = (rawServices || []).map(transformServiceForDisplay);
 
   const totalPages = Math.ceil((count || 0) / perPage);
   const popularCategories = ['Academic Services', 'Tech & Digital', 'Creative Services', 'Personal Services'];

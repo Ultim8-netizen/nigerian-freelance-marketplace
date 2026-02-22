@@ -1,6 +1,6 @@
 'use client';
 
-import { CreateServiceForm } from '@/components/services/CreateServiceForm';
+import CreateServiceForm from '@/components/services/CreateServiceForm';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 import Link from 'next/link';

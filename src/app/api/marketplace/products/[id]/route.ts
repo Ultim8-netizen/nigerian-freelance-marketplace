@@ -173,8 +173,8 @@ export async function DELETE(
       return Res.json({ success: false, error: 'Unauthorized' }, { status: 403 });
     }
 
-    // Soft delete if has sales
-    if (product.sales_count > 0) {
+    // Soft delete if has sales (sales_count is nullable per schema)
+    if (product.sales_count && product.sales_count > 0) {
       await supabase
         .from('products')
         .update({ is_active: false })

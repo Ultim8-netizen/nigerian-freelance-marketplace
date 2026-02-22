@@ -42,15 +42,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Guard: order_id is nullable per schema
+    if (!transaction.order_id) {
+      return NextResponse.json(
+        { success: false, error: 'Transaction is not associated with an order' },
+        { status: 400 }
+      );
+    }
+
+    // order_id is now narrowed to string for all subsequent queries
+    const orderId = transaction.order_id;
+
     // Update order status
     await supabase
       .from('orders')
       .update({ status: 'awaiting_delivery' })
-      .eq('id', transaction.order_id);
+      .eq('id', orderId);
 
     // Create escrow record
     await supabase.from('escrow').insert({
-      order_id: transaction.order_id,
+      order_id: orderId,
       transaction_id: transaction.id,
       amount: transaction.amount,
       status: 'held',
@@ -60,7 +71,7 @@ export async function POST(request: NextRequest) {
     const { data: order } = await supabase
       .from('orders')
       .select('*, freelancer:profiles!orders_freelancer_id_fkey(*)')
-      .eq('id', transaction.order_id)
+      .eq('id', orderId)
       .single();
 
     if (order) {

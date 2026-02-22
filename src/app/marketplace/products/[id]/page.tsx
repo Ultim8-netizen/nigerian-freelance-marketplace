@@ -1,14 +1,16 @@
+// src/app/marketplace/products/[id]/page.tsx
+
 import { createClient } from '@/lib/supabase/server';
 import Image from 'next/image';
-import { notFound } from 'next/navigation'; // <-- FIX: Import notFound
+import { notFound } from 'next/navigation';
 import { formatCurrency, formatRelativeTime } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { ImageGallery } from '@/components/cloudinary/ImageGallery';
-import { 
-  Star, MapPin, Package, Shield, Clock, 
-  MessageCircle, Share2, Heart, AlertCircle 
+import {
+  Star, MapPin, Package, Shield, Clock,
+  MessageCircle, Share2, Heart, AlertCircle,
 } from 'lucide-react';
 import Link from 'next/link';
 import { BuyNowButton } from '@/components/marketplace/BuyNowButton';
@@ -44,14 +46,27 @@ export default async function ProductDetailPage({
     notFound();
   }
 
+  // Guard: seller relation is nullable per Supabase join typing.
+  // A product without a seller is invalid — treat it as not found.
+  if (!product.seller) {
+    notFound();
+  }
+
+  // seller is now narrowed to non-null for all JSX below
+  const seller = product.seller;
+
   // Fetch seller's other products
-  const { data: sellerProducts } = await supabase
-    .from('products')
-    .select('id, title, price, images, condition')
-    .eq('seller_id', product.seller_id)
-    .eq('is_active', true)
-    .neq('id', params.id)
-    .limit(4);
+  // seller_id is string | null per schema — guard before using in query
+  const sellerProducts = product.seller_id
+    ? await supabase
+        .from('products')
+        .select('id, title, price, images, condition')
+        .eq('seller_id', product.seller_id)
+        .eq('is_active', true)
+        .neq('id', params.id)
+        .limit(4)
+        .then(({ data }) => data)
+    : null;
 
   // Fetch reviews
   const { data: reviews } = await supabase
@@ -69,25 +84,44 @@ export default async function ProductDetailPage({
 
   const isOwnProduct = user?.id === product.seller_id;
 
+  // rating and reviews_count are NOT NULL columns (number, default 0)
+  // added via the add_product_rating.sql migration — no null handling needed.
+  const rating       = product.rating;        // number 0–5, maintained by DB trigger
+  const reviewsCount = product.reviews_count; // number >= 0, maintained by DB trigger
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-8">
         {/* Breadcrumb */}
         <nav className="mb-6 text-sm">
           <ol className="flex items-center space-x-2">
-            <li><Link href="/marketplace" className="text-blue-600 hover:underline">Marketplace</Link></li>
+            <li>
+              <Link href="/marketplace" className="text-blue-600 hover:underline">
+                Marketplace
+              </Link>
+            </li>
             <li className="text-gray-400">/</li>
-            <li><Link href={`/marketplace?category=${product.category}`} className="text-blue-600 hover:underline">{product.category}</Link></li>
+            <li>
+              <Link
+                href={`/marketplace?category=${product.category}`}
+                className="text-blue-600 hover:underline"
+              >
+                {product.category}
+              </Link>
+            </li>
             <li className="text-gray-400">/</li>
             <li className="text-gray-600 truncate max-w-[200px]">{product.title}</li>
           </ol>
         </nav>
 
         <div className="grid lg:grid-cols-3 gap-8">
-          {/* Left Column - Images */}
+          {/* ----------------------------------------------------------------
+              Left Column — Images & Details
+          ---------------------------------------------------------------- */}
           <div className="lg:col-span-2">
             <Card className="p-6 mb-6">
-              <ImageGallery images={product.images} alt={product.title} />
+              {/* images is string[] | null per schema — fallback to empty array */}
+              <ImageGallery images={product.images ?? []} alt={product.title} />
             </Card>
 
             {/* Description */}
@@ -112,11 +146,12 @@ export default async function ProductDetailPage({
                 </div>
                 <div>
                   <dt className="text-sm text-gray-500">Posted</dt>
-                  <dd className="font-medium">{formatRelativeTime(product.created_at)}</dd>
+                  {/* created_at is string | null — fallback to empty string */}
+                  <dd className="font-medium">{formatRelativeTime(product.created_at ?? '')}</dd>
                 </div>
                 <div>
                   <dt className="text-sm text-gray-500">Sales</dt>
-                  <dd className="font-medium">{product.sales_count} sold</dd>
+                  <dd className="font-medium">{product.sales_count ?? 0} sold</dd>
                 </div>
               </dl>
             </Card>
@@ -128,8 +163,9 @@ export default async function ProductDetailPage({
                   <h2 className="text-xl font-semibold">Customer Reviews</h2>
                   <div className="flex items-center gap-2">
                     <Star className="w-5 h-5 fill-yellow-400 stroke-yellow-400" />
-                    <span className="font-semibold">{product.rating?.toFixed(1) || 'N/A'}</span>
-                    <span className="text-gray-500">({product.reviews_count} reviews)</span>
+                    {/* rating is a real NOT NULL column — display directly */}
+                    <span className="font-semibold">{rating.toFixed(1)}</span>
+                    <span className="text-gray-500">({reviewsCount} reviews)</span>
                   </div>
                 </div>
 
@@ -168,7 +204,8 @@ export default async function ProductDetailPage({
                           </div>
                           <p className="text-sm text-gray-600 mb-1">{review.review_text}</p>
                           <span className="text-xs text-gray-400">
-                            {formatRelativeTime(review.created_at)}
+                            {/* created_at is string | null — fallback to empty string */}
+                            {formatRelativeTime(review.created_at ?? '')}
                           </span>
                         </div>
                       </div>
@@ -185,27 +222,29 @@ export default async function ProductDetailPage({
             )}
           </div>
 
-          {/* Right Column - Purchase Card */}
+          {/* ----------------------------------------------------------------
+              Right Column — Purchase Card & Seller Info
+          ---------------------------------------------------------------- */}
           <div>
             <Card className="p-6 sticky top-4">
               <div className="mb-6">
                 <h1 className="text-2xl font-bold mb-2">{product.title}</h1>
                 <div className="flex items-center gap-2 mb-4">
+                  {/* Stars filled proportionally to actual rating (NOT NULL number) */}
                   <div className="flex">
                     {[...Array(5)].map((_, i) => (
                       <Star
                         key={i}
                         className={`w-4 h-4 ${
-                          product.rating && i < product.rating
+                          i < Math.round(rating)
                             ? 'fill-yellow-400 stroke-yellow-400'
                             : 'stroke-gray-300'
                         }`}
                       />
                     ))}
                   </div>
-                  <span className="text-sm text-gray-600">
-                    ({product.reviews_count || 0} reviews)
-                  </span>
+                  <span className="text-sm font-medium">{rating.toFixed(1)}</span>
+                  <span className="text-sm text-gray-600">({reviewsCount} reviews)</span>
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-bold text-blue-600">
@@ -252,56 +291,58 @@ export default async function ProductDetailPage({
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   <Clock className="w-4 h-4 text-orange-600" />
-                  <span>{product.views_count} views</span>
+                  <span>{product.views_count ?? 0} views</span>
                 </div>
               </div>
             </Card>
 
-            {/* Seller Info */}
+            {/* Seller Info — seller narrowed to non-null above */}
             <Card className="p-6 mt-4">
               <h3 className="font-semibold mb-4">Seller Information</h3>
               <Link href={`/marketplace/sellers/${product.seller_id}`}>
                 <div className="flex items-center gap-3 mb-4 hover:bg-gray-50 p-2 rounded transition-colors">
-                  {product.seller.profile_image_url ? (
+                  {seller.profile_image_url ? (
                     <Image
-                      src={product.seller.profile_image_url}
-                      alt={product.seller.full_name}
+                      src={seller.profile_image_url}
+                      alt={seller.full_name}
                       width={48}
                       height={48}
                       className="rounded-full"
                     />
                   ) : (
                     <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center font-semibold">
-                      {product.seller.full_name.charAt(0)}
+                      {seller.full_name.charAt(0)}
                     </div>
                   )}
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="font-medium">{product.seller.full_name}</span>
-                      {product.seller.identity_verified && (
+                      <span className="font-medium">{seller.full_name}</span>
+                      {seller.identity_verified && (
                         <Badge variant="success" className="text-xs">✓ Verified</Badge>
                       )}
                     </div>
                     <div className="flex items-center gap-1 text-sm text-gray-600">
                       <Star className="w-3 h-3 fill-yellow-400 stroke-yellow-400" />
-                      <span>{product.seller.freelancer_rating.toFixed(1)}</span>
+                      {/* freelancer_rating is number | null on profiles — fallback to 0 */}
+                      <span>{(seller.freelancer_rating ?? 0).toFixed(1)}</span>
                       <span className="text-gray-400">•</span>
-                      <span>{product.seller.total_jobs_completed} sales</span>
+                      <span>{seller.total_jobs_completed ?? 0} sales</span>
                     </div>
                   </div>
                 </div>
               </Link>
 
               <div className="space-y-2 text-sm">
-                {product.seller.location && (
+                {seller.location && (
                   <div className="flex items-center gap-2 text-gray-600">
                     <MapPin className="w-4 h-4" />
-                    <span>{product.seller.location}</span>
+                    <span>{seller.location}</span>
                   </div>
                 )}
                 <div className="flex items-center gap-2 text-gray-600">
                   <Clock className="w-4 h-4" />
-                  <span>Joined {formatRelativeTime(product.seller.created_at)}</span>
+                  {/* created_at is string | null on profiles — fallback to empty string */}
+                  <span>Joined {formatRelativeTime(seller.created_at ?? '')}</span>
                 </div>
               </div>
 
@@ -333,14 +374,15 @@ export default async function ProductDetailPage({
         {/* More from Seller */}
         {sellerProducts && sellerProducts.length > 0 && (
           <div className="mt-12">
-            <h2 className="text-2xl font-bold mb-6">More from {product.seller.full_name}</h2>
+            <h2 className="text-2xl font-bold mb-6">More from {seller.full_name}</h2>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
               {sellerProducts.map((item) => (
                 <Link key={item.id} href={`/marketplace/products/${item.id}`}>
                   <Card className="overflow-hidden hover:shadow-lg transition-shadow">
                     <div className="relative h-48 bg-gray-200">
+                      {/* images is string[] | null — optional-chain + fallback */}
                       <Image
-                        src={item.images[0]}
+                        src={item.images?.[0] ?? ''}
                         alt={item.title}
                         fill
                         className="object-cover"

@@ -3,12 +3,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import type { Product } from '@/types';
 
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient();
     const { searchParams } = new URL(request.url);
-    
+
     const query = searchParams.get('q') || '';
     const category = searchParams.get('category');
     const minPrice = searchParams.get('min_price');
@@ -79,7 +80,7 @@ export async function GET(request: NextRequest) {
     if (error) throw error;
 
     // Get related/popular products if few results
-    let recommendations = [];
+    let recommendations: Product[] = [];
     if (!data || data.length < 5) {
       const { data: popular } = await supabase
         .from('products')
@@ -87,7 +88,7 @@ export async function GET(request: NextRequest) {
         .eq('is_active', true)
         .order('sales_count', { ascending: false })
         .limit(12);
-      
+
       recommendations = popular || [];
     }
 
@@ -108,7 +109,7 @@ export async function GET(request: NextRequest) {
         condition,
         state,
         sort_by: sortBy,
-      }
+      },
     });
   } catch (error) {
     console.error('Search error:', error);

@@ -71,17 +71,17 @@ export async function searchServices(filters: SearchFilters) {
 
   // Apply trust-based ranking boost
   const rankedServices = (services || []).sort((a, b) => {
-    // Trust score multiplier
-    const trustMultiplierA = getTrustMultiplier(a.freelancer.trust_level);
-    const trustMultiplierB = getTrustMultiplier(b.freelancer.trust_level);
+    // Trust score multiplier - use nullish coalescing to handle null trust_level
+    const trustMultiplierA = getTrustMultiplier(a.freelancer.trust_level ?? 'new');
+    const trustMultiplierB = getTrustMultiplier(b.freelancer.trust_level ?? 'new');
 
     // Verified badge multiplier
     const verifiedMultiplierA = a.freelancer.liveness_verified ? 1.3 : 1.0;
     const verifiedMultiplierB = b.freelancer.liveness_verified ? 1.3 : 1.0;
 
-    // Combined score
-    const scoreA = (a.orders_count + 1) * trustMultiplierA * verifiedMultiplierA;
-    const scoreB = (b.orders_count + 1) * trustMultiplierB * verifiedMultiplierB;
+    // Combined score - use nullish coalescing to default null orders_count to 0
+    const scoreA = ((a.orders_count ?? 0) + 1) * trustMultiplierA * verifiedMultiplierA;
+    const scoreB = ((b.orders_count ?? 0) + 1) * trustMultiplierB * verifiedMultiplierB;
 
     return scoreB - scoreA;
   });

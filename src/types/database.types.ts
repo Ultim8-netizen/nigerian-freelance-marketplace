@@ -12,31 +12,6 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "13.0.5"
   }
-  graphql_public: {
-    Tables: {
-      [_ in never]: never
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      graphql: {
-        Args: {
-          extensions?: Json
-          operationName?: string
-          query?: string
-          variables?: Json
-        }
-        Returns: Json
-      }
-    }
-    Enums: {
-      [_ in never]: never
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
   public: {
     Tables: {
       artifact_storage: {
@@ -1019,6 +994,8 @@ export type Database = {
           is_active: boolean | null
           location: string | null
           price: number
+          rating: number
+          reviews_count: number
           sales_count: number | null
           seller_id: string | null
           stock_status: string | null
@@ -1038,6 +1015,8 @@ export type Database = {
           is_active?: boolean | null
           location?: string | null
           price: number
+          rating?: number
+          reviews_count?: number
           sales_count?: number | null
           seller_id?: string | null
           stock_status?: string | null
@@ -1057,6 +1036,8 @@ export type Database = {
           is_active?: boolean | null
           location?: string | null
           price?: number
+          rating?: number
+          reviews_count?: number
           sales_count?: number | null
           seller_id?: string | null
           stock_status?: string | null
@@ -1077,7 +1058,7 @@ export type Database = {
       }
       profiles: {
         Row: {
-          account_status: string | null
+          account_status: string
           bio: string | null
           client_rating: number | null
           created_at: string | null
@@ -1104,10 +1085,10 @@ export type Database = {
           trust_score: number | null
           university: string | null
           updated_at: string | null
-          user_type: string | null
+          user_type: string
         }
         Insert: {
-          account_status?: string | null
+          account_status?: string
           bio?: string | null
           client_rating?: number | null
           created_at?: string | null
@@ -1134,10 +1115,10 @@ export type Database = {
           trust_score?: number | null
           university?: string | null
           updated_at?: string | null
-          user_type?: string | null
+          user_type?: string
         }
         Update: {
-          account_status?: string | null
+          account_status?: string
           bio?: string | null
           client_rating?: number | null
           created_at?: string | null
@@ -1164,7 +1145,7 @@ export type Database = {
           trust_score?: number | null
           university?: string | null
           updated_at?: string | null
-          user_type?: string | null
+          user_type?: string
         }
         Relationships: []
       }
@@ -2098,9 +2079,6 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
-  graphql_public: {
-    Enums: {},
-  },
   public: {
     Enums: {},
   },

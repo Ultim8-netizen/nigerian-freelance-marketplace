@@ -20,9 +20,17 @@ import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { F9Logo } from '@/components/brand/F9Logo';
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+// profile_image_url matches the actual column in the `profiles` table and the
+// Profile type exported from extended.types.  avatar_url never existed in the
+// database; the previous interface was inventing a field that required
+// layout.tsx to fabricate it (and break UserProvider in the process).
+// ---------------------------------------------------------------------------
 interface UserProfile {
   full_name?: string;
-  avatar_url?: string;
+  profile_image_url?: string | null; // string | null mirrors the DB column; optional so the interface stays loose
   wallet_balance?: number;
   user_type?: string;
 }
@@ -101,19 +109,26 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
     }
   };
 
-  // Mark notification as read (example usage for setNotifications)
+  // Mark notification as read
   const markAllAsRead = () => {
     setNotifications(0);
   };
 
-  // Determine if current page is active (example usage for pathname)
+  // Determine if current page is active
   const isActivePage = (path: string) => {
     return pathname === path;
   };
 
+  // ---------------------------------------------------------------------------
+  // AvatarImage `src` expects string | undefined.  The DB column (and therefore
+  // profile.profile_image_url) is string | null.  Convert once here so every
+  // <AvatarImage> usage stays clean.
+  // ---------------------------------------------------------------------------
+  const avatarSrc: string | undefined = profile?.profile_image_url ?? undefined;
+
   return (
     <>
-      <header 
+      <header
         className={`sticky top-0 z-50 w-full border-b bg-white/80 dark:bg-gray-900/80 backdrop-blur-lg transition-all duration-300 ${
           isScrolled ? 'shadow-md' : 'shadow-sm'
         }`}
@@ -131,20 +146,20 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
               <Menu className="h-5 w-5" />
             </Button>
 
-            <Link 
-              href="/dashboard" 
+            <Link
+              href="/dashboard"
               className="flex items-center transition-transform hover:scale-105 active:scale-95"
             >
               <F9Logo variant="full" size="md" animated />
             </Link>
 
-            {/* Quick Nav Links (Desktop) - Added Marketplace */}
+            {/* Quick Nav Links (Desktop) */}
             <nav className="hidden lg:flex items-center gap-1 ml-6">
-              <Link 
+              <Link
                 href="/marketplace"
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all hover:bg-gray-100 dark:hover:bg-gray-800 ${
-                  isActivePage('/marketplace') 
-                    ? 'bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400' 
+                  isActivePage('/marketplace')
+                    ? 'bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400'
                     : 'text-gray-700 dark:text-gray-300'
                 }`}
               >
@@ -198,11 +213,11 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
               <Search className="h-5 w-5" />
             </Button>
 
-            {/* Wallet Balance with Animation */}
+            {/* Wallet Balance */}
             <Link href="/dashboard/wallet">
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 className={`hidden sm:flex items-center gap-2 hover:shadow-md transition-all duration-200 hover:scale-105 active:scale-95 ${
                   isActivePage('/dashboard/wallet') ? 'ring-2 ring-blue-500' : ''
                 }`}
@@ -214,12 +229,12 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
               </Button>
             </Link>
 
-            {/* Notifications with Pulse Animation */}
+            {/* Notifications */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
+                <Button
+                  variant="ghost"
+                  size="icon"
                   className="relative hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                   aria-label={`Notifications ${notifications > 0 ? `(${notifications} unread)` : ''}`}
                 >
@@ -287,16 +302,16 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
               </DropdownMenuContent>
             </DropdownMenu>
 
-            {/* User Menu with Enhanced Profile Card */}
+            {/* User Menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button 
-                  variant="ghost" 
+                <Button
+                  variant="ghost"
                   className="relative h-10 w-10 rounded-full hover:ring-2 hover:ring-blue-500 transition-all"
                   aria-label="User menu"
                 >
                   <Avatar className="h-10 w-10 ring-2 ring-white dark:ring-gray-800">
-                    <AvatarImage src={profile?.avatar_url} alt={profile?.full_name} />
+                    <AvatarImage src={avatarSrc} alt={profile?.full_name} />
                     <AvatarFallback className="bg-linear-to-br from-blue-500 to-purple-600 text-white font-semibold">
                       {getInitials(profile?.full_name || user?.email || 'U')}
                     </AvatarFallback>
@@ -310,7 +325,7 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                   <div className="flex flex-col space-y-2">
                     <div className="flex items-center space-x-2">
                       <Avatar className="h-12 w-12">
-                        <AvatarImage src={profile?.avatar_url} />
+                        <AvatarImage src={avatarSrc} />
                         <AvatarFallback className="bg-linear-to-br from-blue-500 to-purple-600 text-white">
                           {getInitials(profile?.full_name || user?.email || 'U')}
                         </AvatarFallback>
@@ -329,8 +344,8 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
-                  <Link 
-                    href="/dashboard/profile" 
+                  <Link
+                    href="/dashboard/profile"
                     className={`cursor-pointer ${isActivePage('/dashboard/profile') ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
                   >
                     <User className="mr-2 h-4 w-4" />
@@ -338,8 +353,8 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link 
-                    href="/marketplace" 
+                  <Link
+                    href="/marketplace"
                     className={`cursor-pointer ${isActivePage('/marketplace') ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
                   >
                     <ShoppingBag className="mr-2 h-4 w-4" />
@@ -347,8 +362,8 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link 
-                    href="/dashboard/settings" 
+                  <Link
+                    href="/dashboard/settings"
                     className={`cursor-pointer ${isActivePage('/dashboard/settings') ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
                   >
                     <Settings className="mr-2 h-4 w-4" />
@@ -356,8 +371,8 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link 
-                    href="/dashboard/wallet" 
+                  <Link
+                    href="/dashboard/wallet"
                     className={`cursor-pointer ${isActivePage('/dashboard/wallet') ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
                   >
                     <Wallet className="mr-2 h-4 w-4" />
@@ -368,8 +383,8 @@ export function DashboardNav({ user, profile, onMenuToggle }: DashboardNavProps)
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem 
-                  onClick={handleLogout} 
+                <DropdownMenuItem
+                  onClick={handleLogout}
                   className="cursor-pointer text-red-600 focus:text-red-600 focus:bg-red-50 dark:focus:bg-red-950"
                 >
                   <LogOut className="mr-2 h-4 w-4" />

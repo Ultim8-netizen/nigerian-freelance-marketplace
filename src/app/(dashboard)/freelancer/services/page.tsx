@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency } from '@/lib/utils';
 import Link from 'next/link';
-import { Plus, Eye, ShoppingCart, Star, Edit2, Trash2 } from 'lucide-react';
+import { Plus, Eye, ShoppingCart, Edit2, Trash2 } from 'lucide-react';
 
 export default async function FreelancerServicesPage() {
   const supabase = await createClient();
@@ -78,12 +78,6 @@ export default async function FreelancerServicesPage() {
                     <Eye className="w-4 h-4" />
                     <span>{service.views_count || 0}</span>
                   </div>
-                  {service.rating && (
-                    <div className="flex items-center gap-1">
-                      <Star className="w-4 h-4 fill-yellow-400 text-yellow-400" />
-                      <span>{service.rating.toFixed(1)} ({service.reviews_count || 0})</span>
-                    </div>
-                  )}
                 </div>
 
                 {service.category && (

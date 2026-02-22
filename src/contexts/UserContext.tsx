@@ -3,28 +3,36 @@
 
 import { createContext, useContext, ReactNode } from 'react';
 import { User } from '@supabase/supabase-js';
+import type { Profile } from '@/types';
 
-interface Profile {
-  id: string;
-  user_type: 'freelancer' | 'client' | 'both';
-  full_name: string | null;
-  phone_number: string | null;
-  onboarding_completed: boolean;
-  account_status: 'active' | 'suspended' | 'banned';
-  avatar_url: string | null;
+/**
+ * FIXED: Removed the local Profile interface shadow. Now imports the real
+ * Profile type from @/types/extended.types, which correctly uses
+ * profile_image_url to match the actual database column.
+ * 
+ * Extended with:
+ *   - wallet_balance: runtime addition from layout.tsx
+ *   - avatar_url: alias to profile_image_url for backward compatibility
+ *                 (layout.tsx sets avatar_url = profile_image_url so both
+ *                 fields coexist; new code reads profile_image_url, old
+ *                 code can still read avatar_url without breaking)
+ */
+
+interface ProfileWithWallet extends Profile {
   wallet_balance?: number;
+  avatar_url?: string | null;
 }
 
 interface UserContextType {
   user: User;
-  profile: Profile;
+  profile: ProfileWithWallet;
 }
 
 const UserContext = createContext<UserContextType | null>(null);
 
 interface UserProviderProps {
   user: User;
-  profile: Profile;
+  profile: ProfileWithWallet;
   children: ReactNode;
 }
 

@@ -20,7 +20,7 @@ export default async function ProposalsPage() {
     .eq('freelancer_id', user.id)
     .order('created_at', { ascending: false });
 
-  const getStatusVariant = (status: string) => {
+  const getStatusVariant = (status: string | null) => {
     switch (status) {
       case 'accepted': return 'success';
       case 'rejected': return 'destructive';
@@ -34,31 +34,36 @@ export default async function ProposalsPage() {
       <h1 className="text-3xl font-bold mb-6">My Proposals</h1>
       
       <div className="space-y-4">
-        {proposals?.map((proposal) => (
-          <Card key={proposal.id} className="p-6 hover:shadow-md transition-shadow">
-            <div className="flex justify-between items-start">
-              <div>
-                <Link href={`/jobs/${proposal.job_id}`} className="hover:underline">
-                  <h3 className="text-lg font-semibold text-blue-600 mb-1">
-                    {proposal.job?.title}
-                  </h3>
-                </Link>
-                <div className="text-sm text-gray-500 mb-2">
-                  Submitted {formatRelativeTime(proposal.created_at)}
+        {proposals?.map((proposal) => {
+          const createdAt = proposal.created_at ?? new Date().toISOString();
+          const status = proposal.status ?? 'pending';
+
+          return (
+            <Card key={proposal.id} className="p-6 hover:shadow-md transition-shadow">
+              <div className="flex justify-between items-start">
+                <div>
+                  <Link href={`/jobs/${proposal.job_id}`} className="hover:underline">
+                    <h3 className="text-lg font-semibold text-blue-600 mb-1">
+                      {proposal.job?.title}
+                    </h3>
+                  </Link>
+                  <div className="text-sm text-gray-500 mb-2">
+                    Submitted {formatRelativeTime(createdAt)}
+                  </div>
+                  <div className="text-sm">
+                    <span className="font-medium">Your Bid: </span> 
+                    {formatCurrency(proposal.proposed_price)}
+                    <span className="mx-2">•</span>
+                    <span>{proposal.delivery_days} Days delivery</span>
+                  </div>
                 </div>
-                <div className="text-sm">
-                  <span className="font-medium">Your Bid: </span> 
-                  {formatCurrency(proposal.proposed_price)}
-                  <span className="mx-2">•</span>
-                  <span>{proposal.delivery_days} Days delivery</span>
-                </div>
+                <Badge variant={getStatusVariant(status)}>
+                  {status.toUpperCase()}
+                </Badge>
               </div>
-              <Badge variant={getStatusVariant(proposal.status)}>
-                {proposal.status.toUpperCase()}
-              </Badge>
-            </div>
-          </Card>
-        ))}
+            </Card>
+          );
+        })}
 
         {(!proposals || proposals.length === 0) && (
           <Card className="p-8 text-center text-gray-500">

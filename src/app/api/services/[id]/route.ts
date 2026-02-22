@@ -75,14 +75,17 @@ export async function GET(
       );
     }
 
+    // Null-coalesce views_count once — it is nullable per schema
+    const viewsCount = service.views_count ?? 0;
+
     // Increment view count (fire and forget)
     supabase
       .from('services')
-      .update({ views_count: service.views_count + 1 })
+      .update({ views_count: viewsCount + 1 })
       .eq('id', serviceId)
       .then(() => {});
 
-    logger.info('Service viewed', { serviceId, viewCount: service.views_count + 1 });
+    logger.info('Service viewed', { serviceId, viewCount: viewsCount + 1 });
 
     return NextResponse.json({
       success: true,
@@ -136,7 +139,7 @@ export async function PATCH(
 
     // 5. Parse and sanitize updates
     const body = await request.json();
-    
+
     const sanitizedBody = {
       ...body,
       title: body.title ? sanitizeText(body.title) : undefined,
@@ -244,12 +247,15 @@ export async function DELETE(
     }
 
     // 5. Soft delete if has orders, hard delete otherwise
-    if (service.orders_count > 0) {
+    // Null-coalesce orders_count — it is nullable per schema
+    const ordersCount = service.orders_count ?? 0;
+
+    if (ordersCount > 0) {
       await supabase
         .from('services')
         .update({ is_active: false, updated_at: new Date().toISOString() })
         .eq('id', serviceId);
-      
+
       logger.info('Service soft deleted', { serviceId, userId: user.id });
     } else {
       const { error } = await supabase
@@ -258,7 +264,7 @@ export async function DELETE(
         .eq('id', serviceId);
 
       if (error) throw error;
-      
+
       logger.info('Service hard deleted', { serviceId, userId: user.id });
     }
 

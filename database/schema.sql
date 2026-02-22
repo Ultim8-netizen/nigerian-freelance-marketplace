@@ -2539,3 +2539,623 @@ AND table_name IN ('profiles', 'jobs', 'orders', 'proposals', 'services')
 AND column_name IN ('id', 'client_id', 'freelancer_id', 'job_id')
 ORDER BY table_name, column_name;
 
+-- ============================================================================
+-- SAFETY CHECK: Find NULL values before applying NOT NULL constraints
+-- Run this FIRST to identify any data issues
+-- ============================================================================
+
+DO $$
+DECLARE
+  v_table_name TEXT;
+  v_column_name TEXT;
+  v_null_count INTEGER;
+  v_total_issues INTEGER := 0;
+BEGIN
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE 'CHECKING FOR NULL VALUES IN COLUMNS THAT SHOULD BE NOT NULL';
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE '';
+
+  -- Check profiles table
+  RAISE NOTICE '📋 Checking PROFILES table...';
+  
+  SELECT COUNT(*) INTO v_null_count FROM profiles WHERE id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  profiles.id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM profiles WHERE email IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  profiles.email has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM profiles WHERE full_name IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  profiles.full_name has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM profiles WHERE user_type IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  profiles.user_type has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  -- Check jobs table
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Checking JOBS table...';
+  
+  SELECT COUNT(*) INTO v_null_count FROM jobs WHERE id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  jobs.id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM jobs WHERE client_id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  jobs.client_id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM jobs WHERE title IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  jobs.title has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  -- Check orders table
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Checking ORDERS table...';
+  
+  SELECT COUNT(*) INTO v_null_count FROM orders WHERE id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  orders.id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM orders WHERE client_id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  orders.client_id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM orders WHERE freelancer_id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  orders.freelancer_id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  -- Check services table
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Checking SERVICES table...';
+  
+  SELECT COUNT(*) INTO v_null_count FROM services WHERE id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  services.id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM services WHERE freelancer_id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  services.freelancer_id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  -- Check proposals table
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Checking PROPOSALS table...';
+  
+  SELECT COUNT(*) INTO v_null_count FROM proposals WHERE job_id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  proposals.job_id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_null_count FROM proposals WHERE freelancer_id IS NULL;
+  IF v_null_count > 0 THEN
+    RAISE NOTICE '  ⚠️  proposals.freelancer_id has % NULL values', v_null_count;
+    v_total_issues := v_total_issues + v_null_count;
+  END IF;
+
+  -- Summary
+  RAISE NOTICE '';
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  IF v_total_issues = 0 THEN
+    RAISE NOTICE '✅ NO NULL VALUES FOUND - Safe to apply NOT NULL constraints';
+  ELSE
+    RAISE NOTICE '⚠️  FOUND % TOTAL NULL VALUES', v_total_issues;
+    RAISE NOTICE '   FIX THESE BEFORE APPLYING NOT NULL CONSTRAINTS';
+  END IF;
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+END $$;
+
+-- ============================================================================
+-- APPLY NOT NULL CONSTRAINTS
+-- Run this AFTER safety check passes (no NULL values found)
+-- This will make your database schema match TypeScript expectations
+-- ============================================================================
+
+DO $$
+DECLARE
+  v_count INTEGER := 0;
+BEGIN
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE 'APPLYING NOT NULL CONSTRAINTS';
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE '';
+
+  -- ====================================================================
+  -- PROFILES TABLE
+  -- ====================================================================
+  RAISE NOTICE '📋 Updating PROFILES table...';
+  
+  -- id (PRIMARY KEY - must be NOT NULL)
+  ALTER TABLE profiles ALTER COLUMN id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ profiles.id SET NOT NULL';
+
+  -- email (marked as NOT NULL in schema, ensuring it's enforced)
+  ALTER TABLE profiles ALTER COLUMN email SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ profiles.email SET NOT NULL';
+
+  -- full_name (marked as NOT NULL in schema)
+  ALTER TABLE profiles ALTER COLUMN full_name SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ profiles.full_name SET NOT NULL';
+
+  -- user_type (has DEFAULT, should NOT be NULL)
+  ALTER TABLE profiles ALTER COLUMN user_type SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ profiles.user_type SET NOT NULL';
+
+  -- account_status (has DEFAULT, should NOT be NULL)
+  ALTER TABLE profiles ALTER COLUMN account_status SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ profiles.account_status SET NOT NULL';
+
+  -- ====================================================================
+  -- JOBS TABLE
+  -- ====================================================================
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Updating JOBS table...';
+  
+  -- id (PRIMARY KEY)
+  ALTER TABLE jobs ALTER COLUMN id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ jobs.id SET NOT NULL';
+
+  -- client_id (FOREIGN KEY - should NOT be NULL)
+  ALTER TABLE jobs ALTER COLUMN client_id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ jobs.client_id SET NOT NULL';
+
+  -- title (marked as NOT NULL)
+  ALTER TABLE jobs ALTER COLUMN title SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ jobs.title SET NOT NULL';
+
+  -- description (marked as NOT NULL)
+  ALTER TABLE jobs ALTER COLUMN description SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ jobs.description SET NOT NULL';
+
+  -- category (marked as NOT NULL)
+  ALTER TABLE jobs ALTER COLUMN category SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ jobs.category SET NOT NULL';
+
+  -- budget_type (marked as NOT NULL)
+  ALTER TABLE jobs ALTER COLUMN budget_type SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ jobs.budget_type SET NOT NULL';
+
+  -- ====================================================================
+  -- SERVICES TABLE
+  -- ====================================================================
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Updating SERVICES table...';
+  
+  -- id (PRIMARY KEY)
+  ALTER TABLE services ALTER COLUMN id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ services.id SET NOT NULL';
+
+  -- freelancer_id (FOREIGN KEY - should NOT be NULL)
+  ALTER TABLE services ALTER COLUMN freelancer_id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ services.freelancer_id SET NOT NULL';
+
+  -- title (marked as NOT NULL)
+  ALTER TABLE services ALTER COLUMN title SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ services.title SET NOT NULL';
+
+  -- description (marked as NOT NULL)
+  ALTER TABLE services ALTER COLUMN description SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ services.description SET NOT NULL';
+
+  -- category (marked as NOT NULL)
+  ALTER TABLE services ALTER COLUMN category SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ services.category SET NOT NULL';
+
+  -- base_price (marked as NOT NULL)
+  ALTER TABLE services ALTER COLUMN base_price SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ services.base_price SET NOT NULL';
+
+  -- delivery_days (marked as NOT NULL)
+  ALTER TABLE services ALTER COLUMN delivery_days SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ services.delivery_days SET NOT NULL';
+
+  -- ====================================================================
+  -- ORDERS TABLE
+  -- ====================================================================
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Updating ORDERS table...';
+  
+  -- id (PRIMARY KEY)
+  ALTER TABLE orders ALTER COLUMN id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.id SET NOT NULL';
+
+  -- order_number (UNIQUE NOT NULL)
+  ALTER TABLE orders ALTER COLUMN order_number SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.order_number SET NOT NULL';
+
+  -- client_id (FOREIGN KEY - marked as NOT NULL)
+  ALTER TABLE orders ALTER COLUMN client_id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.client_id SET NOT NULL';
+
+  -- freelancer_id (FOREIGN KEY - marked as NOT NULL)
+  ALTER TABLE orders ALTER COLUMN freelancer_id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.freelancer_id SET NOT NULL';
+
+  -- title (marked as NOT NULL)
+  ALTER TABLE orders ALTER COLUMN title SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.title SET NOT NULL';
+
+  -- description (marked as NOT NULL)
+  ALTER TABLE orders ALTER COLUMN description SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.description SET NOT NULL';
+
+  -- amount (marked as NOT NULL)
+  ALTER TABLE orders ALTER COLUMN amount SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.amount SET NOT NULL';
+
+  -- platform_fee (marked as NOT NULL)
+  ALTER TABLE orders ALTER COLUMN platform_fee SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.platform_fee SET NOT NULL';
+
+  -- freelancer_earnings (marked as NOT NULL)
+  ALTER TABLE orders ALTER COLUMN freelancer_earnings SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.freelancer_earnings SET NOT NULL';
+
+  -- delivery_date (marked as NOT NULL)
+  ALTER TABLE orders ALTER COLUMN delivery_date SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ orders.delivery_date SET NOT NULL';
+
+  -- ====================================================================
+  -- PROPOSALS TABLE
+  -- ====================================================================
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Updating PROPOSALS table...';
+  
+  -- id (PRIMARY KEY)
+  ALTER TABLE proposals ALTER COLUMN id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ proposals.id SET NOT NULL';
+
+  -- job_id (FOREIGN KEY - should NOT be NULL)
+  ALTER TABLE proposals ALTER COLUMN job_id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ proposals.job_id SET NOT NULL';
+
+  -- freelancer_id (FOREIGN KEY - should NOT be NULL)
+  ALTER TABLE proposals ALTER COLUMN freelancer_id SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ proposals.freelancer_id SET NOT NULL';
+
+  -- cover_letter (marked as NOT NULL)
+  ALTER TABLE proposals ALTER COLUMN cover_letter SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ proposals.cover_letter SET NOT NULL';
+
+  -- proposed_price (marked as NOT NULL)
+  ALTER TABLE proposals ALTER COLUMN proposed_price SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ proposals.proposed_price SET NOT NULL';
+
+  -- delivery_days (marked as NOT NULL)
+  ALTER TABLE proposals ALTER COLUMN delivery_days SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ proposals.delivery_days SET NOT NULL';
+
+  -- ====================================================================
+  -- TRANSACTIONS TABLE
+  -- ====================================================================
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Updating TRANSACTIONS table...';
+  
+  ALTER TABLE transactions ALTER COLUMN transaction_ref SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ transactions.transaction_ref SET NOT NULL';
+
+  ALTER TABLE transactions ALTER COLUMN amount SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ transactions.amount SET NOT NULL';
+
+  ALTER TABLE transactions ALTER COLUMN transaction_type SET NOT NULL;
+  v_count := v_count + 1;
+  RAISE NOTICE '  ✅ transactions.transaction_type SET NOT NULL';
+
+  -- ====================================================================
+  -- OTHER CORE TABLES
+  -- ====================================================================
+  RAISE NOTICE '';
+  RAISE NOTICE '📋 Updating other core tables...';
+  
+  -- Wallets
+  ALTER TABLE wallets ALTER COLUMN id SET NOT NULL;
+  v_count := v_count + 1;
+  
+  -- Messages
+  ALTER TABLE messages ALTER COLUMN sender_id SET NOT NULL;
+  v_count := v_count + 1;
+  
+  -- Notifications
+  ALTER TABLE notifications ALTER COLUMN type SET NOT NULL;
+  ALTER TABLE notifications ALTER COLUMN title SET NOT NULL;
+  ALTER TABLE notifications ALTER COLUMN message SET NOT NULL;
+  v_count := v_count + 3;
+  
+  -- Reviews
+  ALTER TABLE reviews ALTER COLUMN reviewer_id SET NOT NULL;
+  ALTER TABLE reviews ALTER COLUMN reviewee_id SET NOT NULL;
+  ALTER TABLE reviews ALTER COLUMN rating SET NOT NULL;
+  v_count := v_count + 3;
+
+  RAISE NOTICE '  ✅ Additional % constraints applied', 7;
+
+  -- ====================================================================
+  -- FORCE SUPABASE TO REGENERATE TYPES
+  -- ====================================================================
+  RAISE NOTICE '';
+  RAISE NOTICE '🔄 Notifying Supabase to reload schema...';
+  NOTIFY pgrst, 'reload schema';
+
+  -- Summary
+  RAISE NOTICE '';
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE '✅ SUCCESSFULLY APPLIED % NOT NULL CONSTRAINTS', v_count;
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE '';
+  RAISE NOTICE '🎯 NEXT STEPS:';
+  RAISE NOTICE '1. Regenerate TypeScript types: npx supabase gen types typescript';
+  RAISE NOTICE '2. Restart your dev server: npm run dev';
+  RAISE NOTICE '3. The "!" operators in your code will still work (and are still needed)';
+  RAISE NOTICE '';
+END $$;
+
+-- ============================================================================
+-- VERIFICATION: Check which columns are now NOT NULL
+-- Run this AFTER applying constraints
+-- ============================================================================
+
+DO $$
+DECLARE
+  v_result RECORD;
+  v_total_count INTEGER := 0;
+BEGIN
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE 'VERIFICATION: CHECKING NOT NULL CONSTRAINTS';
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE '';
+
+  -- Query all NOT NULL columns in key tables
+  FOR v_result IN
+    SELECT 
+      table_name,
+      column_name,
+      is_nullable,
+      data_type
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+    AND table_name IN (
+      'profiles', 'jobs', 'services', 'orders', 'proposals', 
+      'transactions', 'wallets', 'messages', 'notifications', 'reviews'
+    )
+    AND is_nullable = 'NO'
+    ORDER BY table_name, ordinal_position
+  LOOP
+    IF v_result.table_name != COALESCE(LAG(v_result.table_name) OVER (), '') THEN
+      RAISE NOTICE '';
+      RAISE NOTICE '📋 %:', UPPER(v_result.table_name);
+    END IF;
+    
+    RAISE NOTICE '  ✅ %.% (%) is NOT NULL', 
+      v_result.table_name, 
+      v_result.column_name, 
+      v_result.data_type;
+    
+    v_total_count := v_total_count + 1;
+  END LOOP;
+
+  RAISE NOTICE '';
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE '✅ TOTAL: % columns are marked NOT NULL', v_total_count;
+  RAISE NOTICE '════════════════════════════════════════════════════════════';
+  RAISE NOTICE '';
+  RAISE NOTICE '🎉 Database constraints successfully applied!';
+  RAISE NOTICE '';
+END $$;
+
+-- ============================================================================
+-- DETAILED VERIFICATION FOR KEY FIELDS
+-- ============================================================================
+
+SELECT 
+  'profiles' as table_name,
+  'id' as column_name,
+  is_nullable,
+  CASE WHEN is_nullable = 'NO' THEN '✅' ELSE '❌' END as status
+FROM information_schema.columns
+WHERE table_name = 'profiles' AND column_name = 'id'
+
+UNION ALL
+
+SELECT 
+  'profiles',
+  'user_type',
+  is_nullable,
+  CASE WHEN is_nullable = 'NO' THEN '✅' ELSE '❌' END
+FROM information_schema.columns
+WHERE table_name = 'profiles' AND column_name = 'user_type'
+
+UNION ALL
+
+SELECT 
+  'jobs',
+  'client_id',
+  is_nullable,
+  CASE WHEN is_nullable = 'NO' THEN '✅' ELSE '❌' END
+FROM information_schema.columns
+WHERE table_name = 'jobs' AND column_name = 'client_id'
+
+UNION ALL
+
+SELECT 
+  'orders',
+  'client_id',
+  is_nullable,
+  CASE WHEN is_nullable = 'NO' THEN '✅' ELSE '❌' END
+FROM information_schema.columns
+WHERE table_name = 'orders' AND column_name = 'client_id'
+
+UNION ALL
+
+SELECT 
+  'orders',
+  'freelancer_id',
+  is_nullable,
+  CASE WHEN is_nullable = 'NO' THEN '✅' ELSE '❌' END
+FROM information_schema.columns
+WHERE table_name = 'orders' AND column_name = 'freelancer_id';
+
+-- ============================================================================
+-- Migration: Add rating and reviews_count to products table
+-- Run this in Supabase SQL Editor, then regenerate database.types.ts
+-- ============================================================================
+
+-- 1. Add columns to products
+-- ----------------------------------------------------------------------------
+ALTER TABLE public.products
+  ADD COLUMN IF NOT EXISTS rating        numeric(3, 2) DEFAULT 0    NOT NULL,
+  ADD COLUMN IF NOT EXISTS reviews_count integer       DEFAULT 0    NOT NULL;
+
+-- Constrain rating to valid range
+ALTER TABLE public.products
+  ADD CONSTRAINT products_rating_range CHECK (rating >= 0 AND rating <= 5);
+
+  -- ----------------------------------------------------------------------------
+-- 2. Back-fill from existing marketplace_reviews (safe if table is empty)
+-- ----------------------------------------------------------------------------
+UPDATE public.products p
+SET
+  reviews_count = sub.cnt,
+  rating        = sub.avg_rating
+FROM (
+  SELECT
+    product_id,
+    COUNT(*)          AS cnt,
+    ROUND(AVG(rating)::numeric, 2) AS avg_rating
+  FROM public.marketplace_reviews
+  GROUP BY product_id
+) sub
+WHERE p.id = sub.product_id;
+
+-- ----------------------------------------------------------------------------
+-- 3. Function: recalculate rating + reviews_count for a single product
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.recalculate_product_rating()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_product_id uuid;
+BEGIN
+  -- On DELETE the relevant id is in OLD; on INSERT/UPDATE it's in NEW
+  IF TG_OP = 'DELETE' THEN
+    v_product_id := OLD.product_id;
+  ELSE
+    v_product_id := NEW.product_id;
+  END IF;
+
+  UPDATE public.products
+  SET
+    reviews_count = (
+      SELECT COUNT(*)
+      FROM   public.marketplace_reviews
+      WHERE  product_id = v_product_id
+    ),
+    rating = COALESCE(
+      (
+        SELECT ROUND(AVG(rating)::numeric, 2)
+        FROM   public.marketplace_reviews
+        WHERE  product_id = v_product_id
+      ),
+      0
+    )
+  WHERE id = v_product_id;
+
+  -- Triggers must return a row value
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- 4. Trigger: fires after any write to marketplace_reviews
+-- ----------------------------------------------------------------------------
+DROP TRIGGER IF EXISTS trg_recalculate_product_rating ON public.marketplace_reviews;
+
+CREATE TRIGGER trg_recalculate_product_rating
+AFTER INSERT OR UPDATE OR DELETE
+ON public.marketplace_reviews
+FOR EACH ROW
+EXECUTE FUNCTION public.recalculate_product_rating();
+
+-- ----------------------------------------------------------------------------
+-- 5. Index: speeds up the aggregate query inside the trigger
+-- ----------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_marketplace_reviews_product_id
+  ON public.marketplace_reviews (product_id);
+
+-- ----------------------------------------------------------------------------
+-- Verify: check the columns exist and back-fill worked
+-- ----------------------------------------------------------------------------
+SELECT
+  id,
+  title,
+  rating,
+  reviews_count
+FROM public.products
+ORDER BY reviews_count DESC
+LIMIT 10;

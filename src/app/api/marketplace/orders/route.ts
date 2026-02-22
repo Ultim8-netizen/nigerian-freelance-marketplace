@@ -50,7 +50,6 @@ export async function GET(request: NextRequest) {
         seller:profiles!marketplace_orders_seller_id_fkey(*)
       `);
 
-    // Filter by role
     if (role === 'buyer') {
       query = query.eq('buyer_id', user.id);
     } else if (role === 'seller') {
@@ -113,6 +112,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Guard: seller_id is nullable on products per schema
+    if (!product.seller_id) {
+      return NextResponse.json(
+        { success: false, error: 'Product has no associated seller' },
+        { status: 400 }
+      );
+    }
+
     // Calculate total
     const subtotal = product.price * validated.quantity;
     const deliveryFee = calculateDeliveryFee(validated.delivery_address.state);
@@ -121,7 +128,7 @@ export async function POST(request: NextRequest) {
     // Generate order number
     const orderNumber = `MKT-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
 
-    // Create order
+    // Create order — seller_id is now narrowed to string
     const { data: order, error: orderError } = await supabase
       .from('marketplace_orders')
       .insert({
@@ -177,7 +184,7 @@ export async function POST(request: NextRequest) {
 function calculateDeliveryFee(state: string): number {
   const lagosStates = ['Lagos', 'Ogun'];
   const nearbyStates = ['Oyo', 'Osun', 'Ondo', 'Ekiti'];
-  
+
   if (lagosStates.includes(state)) return 1500;
   if (nearbyStates.includes(state)) return 2500;
   return 3500; // Other states

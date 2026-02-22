@@ -39,13 +39,15 @@ export async function POST(request: NextRequest) {
     }
 
     // Call the database function to add trust score event
+    // Optional params must be string | undefined to match RPC arg types —
+    // use ?? undefined (not || null) to avoid producing string | null
     const { error } = await supabase.rpc('add_trust_score_event', {
       p_user_id: validated.user_id,
       p_event_type: validated.event_type,
       p_score_change: validated.score_change,
-      p_related_entity_type: validated.related_entity_type || null,
-      p_related_entity_id: validated.related_entity_id || null,
-      p_notes: validated.notes || null,
+      p_related_entity_type: validated.related_entity_type ?? undefined,
+      p_related_entity_id: validated.related_entity_id ?? undefined,
+      p_notes: validated.notes ?? undefined,
     });
 
     if (error) {

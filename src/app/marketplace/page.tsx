@@ -6,11 +6,11 @@ import { MarketplaceFilters } from '@/components/marketplace/Filters';
 import { DashboardNav } from '@/components/layout/DashboardNav';
 import { Product } from '@/types/marketplace.types';
 
-export default async function MarketplacePage(props: { 
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }> 
+export default async function MarketplacePage(props: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
   const supabase = await createClient();
-  
+
   // Authentication check - redirect if not logged in
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
@@ -23,31 +23,31 @@ export default async function MarketplacePage(props: {
     .select('*')
     .eq('id', user.id)
     .single();
-  
+
   // Await search params for Next.js 15 compatibility
   const searchParams = await props.searchParams;
-  
+
   // Safe parameter parsing
   const category = typeof searchParams.category === 'string' ? searchParams.category : undefined;
   const search = typeof searchParams.search === 'string' ? searchParams.search : undefined;
-  
+
   // Build query with filters
   let query = supabase
     .from('products')
     .select('*, seller:profiles!products_seller_id_fkey(*)')
     .eq('is_active', true);
-  
+
   // Apply filters
   if (category) {
     query = query.eq('category', category);
   }
-  
+
   if (search) {
     query = query.ilike('title', `%${search}%`);
   }
-  
+
   // Execute query with type safety
-  const { data: products, error } = await query.order('created_at', { ascending: false }) as { 
+  const { data: products, error } = await query.order('created_at', { ascending: false }) as {
     data: Product[] | null;
     error: unknown;
   };
@@ -55,12 +55,15 @@ export default async function MarketplacePage(props: {
   if (error) {
     console.error('Error fetching products:', error);
   }
-  
+
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
-      {/* Navigation */}
-      <DashboardNav user={user} profile={profile} />
-      
+      {/* Navigation
+          DashboardNav requires profile: UserProfile (non-optional).
+          Every field on UserProfile is optional, so {} is a valid UserProfile
+          and is the correct fallback when the Supabase query returns null. */}
+      <DashboardNav user={user} profile={profile ?? {}} />
+
       <div className="container mx-auto px-4 py-8">
         <div className="flex gap-6">
           {/* Sidebar Filters */}
@@ -69,7 +72,7 @@ export default async function MarketplacePage(props: {
               <MarketplaceFilters currentFilters={{ category, search }} />
             </div>
           </aside>
-          
+
           {/* Main Content */}
           <main className="flex-1">
             {/* Branded Header */}
@@ -82,7 +85,7 @@ export default async function MarketplacePage(props: {
             <div className="lg:hidden mb-4">
               <MarketplaceFilters currentFilters={{ category, search }} />
             </div>
-            
+
             {/* Products Grid */}
             {products && products.length > 0 ? (
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -102,14 +105,14 @@ export default async function MarketplacePage(props: {
                   Try adjusting your filters or browse all categories
                 </p>
                 <div className="flex gap-3 justify-center">
-                  <a 
-                    href="/marketplace" 
+                  <a
+                    href="/marketplace"
                     className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
                   >
                     Clear Filters
                   </a>
-                  <a 
-                    href="/marketplace/seller/products/new" 
+                  <a
+                    href="/marketplace/seller/products/new"
                     className="inline-flex items-center px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-purple-600 hover:bg-purple-700"
                   >
                     List a Product

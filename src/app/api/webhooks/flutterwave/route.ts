@@ -2,7 +2,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import crypto from 'crypto';
-import { Json } from '@/types';
+// Json is not a named export of @/types/index — import directly from database.types
+import type { Json } from '@/types/database.types';
 
 // Define local payload types for the Flutterwave body
 interface FlutterwaveData {
@@ -37,7 +38,6 @@ export async function POST(request: NextRequest) {
         event: 'unknown',
         verified: false,
         payload: { error: 'Missing signature' } as unknown as Json,
-        notes: 'Missing signature header',
         received_at: new Date().toISOString(),
       });
       return NextResponse.json({ error: 'Missing signature' }, { status: 401 });
@@ -55,7 +55,6 @@ export async function POST(request: NextRequest) {
         event: 'unknown',
         verified: false,
         payload: { error: 'Invalid signature' } as unknown as Json,
-        notes: 'Invalid signature',
         received_at: new Date().toISOString(),
       });
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -64,9 +63,8 @@ export async function POST(request: NextRequest) {
     // 3. Parse Payload
     let payload: FlutterwaveWebhookPayload;
     try {
-      // FIX: Removed the unused error identifier from the catch block
       payload = JSON.parse(rawBody) as FlutterwaveWebhookPayload;
-    } catch { 
+    } catch {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
@@ -76,7 +74,6 @@ export async function POST(request: NextRequest) {
       event: payload.event,
       verified: true,
       payload: payload as unknown as Json,
-      notes: 'Verified webhook received',
       received_at: new Date().toISOString(),
     });
 
@@ -108,12 +105,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 });
     }
 
+    // Guard: order_id is nullable per schema — cannot pass null to RPC
+    if (!transaction.order_id) {
+      console.error('Transaction has no associated order:', transaction.id);
+      return NextResponse.json({ error: 'Transaction not linked to an order' }, { status: 400 });
+    }
+
     // 7. Process Payment (RPC)
+    // p_order_id: transaction.order_id is now narrowed to string
+    // p_flw_tx_id: payload.data.id is number, RPC expects string — convert with toString()
     const { error: rpcError } = await supabase.rpc('process_successful_payment', {
       p_transaction_id: transaction.id,
       p_order_id: transaction.order_id,
-      p_flw_tx_id: flw_tx_id,
-      p_amount: amount
+      p_flw_tx_id: flw_tx_id.toString(),
+      p_amount: amount,
     });
 
     if (rpcError) {

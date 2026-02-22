@@ -31,7 +31,7 @@ export async function GET(
 
     if (error) return error;
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     const { data: job, error: jobError } = await supabase
       .from('jobs')
@@ -74,14 +74,14 @@ export async function GET(
       );
     }
 
-    // Increment view count
+    // Increment view count (fire-and-forget)
     supabase
       .from('jobs')
-      .update({ views_count: job.views_count + 1 })
+      .update({ views_count: (job.views_count ?? 0) + 1 })
       .eq('id', jobId)
       .then();
 
-    logger.info('Job viewed', { jobId, viewCount: job.views_count + 1 });
+    logger.info('Job viewed', { jobId, viewCount: (job.views_count ?? 0) + 1 });
 
     return NextResponse.json({
       success: true,
@@ -123,7 +123,7 @@ export async function PATCH(
       );
     }
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Verify ownership
     const { data: job } = await supabase
@@ -155,7 +155,7 @@ export async function PATCH(
     }
 
     const body = await request.json();
-    
+
     const sanitizedBody = {
       ...body,
       title: body.title ? sanitizeText(body.title) : undefined,
@@ -231,7 +231,7 @@ export async function DELETE(
       );
     }
 
-    const supabase = createClient();
+    const supabase = await createClient();
 
     const { data: job } = await supabase
       .from('jobs')
@@ -263,14 +263,14 @@ export async function DELETE(
 
     await supabase
       .from('jobs')
-      .update({ 
+      .update({
         status: 'cancelled',
-        updated_at: new Date().toISOString() 
+        updated_at: new Date().toISOString(),
       })
       .eq('id', jobId);
 
     // Notify freelancers who submitted proposals
-    if (job.proposals_count > 0) {
+    if (job.proposals_count && job.proposals_count > 0) {
       const { data: proposals } = await supabase
         .from('proposals')
         .select('freelancer_id')
@@ -278,7 +278,7 @@ export async function DELETE(
         .eq('status', 'pending');
 
       if (proposals) {
-        const notifications = proposals.map(p => ({
+        const notifications = proposals.map((p: { freelancer_id: string }) => ({
           user_id: p.freelancer_id,
           type: 'job_cancelled',
           title: 'Job Cancelled',

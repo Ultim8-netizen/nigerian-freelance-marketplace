@@ -56,11 +56,13 @@ export async function POST(
     }
 
     // Can't dispute completed or refunded orders
-    if (['completed', 'refunded', 'disputed'].includes(order.status)) {
+    // status is nullable per schema, so null-coalesce to empty string
+    const orderStatus = order.status ?? '';
+    if (['completed', 'refunded', 'disputed'].includes(orderStatus)) {
       return NextResponse.json(
         {
           success: false,
-          error: `Cannot dispute order with status: ${order.status}`,
+          error: `Cannot dispute order with status: ${orderStatus}`,
         },
         { status: 400 }
       );
@@ -123,9 +125,6 @@ export async function POST(
       link: `/orders/${orderId}/dispute`,
     });
 
-    // Notify admins (if you have admin users)
-    // await notifyAdmins(dispute);
-
     return NextResponse.json({
       success: true,
       data: dispute,
@@ -170,14 +169,12 @@ export async function GET(
     // Get dispute
     const { data: dispute, error: disputeError } = await supabase
       .from('disputes')
-      .select(
-        `
+      .select(`
         *,
         order:orders(*),
         raised_by_user:profiles!disputes_raised_by_fkey(*),
         against_user:profiles!disputes_against_fkey(*)
-      `
-      )
+      `)
       .eq('order_id', orderId)
       .single();
 
