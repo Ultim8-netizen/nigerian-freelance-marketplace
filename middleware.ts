@@ -1,5 +1,7 @@
 // middleware.ts
-// OPTIMIZED: Fast token validation only, no DB queries
+// FIXED: Added '/jobs' to protectedPaths — the new /jobs/[id] page requires authentication
+// (FreelancerS browse and submit proposals; clients view their postings — both need auth).
+
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import type { SerializeOptions } from 'cookie';
@@ -11,7 +13,6 @@ export async function middleware(request: NextRequest) {
   // CORS HANDLING FOR API ROUTES
   // ============================================================================
   if (pathname.startsWith('/api/')) {
-    // Handle preflight requests
     if (request.method === 'OPTIONS') {
       return new NextResponse(null, {
         status: 200,
@@ -28,7 +29,6 @@ export async function middleware(request: NextRequest) {
   // ============================================================================
   // SESSION REFRESH (NO DB QUERIES)
   // ============================================================================
-  // FIXED: Changed 'let' to 'const' as the response object reference is never reassigned
   const response = NextResponse.next({
     request: {
       headers: request.headers,
@@ -48,16 +48,20 @@ export async function middleware(request: NextRequest) {
           response.cookies.set({ name, value, ...opts });
         },
         remove(name: string, options?: SerializeOptions) {
-          const opts = { path: '/', ...(options as Record<string, unknown> | undefined), maxAge: 0 };
+          const opts = {
+            path: '/',
+            ...(options as Record<string, unknown> | undefined),
+            maxAge: 0,
+          };
           response.cookies.set({ name, value: '', ...opts });
         },
       },
     }
   );
 
-  // CRITICAL: Use getSession() instead of getUser()
-  // getSession() only validates the JWT token locally (no DB call)
-  const { data: { session } } = await supabase.auth.getSession();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
 
   // ============================================================================
   // ROUTE PROTECTION (TOKEN-BASED ONLY)
@@ -68,8 +72,13 @@ export async function middleware(request: NextRequest) {
     '/client',
     '/onboarding',
     '/marketplace',
+    '/jobs',         // FIXED: Added — job detail /jobs/[id] requires authentication
+    '/messages',     // messages also need auth
+    '/services',     // browsing services requires auth in this app
+    '/analytics',
+    '/settings',
   ];
-  
+
   const apiProtectedPaths = [
     '/api/orders',
     '/api/services',
@@ -81,7 +90,6 @@ export async function middleware(request: NextRequest) {
   const isProtectedPath = protectedPaths.some((path) => pathname.startsWith(path));
   const isProtectedApi = apiProtectedPaths.some((path) => pathname.startsWith(path));
 
-  // Redirect to login if accessing protected routes without session
   if ((isProtectedPath || isProtectedApi) && !session) {
     const redirectUrl = new URL('/login', request.url);
     redirectUrl.searchParams.set('redirect', pathname);
@@ -98,8 +106,14 @@ export async function middleware(request: NextRequest) {
   // ADD CORS HEADERS FOR API ROUTES
   // ============================================================================
   if (pathname.startsWith('/api/')) {
-    response.headers.set('Access-Control-Allow-Origin', process.env.NEXT_PUBLIC_APP_URL || '*');
-    response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    response.headers.set(
+      'Access-Control-Allow-Origin',
+      process.env.NEXT_PUBLIC_APP_URL || '*'
+    );
+    response.headers.set(
+      'Access-Control-Allow-Methods',
+      'GET, POST, PUT, DELETE, OPTIONS'
+    );
     response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   }
 

@@ -1,36 +1,121 @@
 @import "tailwindcss";
 
+/*
+ * FIXES in this revision:
+ * 1. Removed @theme block entirely.
+ *    @theme is a Tailwind v4-only directive. VS Code's CSS linter and most
+ *    standard CSS tooling don't recognise it → "Unknown at rule @theme" warning.
+ *    This project uses tailwind.config.ts (v3-style), so font and color theme
+ *    tokens already live there. @theme here is redundant and harmful.
+ *
+ * 2. --background / --foreground converted from hex (#ffffff, #171717) to HSL
+ *    value strings so hsl(var(--background)) in tailwind.config.ts works correctly.
+ */
+
+/* =============================================================================
+ * CSS CUSTOM PROPERTIES
+ * ============================================================================= */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-  --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
-  --ring: 221.2 83.2% 53.3%;
+  /* Layout tokens — HSL value strings (no hsl() wrapper here) */
+  --background: 0 0% 100%;      /* white */
+  --foreground: 222 47% 11%;    /* near-black */
+  --border:     214.3 31.8% 91.4%;
+  --input:      214.3 31.8% 91.4%;
+  --ring:       221.2 83.2% 53.3%;
+
+  /* Brand palette */
+  --brand-red:    0   72% 51%;
+  --brand-blue:   217 91% 60%;
+  --brand-purple: 271 81% 56%;
 }
 
-@theme {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: monospace;
-}
-
+/* System dark mode */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: 0 0% 4%;
+    --foreground: 0 0% 93%;
+    --border: 217 33% 17%;
+    --input:  217 33% 17%;
   }
 }
 
+/* Class-based dark mode (darkMode: 'class' in tailwind.config.ts) */
+.dark {
+  --background: 0 0% 4%;
+  --foreground: 0 0% 93%;
+  --border: 217 33% 17%;
+  --input:  217 33% 17%;
+}
+
+/* =============================================================================
+ * BASE STYLES
+ * ============================================================================= */
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
   font-family: Arial, Helvetica, sans-serif;
 }
 
-/* ============================================================================
+/* =============================================================================
+ * SYSTEMIC TEXT LEGIBILITY FIX
+ * -----------------------------------------------------------------------------
+ * Headings inside rounded containers (cards, panels) inherit the CSS variable
+ * foreground so they're always readable — covers job titles, service titles,
+ * order titles, review headings, etc. system-wide without touching every file.
+ * ============================================================================= */
+[class*="rounded"] h2,
+[class*="rounded"] h3,
+[class*="rounded"] h4 {
+  color: hsl(var(--foreground));
+}
+
+/* Empty-state text ("No orders yet", "No services yet", "No reviews yet")
+   was barely readable at text-gray-500 on white. */
+.empty-state-text {
+  color: hsl(215 16% 35%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .empty-state-text { color: hsl(215 16% 70%); }
+}
+
+.dark .empty-state-text { color: hsl(215 16% 70%); }
+
+/* =============================================================================
+ * FORM INPUT LEGIBILITY FIX
+ * -----------------------------------------------------------------------------
+ * Ensures all inputs/selects/textareas get a visible background + foreground
+ * by default. Tailwind dark: utility classes on components override as needed.
+ * ============================================================================= */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+select,
+textarea {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--border));
+}
+
+@media (prefers-color-scheme: dark) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    background-color: hsl(222 47% 14%);
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--border));
+  }
+}
+
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.dark select,
+.dark textarea {
+  background-color: hsl(222 47% 14%);
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--border));
+}
+
+/* =============================================================================
  * TYPING ANIMATION
- * ============================================================================ */
+ * ============================================================================= */
 .typing-animation {
   display: inline-block;
   width: 0ch;
@@ -43,31 +128,26 @@ body {
 }
 
 @keyframes typing {
-  0% { width: 0ch; }
+  0%   { width: 0ch; }
   100% { width: 12ch; }
 }
 
 @keyframes blink {
-  0%, 50% { border-color: transparent; }
+  0%, 50%   { border-color: transparent; }
   51%, 100% { border-color: currentColor; }
 }
 
-/* ============================================================================
- * UTILITY CLASSES
- * ============================================================================ */
+/* =============================================================================
+ * UTILITY
+ * ============================================================================= */
+html { scroll-behavior: smooth; }
 
-/* Smooth scrolling */
-html {
-  scroll-behavior: smooth;
-}
-
-/* Focus visible for accessibility */
 *:focus-visible {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
 }
 
-/* Remove spinner from number inputs */
+/* Remove number-input spinners */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
@@ -80,44 +160,23 @@ input[type="number"] {
   appearance: textfield;
 }
 
-/* ============================================================================
+/* =============================================================================
  * CUSTOM SCROLLBAR
- * ============================================================================ */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: #f1f1f1;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #888;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #555;
-}
+ * ============================================================================= */
+::-webkit-scrollbar       { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #f1f1f1; }
+::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
 
 @media (prefers-color-scheme: dark) {
-  ::-webkit-scrollbar-track {
-    background: #2a2a2a;
-  }
-  
-  ::-webkit-scrollbar-thumb {
-    background: #555;
-  }
-  
-  ::-webkit-scrollbar-thumb:hover {
-    background: #777;
-  }
+  ::-webkit-scrollbar-track       { background: #2a2a2a; }
+  ::-webkit-scrollbar-thumb       { background: #555; }
+  ::-webkit-scrollbar-thumb:hover { background: #777; }
 }
 
-/* ============================================================================
+/* =============================================================================
  * LINE CLAMP UTILITIES
- * ============================================================================ */
+ * ============================================================================= */
 .line-clamp-1 {
   display: -webkit-box;
   -webkit-line-clamp: 1;
@@ -142,16 +201,10 @@ input[type="number"] {
   overflow: hidden;
 }
 
-/* ============================================================================
- * PRINT STYLES
- * ============================================================================ */
+/* =============================================================================
+ * PRINT
+ * ============================================================================= */
 @media print {
-  body {
-    background: white;
-    color: black;
-  }
-  
-  nav, footer, .no-print {
-    display: none !important;
-  }
+  body { background: white; color: black; }
+  nav, footer, .no-print { display: none !important; }
 }

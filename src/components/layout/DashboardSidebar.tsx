@@ -1,4 +1,9 @@
 // src/components/layout/DashboardSidebar.tsx
+// FIXED:
+// - Removed all placeholder number badges (Messages: 3, Active Orders: 2, Client Orders: 1)
+// - Removed 'New' badge from Browse Jobs
+// - Removed 'New' badge from Marketplace
+// Badges should only display real-time data from the wider framework, not hardcoded placeholders.
 'use client';
 
 import { useEffect, useState, useMemo, useSyncExternalStore } from 'react';
@@ -42,10 +47,9 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   badge?: string | null;
   highlight?: boolean;
-  roles?: ('freelancer' | 'client')[]; // Track which roles show this item
+  roles?: ('freelancer' | 'client')[];
 }
 
-// Helper functions for useSyncExternalStore to track online status
 function subscribe(callback: () => void) {
   window.addEventListener('online', callback);
   window.addEventListener('offline', callback);
@@ -60,22 +64,20 @@ function getSnapshot() {
 }
 
 function getServerSnapshot() {
-  return true; // Default to true on the server to avoid hydration flicker
+  return true;
 }
 
-export function DashboardSidebar({ 
-  userType = 'both', 
-  onItemClick 
+export function DashboardSidebar({
+  userType = 'both',
+  onItemClick,
 }: DashboardSidebarProps) {
   const pathname = usePathname();
-  
-  // Modern way to handle browser APIs without useEffect/setState
+
   const isOnline = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-  
+
   const [showKeyboardHelper, setShowKeyboardHelper] = useState(false);
   const [sessionWarning, setSessionWarning] = useState(false);
 
-  // Monitor Shortcuts and Timers
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key === '/') {
@@ -88,7 +90,7 @@ export function DashboardSidebar({
 
     const sessionTimer = setTimeout(() => {
       setSessionWarning(true);
-    }, 30 * 60 * 1000); 
+    }, 30 * 60 * 1000);
 
     return () => {
       window.removeEventListener('keydown', handleKeyPress);
@@ -97,138 +99,130 @@ export function DashboardSidebar({
   }, []);
 
   const navItems = useMemo(() => {
-    // Define all navigation items with role-based routing
-    // FIX: Consistent path structure to prevent 404s
-    
     const allItems: NavItem[] = [
-      // Common items (visible to both)
-      { 
-        title: 'Dashboard', 
-        href: userType === 'client' ? '/client/dashboard' : '/freelancer/dashboard', 
+      // Common items
+      {
+        title: 'Dashboard',
+        href: userType === 'client' ? '/client/dashboard' : '/freelancer/dashboard',
         icon: LayoutDashboard,
-        roles: ['client', 'freelancer']
+        roles: ['client', 'freelancer'],
       },
-      { 
-        title: 'Marketplace', 
-        href: '/marketplace', 
-        icon: ShoppingBag, 
-        badge: 'New',
-        roles: ['client', 'freelancer']
+      {
+        title: 'Marketplace',
+        href: '/marketplace',
+        icon: ShoppingBag,
+        // FIXED: Removed placeholder 'New' badge
+        roles: ['client', 'freelancer'],
       },
-      { 
-        title: 'Messages', 
-        href: '/messages', 
-        icon: MessageSquare, 
-        badge: '3',
-        roles: ['client', 'freelancer']
+      {
+        title: 'Messages',
+        href: '/messages',
+        icon: MessageSquare,
+        // FIXED: Removed placeholder badge: '3' — badge will reflect real unread count when implemented
+        roles: ['client', 'freelancer'],
       },
-      { 
-        title: 'Wallet', 
-        href: userType === 'client' ? '/client/wallet' : '/freelancer/earnings', 
+      {
+        title: 'Wallet',
+        href: userType === 'client' ? '/client/wallet' : '/freelancer/earnings',
         icon: Wallet,
-        roles: ['client', 'freelancer']
+        roles: ['client', 'freelancer'],
       },
 
-      // Freelancer-specific items
-      { 
-        title: 'My Services', 
-        href: '/freelancer/services', 
+      // Freelancer-specific
+      {
+        title: 'My Services',
+        href: '/freelancer/services',
         icon: ShoppingBag,
-        roles: ['freelancer']
+        roles: ['freelancer'],
       },
-      { 
-        title: 'Browse Jobs', 
-        href: '/freelancer/jobs', 
-        icon: Briefcase, 
-        badge: 'New',
-        roles: ['freelancer']
-      },
-      { 
-        title: 'My Proposals', 
-        href: '/freelancer/proposals', 
-        icon: FileText,
-        roles: ['freelancer']
-      },
-      { 
-        title: 'Active Orders', 
-        href: '/freelancer/orders', 
-        icon: Clock, 
-        badge: '2',
-        roles: ['freelancer']
-      },
-      { 
-        title: 'Reviews', 
-        href: '/freelancer/reviews', 
-        icon: Star,
-        roles: ['freelancer']
-      },
-
-      // Client-specific items
-      { 
-        title: 'Post a Job', 
-        href: '/client/post-job', 
-        icon: PlusCircle, 
-        highlight: true,
-        roles: ['client']
-      },
-      { 
-        title: 'My Jobs', 
-        href: '/client/jobs', 
+      {
+        title: 'Browse Jobs',
+        href: '/freelancer/jobs',
         icon: Briefcase,
-        roles: ['client']
+        // FIXED: Removed placeholder 'New' badge
+        roles: ['freelancer'],
       },
-      { 
-        title: 'Browse Services', 
-        href: '/services', 
-        icon: ShoppingBag,
-        roles: ['client']
+      {
+        title: 'My Proposals',
+        href: '/freelancer/proposals',
+        icon: FileText,
+        roles: ['freelancer'],
       },
-      { 
-        title: 'Active Orders', 
-        href: '/client/orders', 
-        icon: Clock, 
-        badge: '1',
-        roles: ['client']
+      {
+        title: 'Active Orders',
+        href: '/freelancer/orders',
+        icon: Clock,
+        // FIXED: Removed placeholder badge: '2' — will reflect real active order count when implemented
+        roles: ['freelancer'],
       },
-      { 
-        title: 'Hired Freelancers', 
-        href: '/client/freelancers', 
-        icon: Users,
-        roles: ['client']
+      {
+        title: 'Reviews',
+        href: '/freelancer/reviews',
+        icon: Star,
+        roles: ['freelancer'],
       },
 
-      // Analytics & Settings (available to both)
-      { 
-        title: 'Analytics', 
-        href: '/analytics', 
-        icon: BarChart3,
-        roles: ['client', 'freelancer']
+      // Client-specific
+      {
+        title: 'Post a Job',
+        href: '/client/post-job',
+        icon: PlusCircle,
+        highlight: true,
+        roles: ['client'],
       },
-      { 
-        title: 'Settings', 
-        href: '/settings', 
+      {
+        title: 'My Jobs',
+        href: '/client/jobs',
+        icon: Briefcase,
+        roles: ['client'],
+      },
+      {
+        title: 'Browse Services',
+        href: '/services',
+        icon: ShoppingBag,
+        roles: ['client'],
+      },
+      {
+        title: 'Active Orders',
+        href: '/client/orders',
+        icon: Clock,
+        // FIXED: Removed placeholder badge: '1'
+        roles: ['client'],
+      },
+      {
+        title: 'Hired Freelancers',
+        href: '/client/freelancers',
+        icon: Users,
+        roles: ['client'],
+      },
+
+      // Analytics & Settings
+      {
+        title: 'Analytics',
+        href: '/analytics',
+        icon: BarChart3,
+        roles: ['client', 'freelancer'],
+      },
+      {
+        title: 'Settings',
+        href: '/settings',
         icon: Settings,
-        roles: ['client', 'freelancer']
+        roles: ['client', 'freelancer'],
       },
     ];
 
-    // Filter items based on userType
-    const filteredItems = allItems.filter(item => {
-      if (userType === 'both') {
-        return true; // Show all items for 'both' type
-      }
+    const filteredItems = allItems.filter((item) => {
+      if (userType === 'both') return true;
       return item.roles?.includes(userType) ?? false;
     });
 
-    // Remove duplicate "Active Orders" when displaying 'both'
-    // Keep freelancer version and label client version differently if needed
+    // Handle duplicate 'Active Orders' for 'both' userType
     if (userType === 'both') {
       const activeOrdersIndexes = filteredItems
-        .map((item, idx) => item.title === 'Active Orders' ? idx : -1)
-        .filter(idx => idx !== -1);
-      
+        .map((item, idx) => (item.title === 'Active Orders' ? idx : -1))
+        .filter((idx) => idx !== -1);
+
       if (activeOrdersIndexes.length > 1) {
-        // Keep both but rename the client one for clarity
         filteredItems[activeOrdersIndexes[1]].title = 'Client Orders';
       }
     }
@@ -241,7 +235,10 @@ export function DashboardSidebar({
       <div className="shrink-0">
         {sessionWarning && (
           <div className="p-3 border-b border-gray-200 dark:border-gray-700">
-            <Alert variant="error" className="py-2 border-red-200 bg-red-50 dark:bg-red-900/10">
+            <Alert
+              variant="error"
+              className="py-2 border-red-200 bg-red-50 dark:bg-red-900/10"
+            >
               <AlertCircle className="h-4 w-4 text-red-600" />
               <AlertDescription className="text-xs text-red-600">
                 Session expires in 30m.
@@ -262,7 +259,8 @@ export function DashboardSidebar({
 
       <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto">
         {navItems.map((item) => {
-          const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+          const isActive =
+            pathname === item.href || pathname.startsWith(`${item.href}/`);
           const Icon = item.icon;
 
           return (
@@ -275,15 +273,21 @@ export function DashboardSidebar({
                 isActive
                   ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
                   : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700',
-                item.highlight && !isActive && 'bg-linear-to-r from-blue-500 to-purple-600 text-white hover:opacity-90'
+                item.highlight &&
+                  !isActive &&
+                  'bg-linear-to-r from-blue-500 to-purple-600 text-white hover:opacity-90'
               )}
             >
               <div className="flex items-center gap-3">
-                <Icon className={cn(
-                  'h-5 w-5 shrink-0',
-                  isActive ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 group-hover:text-gray-700 dark:group-hover:text-gray-300',
-                  item.highlight && !isActive && 'text-white'
-                )} />
+                <Icon
+                  className={cn(
+                    'h-5 w-5 shrink-0',
+                    isActive
+                      ? 'text-blue-600 dark:text-blue-400'
+                      : 'text-gray-500 dark:text-gray-400 group-hover:text-gray-700 dark:group-hover:text-gray-300',
+                    item.highlight && !isActive && 'text-white'
+                  )}
+                />
                 <span>{item.title}</span>
               </div>
               {item.badge && (
@@ -306,9 +310,9 @@ export function DashboardSidebar({
             <span className="font-semibold">85%</span>
           </div>
           <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-            <div 
-              className="bg-linear-to-r from-blue-500 to-purple-600 h-1.5 rounded-full transition-all duration-500" 
-              style={{ width: '85%' }} 
+            <div
+              className="bg-linear-to-r from-blue-500 to-purple-600 h-1.5 rounded-full transition-all duration-500"
+              style={{ width: '85%' }}
             />
           </div>
         </div>
@@ -325,7 +329,9 @@ export function DashboardSidebar({
               </button>
             </TooltipTrigger>
             <TooltipContent side="top">
-              <p className="text-xs">Press <kbd className="font-sans font-bold">Ctrl + /</kbd></p>
+              <p className="text-xs">
+                Press <kbd className="font-sans font-bold">Ctrl + /</kbd>
+              </p>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -338,11 +344,15 @@ export function DashboardSidebar({
             <div className="space-y-2 text-xs text-gray-600 dark:text-gray-400">
               <div className="flex justify-between">
                 <span>Dashboard</span>
-                <kbd className="text-[10px] px-1 bg-white dark:bg-gray-800 border rounded">Ctrl+D</kbd>
+                <kbd className="text-[10px] px-1 bg-white dark:bg-gray-800 border rounded">
+                  Ctrl+D
+                </kbd>
               </div>
               <div className="flex justify-between">
                 <span>Messages</span>
-                <kbd className="text-[10px] px-1 bg-white dark:bg-gray-800 border rounded">Ctrl+M</kbd>
+                <kbd className="text-[10px] px-1 bg-white dark:bg-gray-800 border rounded">
+                  Ctrl+M
+                </kbd>
               </div>
             </div>
           </div>
