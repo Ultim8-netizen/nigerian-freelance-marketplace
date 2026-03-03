@@ -1,7 +1,7 @@
 'use client';
 
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useEffect, useState } from 'react';
+import { useTheme } from 'next-themes';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { Card } from '@/components/ui/card';
@@ -10,10 +10,15 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alerts';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
-  Save, LogOut, Trash2, Lock, Bell, Moon, Sun, CheckCircle, AlertCircle,
+  Save, LogOut, Trash2, Lock, Bell, Moon, Sun, Monitor,
+  CheckCircle, AlertCircle, Camera, User,
 } from 'lucide-react';
 import Image from 'next/image';
+import Link from 'next/link';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface Profile {
   id: string;
@@ -39,31 +44,50 @@ interface StatusMessage {
   message: string;
 }
 
+const DEFAULT_NOTIF_SETTINGS: NotificationSettings = {
+  email_messages: true,
+  email_orders: true,
+  email_reviews: true,
+  push_notifications: true,
+};
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 export default function SettingsPage() {
   const router = useRouter();
   const supabase = createClient();
+
+  // FIX: useTheme from next-themes actually writes the `class` attribute on
+  // <html> and integrates with ThemeProvider — no manual classList hacks needed.
+  const { theme, setTheme, resolvedTheme } = useTheme();
+
+  // FIX: Avoid hydration mismatch — theme value is unknown on the server side.
+  const [mounted, setMounted] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<StatusMessage | null>(null);
+
+  const [profileData, setProfileData] = useState<Partial<Profile>>({});
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(DEFAULT_NOTIF_SETTINGS);
+
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [profileData, setProfileData] = useState<Partial<Profile>>({});
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
-  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({
-    email_messages: true,
-    email_orders: true,
-    email_reviews: true,
-    push_notifications: true,
-  });
 
+  const showStatus = (msg: StatusMessage, ms = 3000) => {
+    setStatus(msg);
+    setTimeout(() => setStatus(null), ms);
+  };
+
+  // ── Mount guard for theme ──────────────────────────────────────────────────
+  useEffect(() => { setMounted(true); }, []);
+
+  // ── Load profile ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const loadProfile = async () => {
+    const load = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          router.push('/login');
-          return;
-        }
+        if (!user) { router.push('/login'); return; }
 
         const { data, error } = await supabase
           .from('profiles')
@@ -73,67 +97,52 @@ export default function SettingsPage() {
 
         if (error) throw error;
 
-        // Create a clean profile object with proper typing
-        const cleanProfile: Profile = {
-          id: data.id,
-          full_name: data.full_name,
-          email: data.email,
-          bio: data.bio,
-          location: data.location,
-          profile_image_url: data.profile_image_url,
-          phone_number: data.phone_number,
-          notification_settings: data.notification_settings as NotificationSettings | null,
-          theme_preference: data.theme_preference as 'light' | 'dark' | 'system' | null,
-        };
+        setProfileData(data as Profile);
 
-        setProfileData(cleanProfile);
-
-        // Load notification settings from database or use defaults
         if (data.notification_settings) {
-          const settings = data.notification_settings as unknown as NotificationSettings;
-          setNotificationSettings(settings);
+          // Cast through `unknown` first because `notification_settings` is typed
+          // as `Json | null` in the generated database types (a wide union that
+          // includes `Json[]`, which doesn't structurally overlap with our
+          // NotificationSettings object shape). The double cast is intentional.
+          const parsed = data.notification_settings as unknown as NotificationSettings;
+          setNotificationSettings({ ...DEFAULT_NOTIF_SETTINGS, ...parsed });
         }
 
-        // Load theme preference from database first, then localStorage
-        const dbTheme = data.theme_preference as string | null;
-        const savedTheme = (dbTheme || localStorage.getItem('theme')) as 'light' | 'dark' | 'system' | null;
-        if (savedTheme && ['light', 'dark', 'system'].includes(savedTheme)) {
-          setTheme(savedTheme);
-          applyTheme(savedTheme);
+        // FIX: Theme is owned by next-themes. We only read the DB value on
+        // first load to sync any previously-saved preference, then let
+        // next-themes manage it going forward. We do NOT call applyTheme()
+        // manually because next-themes already handles the DOM.
+        if (data.theme_preference && !theme) {
+          setTheme(data.theme_preference as string);
         }
-      } catch (error) {
-        console.error('Error loading profile:', error);
-        setStatus({
-          type: 'error',
-          message: 'Failed to load profile',
-        });
+      } catch (err) {
+        console.error('Error loading profile:', err);
+        showStatus({ type: 'error', message: 'Failed to load profile' });
       } finally {
         setLoading(false);
       }
     };
 
-    loadProfile();
-  }, [supabase, router]);
+    load();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const applyTheme = (newTheme: 'light' | 'dark' | 'system') => {
-    const html = document.documentElement;
-    if (newTheme === 'system') {
-      const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      html.classList.toggle('dark', isDark);
-    } else {
-      html.classList.toggle('dark', newTheme === 'dark');
-    }
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const getInitials = (name?: string | null) =>
+    (name ?? 'U').split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
+
+  const currentUserId = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Not authenticated');
+    return user.id;
   };
 
+  // ── Profile update ────────────────────────────────────────────────────────
   const handleProfileUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setStatus(null);
-
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not authenticated');
-
+      const uid = await currentUserId();
       const { error } = await supabase
         .from('profiles')
         .update({
@@ -143,186 +152,132 @@ export default function SettingsPage() {
           phone_number: profileData.phone_number,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', user.id);
-
+        .eq('id', uid);
       if (error) throw error;
-
-      setStatus({
-        type: 'success',
-        message: 'Profile updated successfully',
-      });
-
-      setTimeout(() => setStatus(null), 3000);
-    } catch (error) {
-      setStatus({
-        type: 'error',
-        message: error instanceof Error ? error.message : 'Failed to update profile',
-      });
+      showStatus({ type: 'success', message: 'Profile updated successfully' });
+    } catch (err) {
+      showStatus({ type: 'error', message: err instanceof Error ? err.message : 'Failed to update profile' });
     } finally {
       setSaving(false);
     }
   };
 
+  // ── Password change ───────────────────────────────────────────────────────
   const handlePasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      showStatus({ type: 'error', message: 'Passwords do not match' });
+      return;
+    }
+    if (newPassword.length < 8) {
+      showStatus({ type: 'error', message: 'Password must be at least 8 characters' });
+      return;
+    }
     setSaving(true);
     setStatus(null);
-
-    if (newPassword !== confirmPassword) {
-      setStatus({
-        type: 'error',
-        message: 'Passwords do not match',
-      });
-      setSaving(false);
-      return;
-    }
-
-    if (newPassword.length < 8) {
-      setStatus({
-        type: 'error',
-        message: 'Password must be at least 8 characters',
-      });
-      setSaving(false);
-      return;
-    }
-
     try {
-      const { error } = await supabase.auth.updateUser({
-        password: newPassword,
-      });
-
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
       if (error) throw error;
-
-      setStatus({
-        type: 'success',
-        message: 'Password updated successfully',
-      });
       setNewPassword('');
       setConfirmPassword('');
-
-      setTimeout(() => setStatus(null), 3000);
-    } catch (error) {
-      setStatus({
-        type: 'error',
-        message: error instanceof Error ? error.message : 'Failed to update password',
-      });
+      showStatus({ type: 'success', message: 'Password updated successfully' });
+    } catch (err) {
+      showStatus({ type: 'error', message: err instanceof Error ? err.message : 'Failed to update password' });
     } finally {
       setSaving(false);
     }
   };
 
+  // ── Theme change ──────────────────────────────────────────────────────────
+  // FIX: setTheme() from next-themes handles the DOM; we just persist to DB.
   const handleThemeChange = async (newTheme: 'light' | 'dark' | 'system') => {
     setTheme(newTheme);
-    localStorage.setItem('theme', newTheme);
-    applyTheme(newTheme);
-
-    // Save to database
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
+      const uid = await currentUserId();
       await supabase
         .from('profiles')
-        .update({
-          theme_preference: newTheme,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', user.id);
-
-      setStatus({
-        type: 'success',
-        message: `Theme changed to ${newTheme}`,
-      });
-      setTimeout(() => setStatus(null), 3000);
-    } catch (error) {
-      console.error('Failed to save theme preference:', error);
+        .update({ theme_preference: newTheme, updated_at: new Date().toISOString() })
+        .eq('id', uid);
+      showStatus({ type: 'success', message: `Theme set to ${newTheme}` });
+    } catch (err) {
+      console.error('Failed to save theme preference:', err);
     }
   };
 
+  // ── Notification update ───────────────────────────────────────────────────
   const handleNotificationUpdate = async () => {
     setSaving(true);
     setStatus(null);
-
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not authenticated');
-
-      // Use JSON.parse(JSON.stringify()) to strip TypeScript types and match Json type
+      const uid = await currentUserId();
       const { error } = await supabase
         .from('profiles')
         .update({
           notification_settings: JSON.parse(JSON.stringify(notificationSettings)),
           updated_at: new Date().toISOString(),
         })
-        .eq('id', user.id);
-
+        .eq('id', uid);
       if (error) throw error;
-
-      setStatus({
-        type: 'success',
-        message: 'Notification preferences updated',
-      });
-      setTimeout(() => setStatus(null), 3000);
-    } catch (error) {
-      setStatus({
-        type: 'error',
-        message: error instanceof Error ? error.message : 'Failed to update notification preferences',
-      });
+      showStatus({ type: 'success', message: 'Notification preferences updated' });
+    } catch (err) {
+      showStatus({ type: 'error', message: err instanceof Error ? err.message : 'Failed to update notifications' });
     } finally {
       setSaving(false);
     }
   };
 
+  // ── Sign out ──────────────────────────────────────────────────────────────
   const handleSignOut = async () => {
     try {
       await supabase.auth.signOut();
       router.push('/login');
-    } catch (error) {
-      setStatus({
-        type: 'error',
-        message: 'Failed to sign out',
-      });
+    } catch {
+      showStatus({ type: 'error', message: 'Failed to sign out' });
     }
   };
 
+  // ── Delete account ────────────────────────────────────────────────────────
   const handleDeleteAccount = async () => {
     const confirmed = window.confirm(
-      'Are you sure you want to delete your account? This action cannot be undone.'
+      'Are you sure you want to delete your account? This action cannot be undone.',
     );
     if (!confirmed) return;
 
+    setSaving(true);
     try {
-      setSaving(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not authenticated');
-
-      // Avoid destructuring to prevent ESLint quirk with object property renaming
-      const deleteResponse = await supabase
-        .from('profiles')
-        .delete()
-        .eq('id', user.id);
-
-      if (deleteResponse.error) throw deleteResponse.error;
-
+      const uid = await currentUserId();
+      const { error } = await supabase.from('profiles').delete().eq('id', uid);
+      if (error) throw error;
       await supabase.auth.signOut();
       router.push('/');
     } catch (err) {
-      setStatus({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Failed to delete account',
-      });
+      showStatus({ type: 'error', message: err instanceof Error ? err.message : 'Failed to delete account' });
     } finally {
       setSaving(false);
     }
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="container mx-auto px-4 py-8">
-        <p className="text-gray-500 dark:text-gray-400">Loading settings...</p>
+        <p className="text-gray-500 dark:text-gray-400">Loading settings…</p>
       </div>
     );
   }
+
+  const themeOptions = [
+    { value: 'light' as const,  label: 'Light',  description: 'Always use light theme',              Icon: Sun },
+    { value: 'dark' as const,   label: 'Dark',   description: 'Always use dark theme',               Icon: Moon },
+    { value: 'system' as const, label: 'System', description: "Follow your device's theme preference", Icon: Monitor },
+  ];
+
+  const notifRows = [
+    { key: 'email_messages'     as const, label: 'Messages',           desc: 'Email when you receive a new message' },
+    { key: 'email_orders'       as const, label: 'Order updates',       desc: 'Email for order status changes' },
+    { key: 'email_reviews'      as const, label: 'Reviews',             desc: 'Email when you receive a new review' },
+    { key: 'push_notifications' as const, label: 'Push notifications',  desc: 'In-app alerts for all activity' },
+  ];
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8">
@@ -333,11 +288,9 @@ export default function SettingsPage() {
         {status && (
           <Alert variant={status.type} className="mb-6">
             <div className="flex items-start gap-2">
-              {status.type === 'success' ? (
-                <CheckCircle className="w-5 h-5 mt-0.5 shrink-0" />
-              ) : (
-                <AlertCircle className="w-5 h-5 mt-0.5 shrink-0" />
-              )}
+              {status.type === 'success'
+                ? <CheckCircle className="w-5 h-5 mt-0.5 shrink-0" />
+                : <AlertCircle  className="w-5 h-5 mt-0.5 shrink-0" />}
               <AlertDescription>{status.message}</AlertDescription>
             </div>
           </Alert>
@@ -347,40 +300,59 @@ export default function SettingsPage() {
           <TabsList variant="pills">
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="password">Password</TabsTrigger>
-            <TabsTrigger value="theme">Theme</TabsTrigger>
+            <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="notifications">Notifications</TabsTrigger>
             <TabsTrigger value="account">Account</TabsTrigger>
           </TabsList>
 
-          {/* Profile Tab */}
+          {/* ── Profile Tab ─────────────────────────────────────────── */}
           <TabsContent value="profile" className="space-y-6">
             <Card className="p-6">
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">Profile Information</h2>
-              <form onSubmit={handleProfileUpdate} className="space-y-6">
-                {profileData.profile_image_url && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                      Profile Picture
-                    </label>
-                    <div className="mb-4">
-                      <Image
-                        src={profileData.profile_image_url}
-                        alt="Profile"
-                        width={96}
-                        height={96}
-                        className="rounded-lg"
-                      />
-                    </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Edit profile image in your freelancer profile
-                    </p>
-                  </div>
-                )}
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6 flex items-center gap-2">
+                <User className="w-5 h-5" />
+                Profile Information
+              </h2>
 
+              {/* Avatar + change-photo shortcut */}
+              <div className="flex items-center gap-5 mb-6 pb-6 border-b border-gray-100 dark:border-gray-700">
+                <div className="relative">
+                  {profileData.profile_image_url ? (
+                    <Image
+                      src={profileData.profile_image_url}
+                      alt="Profile"
+                      width={80}
+                      height={80}
+                      className="rounded-full ring-2 ring-gray-200 dark:ring-gray-700 object-cover"
+                    />
+                  ) : (
+                    <Avatar className="h-20 w-20 ring-2 ring-gray-200 dark:ring-gray-700">
+                      <AvatarImage src={undefined} alt={profileData.full_name} />
+                      <AvatarFallback className="bg-linear-to-br from-blue-500 to-purple-600 text-white text-2xl font-bold">
+                        {getInitials(profileData.full_name)}
+                      </AvatarFallback>
+                    </Avatar>
+                  )}
+                </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                    Full Name
-                  </label>
+                  <p className="font-medium text-gray-900 dark:text-white mb-1">
+                    {profileData.full_name ?? 'Your Name'}
+                  </p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">{profileData.email ?? ''}</p>
+                  <Link href="/dashboard/profile">
+                    <Button variant="outline" size="sm" className="gap-2">
+                      <Camera className="w-4 h-4" />
+                      Change Photo
+                    </Button>
+                  </Link>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
+                    Upload from your Profile page. JPEG or PNG, max 5 MB.
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleProfileUpdate} className="space-y-5">
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">Full Name</label>
                   <Input
                     value={profileData.full_name || ''}
                     onChange={(e) => setProfileData({ ...profileData, full_name: e.target.value })}
@@ -389,9 +361,7 @@ export default function SettingsPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                    Email Address
-                  </label>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">Email Address</label>
                   <Input
                     type="email"
                     value={profileData.email || ''}
@@ -402,20 +372,16 @@ export default function SettingsPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                    Phone Number
-                  </label>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">Phone Number</label>
                   <Input
                     value={profileData.phone_number || ''}
                     onChange={(e) => setProfileData({ ...profileData, phone_number: e.target.value })}
-                    placeholder="+234..."
+                    placeholder="+234…"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                    Location
-                  </label>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">Location</label>
                   <Input
                     value={profileData.location || ''}
                     onChange={(e) => setProfileData({ ...profileData, location: e.target.value })}
@@ -424,13 +390,11 @@ export default function SettingsPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                    Bio
-                  </label>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">Bio</label>
                   <Textarea
                     value={profileData.bio || ''}
                     onChange={(e) => setProfileData({ ...profileData, bio: e.target.value })}
-                    placeholder="Tell us about yourself..."
+                    placeholder="Tell us about yourself…"
                     className="min-h-32"
                   />
                 </div>
@@ -443,33 +407,26 @@ export default function SettingsPage() {
             </Card>
           </TabsContent>
 
-          {/* Password Tab */}
+          {/* ── Password Tab ─────────────────────────────────────────── */}
           <TabsContent value="password" className="space-y-6">
             <Card className="p-6">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6 flex items-center gap-2">
                 <Lock className="w-5 h-5" />
                 Change Password
               </h2>
-              <form onSubmit={handlePasswordChange} className="space-y-6 max-w-md">
+              <form onSubmit={handlePasswordChange} className="space-y-5 max-w-md">
                 <div>
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                    New Password
-                  </label>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">New Password</label>
                   <Input
                     type="password"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
                     placeholder="Enter new password"
                   />
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Minimum 8 characters
-                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Minimum 8 characters</p>
                 </div>
-
                 <div>
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                    Confirm Password
-                  </label>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">Confirm Password</label>
                   <Input
                     type="password"
                     value={confirmPassword}
@@ -477,7 +434,6 @@ export default function SettingsPage() {
                     placeholder="Confirm password"
                   />
                 </div>
-
                 <Button type="submit" loading={saving} className="gap-2">
                   <Lock className="w-4 h-4" />
                   Update Password
@@ -486,83 +442,103 @@ export default function SettingsPage() {
             </Card>
           </TabsContent>
 
-          {/* Theme Tab */}
-          <TabsContent value="theme" className="space-y-6">
+          {/* ── Appearance Tab ───────────────────────────────────────── */}
+          <TabsContent value="appearance" className="space-y-6">
             <Card className="p-6">
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">Display Theme</h2>
-              <div className="space-y-4">
-                <ThemeOption
-                  icon={<Sun className="w-5 h-5" />}
-                  title="Light Mode"
-                  description="Always use light theme"
-                  selected={theme === 'light'}
-                  onClick={() => handleThemeChange('light')}
-                />
-                <ThemeOption
-                  icon={<Moon className="w-5 h-5" />}
-                  title="Dark Mode"
-                  description="Always use dark theme"
-                  selected={theme === 'dark'}
-                  onClick={() => handleThemeChange('dark')}
-                />
-                <ThemeOption
-                  icon={null}
-                  title="System Default"
-                  description="Follow your device's theme preference"
-                  selected={theme === 'system'}
-                  onClick={() => handleThemeChange('system')}
-                />
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Appearance</h2>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-5">
+                Choose how the interface looks. &ldquo;System&rdquo; follows your OS preference.
+              </p>
+
+              {/*
+               * FIX: Only render interactive buttons after mount.
+               * Before mount, `theme` is undefined (SSR), so we render an
+               * identical but non-interactive skeleton to prevent flicker.
+               */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {themeOptions.map(({ value, label, description, Icon }) => {
+                  const isActive = mounted && theme === value;
+                  return mounted ? (
+                    <button
+                      key={value}
+                      onClick={() => handleThemeChange(value)}
+                      className={`w-full text-left p-4 border-2 rounded-xl transition-all ${
+                        isActive
+                          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                          : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                      }`}
+                    >
+                      <div className="flex flex-col items-center gap-2 text-center">
+                        <Icon className={`w-6 h-6 ${isActive ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400'}`} />
+                        <span className={`text-sm font-medium ${isActive ? 'text-blue-900 dark:text-blue-100' : 'text-gray-900 dark:text-white'}`}>
+                          {label}
+                        </span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">{description}</span>
+                        {isActive && <CheckCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}
+                      </div>
+                    </button>
+                  ) : (
+                    // Skeleton shown during SSR / before hydration
+                    <div
+                      key={value}
+                      className="p-4 border-2 border-gray-200 dark:border-gray-700 rounded-xl opacity-50"
+                    >
+                      <div className="flex flex-col items-center gap-2 text-center">
+                        <Icon className="w-6 h-6 text-gray-400" />
+                        <span className="text-sm font-medium text-gray-900 dark:text-white">{label}</span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">{description}</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
+
+              {/* Live indicator — only meaningful once mounted */}
+              {mounted && resolvedTheme && (
+                <p className="mt-4 text-xs text-gray-400 dark:text-gray-500">
+                  Currently displaying: <span className="font-medium capitalize">{resolvedTheme}</span> theme
+                </p>
+              )}
             </Card>
           </TabsContent>
 
-          {/* Notifications Tab */}
+          {/* ── Notifications Tab ────────────────────────────────────── */}
           <TabsContent value="notifications" className="space-y-6">
             <Card className="p-6">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6 flex items-center gap-2">
                 <Bell className="w-5 h-5" />
                 Notification Preferences
               </h2>
+
               <div className="space-y-4">
-                <NotificationToggle
-                  label="Messages"
-                  description="Get notified when you receive new messages"
-                  checked={notificationSettings.email_messages}
-                  onChange={(checked) => setNotificationSettings({
-                    ...notificationSettings,
-                    email_messages: checked,
-                  })}
-                />
-                <NotificationToggle
-                  label="Orders"
-                  description="Updates on your orders and delivery status"
-                  checked={notificationSettings.email_orders}
-                  onChange={(checked) => setNotificationSettings({
-                    ...notificationSettings,
-                    email_orders: checked,
-                  })}
-                />
-                <NotificationToggle
-                  label="Reviews"
-                  description="Notifications when you receive reviews"
-                  checked={notificationSettings.email_reviews}
-                  onChange={(checked) => setNotificationSettings({
-                    ...notificationSettings,
-                    email_reviews: checked,
-                  })}
-                />
-                <NotificationToggle
-                  label="Push Notifications"
-                  description="Enable browser push notifications"
-                  checked={notificationSettings.push_notifications}
-                  onChange={(checked) => setNotificationSettings({
-                    ...notificationSettings,
-                    push_notifications: checked,
-                  })}
-                />
+                {notifRows.map(({ key, label, desc }) => (
+                  <div key={key} className="flex items-center justify-between py-2">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">{label}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">{desc}</p>
+                    </div>
+                    {/* Pill toggle — same pattern as the fixed shorter version */}
+                    <button
+                      role="switch"
+                      aria-checked={notificationSettings[key]}
+                      onClick={() =>
+                        setNotificationSettings((prev) => ({ ...prev, [key]: !prev[key] }))
+                      }
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                        notificationSettings[key] ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          notificationSettings[key] ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                ))}
               </div>
-              
-              <div className="mt-6">
+
+              <div className="mt-5 pt-5 border-t border-gray-100 dark:border-gray-700">
                 <Button onClick={handleNotificationUpdate} loading={saving} className="gap-2">
                   <Save className="w-4 h-4" />
                   Save Notification Preferences
@@ -571,18 +547,13 @@ export default function SettingsPage() {
             </Card>
           </TabsContent>
 
-          {/* Account Tab */}
+          {/* ── Account Tab ──────────────────────────────────────────── */}
           <TabsContent value="account" className="space-y-6">
             <Card className="p-6 border-red-200 dark:border-red-900">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">Account Management</h2>
-              
               <div className="space-y-4">
                 <div className="pb-4 border-b border-gray-200 dark:border-gray-700">
-                  <Button
-                    variant="outline"
-                    onClick={handleSignOut}
-                    className="gap-2"
-                  >
+                  <Button variant="outline" onClick={handleSignOut} className="gap-2">
                     <LogOut className="w-4 h-4" />
                     Sign Out
                   </Button>
@@ -590,19 +561,13 @@ export default function SettingsPage() {
                     Sign out from your current session
                   </p>
                 </div>
-
                 <div>
-                  <Button
-                    variant="destructive"
-                    onClick={handleDeleteAccount}
-                    loading={saving}
-                    className="gap-2"
-                  >
+                  <Button variant="destructive" onClick={handleDeleteAccount} loading={saving} className="gap-2">
                     <Trash2 className="w-4 h-4" />
                     Delete Account
                   </Button>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-                    Permanently delete your account and all associated data
+                    Permanently delete your account and all associated data. This cannot be undone.
                   </p>
                 </div>
               </div>
@@ -611,76 +576,5 @@ export default function SettingsPage() {
         </Tabs>
       </div>
     </div>
-  );
-}
-
-function NotificationToggle({
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
-      <div>
-        <p className="font-medium text-gray-900 dark:text-white">{label}</p>
-        <p className="text-sm text-gray-500 dark:text-gray-400">{description}</p>
-      </div>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="w-6 h-6 rounded cursor-pointer accent-blue-600"
-      />
-    </div>
-  );
-}
-
-function ThemeOption({
-  icon,
-  title,
-  description,
-  selected,
-  onClick,
-}: {
-  icon: React.ReactNode | null;
-  title: string;
-  description: string;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`w-full text-left p-4 border rounded-lg transition-all ${
-        selected
-          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-          : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
-      }`}
-    >
-      <div className="flex items-center gap-3">
-        {icon && (
-          <div className={`text-2xl ${selected ? 'text-blue-600' : 'text-gray-400'}`}>
-            {icon}
-          </div>
-        )}
-        <div>
-          <p className={`font-medium ${selected ? 'text-blue-900 dark:text-blue-100' : 'text-gray-900 dark:text-white'}`}>
-            {title}
-          </p>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{description}</p>
-        </div>
-        {selected && (
-          <div className="ml-auto">
-            <CheckCircle className="w-6 h-6 text-blue-600" />
-          </div>
-        )}
-      </div>
-    </button>
   );
 }

@@ -1,7 +1,7 @@
 // src/app/(dashboard)/freelancer/earnings/page.tsx
-// FIX (this revision):
-// TS2769: 'withdrawal_requests' is not assignable to the schema table union.
-// The TypeScript error listed the actual available tables — the correct name is 'withdrawals'.
+// FIX: Next.js 15 made `searchParams` a Promise — it must be awaited before use.
+// Previously accessing searchParams.success synchronously caused a hydration crash
+// at line 127 because the server and client resolved the param differently.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -45,13 +45,12 @@ async function initiateWithdrawal(formData: FormData) {
     .single();
 
   const balance = wallet?.balance ?? 0;
-  if (amount < 5000)   redirect('/freelancer/earnings?error=below_minimum');
+  if (amount < 5000)    redirect('/freelancer/earnings?error=below_minimum');
   if (amount > balance) redirect('/freelancer/earnings?error=insufficient_funds');
 
-  // wallet_id is a FK to wallets.id — always populate it for data integrity
   const { error } = await supabase.from('withdrawals').insert({
     user_id:        user.id,
-    wallet_id:      wallet?.id ?? null,  // FK → wallets.id
+    wallet_id:      wallet?.id ?? null,
     amount,
     bank_name,
     account_number,
@@ -76,11 +75,15 @@ const ERROR_MESSAGES: Record<string, string> = {
   request_failed:     'Something went wrong. Please try again.',
 };
 
+// FIX: Next.js 15 — searchParams is now a Promise and must be awaited.
 export default async function EarningsPage({
   searchParams,
 }: {
-  searchParams: { error?: string; success?: string };
+  searchParams: Promise<{ error?: string; success?: string }>;
 }) {
+  // CRITICAL FIX: await searchParams before any access
+  const params = await searchParams;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
@@ -123,8 +126,8 @@ export default async function EarningsPage({
         <p className="text-gray-600 dark:text-gray-400">Track your income and manage withdrawals</p>
       </div>
 
-      {/* Feedback banners */}
-      {searchParams.success === 'withdrawal_requested' && (
+      {/* FIX: Use awaited `params` instead of raw `searchParams` */}
+      {params.success === 'withdrawal_requested' && (
         <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl flex items-center gap-3">
           <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 shrink-0" />
           <p className="text-green-800 dark:text-green-200 font-medium">
@@ -132,11 +135,11 @@ export default async function EarningsPage({
           </p>
         </div>
       )}
-      {searchParams.error && (
+      {params.error && (
         <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl flex items-center gap-3">
           <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0" />
           <p className="text-red-800 dark:text-red-200 font-medium">
-            {ERROR_MESSAGES[searchParams.error] ?? 'An error occurred.'}
+            {ERROR_MESSAGES[params.error] ?? 'An error occurred.'}
           </p>
         </div>
       )}
