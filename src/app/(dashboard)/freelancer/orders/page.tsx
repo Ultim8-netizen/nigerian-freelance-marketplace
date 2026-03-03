@@ -165,7 +165,7 @@ export default async function FreelancerOrdersPage() {
             </p>
             <div className="flex flex-col sm:flex-row gap-3 justify-center">
               <Link href="/freelancer/services/new">
-                <Button className="w-full sm:w-auto">Create a Service</Button>
+                <Button className="w-full sm:w-auto">Create an Order</Button>
               </Link>
               <Link href="/freelancer/jobs">
                 <Button variant="outline" className="w-full sm:w-auto">

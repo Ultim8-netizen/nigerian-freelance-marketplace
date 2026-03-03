@@ -53,7 +53,7 @@ export default function AboutPage() {
 
             <div className="space-y-8 text-xl md:text-2xl leading-relaxed text-slate-400 font-light">
               <p>
-                My name is <span className="text-white font-semibold">AbyssProtocol</span>, and I built F9 because I got tired of watching Nigerian students fight the same battles over and over—no access, no visibility, and no real opportunity to turn skills into money.
+                I am <span className="text-white font-semibold">AbyssProtocol</span>, and I built F9 because I got tired of watching Nigerian students fight the same battles over and over—no access, no visibility, and no real opportunity to turn skills into money.
               </p>
               
               <div className="p-8 border-l-2 border-red-500 bg-red-500/5 rounded-r-2xl my-12">

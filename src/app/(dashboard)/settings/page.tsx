@@ -1,10 +1,16 @@
-// src/app/(dashboard)/freelancer/reviews/page.tsx
-// FIXED: Settings page route alias - was returning 404 when clicked from sidebar
+// src/app/(dashboard)/settings/page.tsx
+// Account settings — lives at /settings inside the (dashboard) route group.
+// Server component: handles auth guard, then renders the interactive client component.
 
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
+import SettingsPage from '@/components/settings/SettingsPage';
 
-export default async function SettingsPageRedirect() {
+export const metadata = {
+  title: 'Settings',
+};
+
+export default async function SettingsRoute() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
@@ -12,7 +18,5 @@ export default async function SettingsPageRedirect() {
     redirect('/login');
   }
 
-  // Redirect to the dashboard settings page
-  // This handles the /settings route alias
-  redirect('/dashboard/settings');
+  return <SettingsPage />;
 }

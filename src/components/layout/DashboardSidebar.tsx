@@ -1,7 +1,8 @@
 // src/components/layout/DashboardSidebar.tsx
-// FIXED:
+// FIXES:
+// - Removed "Browse Jobs" (href: /freelancer/jobs) — redundant with "My Jobs" in client nav
+// - Removed "Browse Services" (href: /services) — redundant with "My Services" in freelancer nav
 // - Removed all placeholder number badges (Messages: 3, Active Orders: 2, Client Orders: 1)
-// - Removed 'New' badge from Browse Jobs
 // - Removed 'New' badge from Marketplace
 // Badges should only display real-time data from the wider framework, not hardcoded placeholders.
 'use client';
@@ -100,7 +101,7 @@ export function DashboardSidebar({
 
   const navItems = useMemo(() => {
     const allItems: NavItem[] = [
-      // Common items
+      // ── Common ──────────────────────────────────────────────────────────
       {
         title: 'Dashboard',
         href: userType === 'client' ? '/client/dashboard' : '/freelancer/dashboard',
@@ -111,14 +112,13 @@ export function DashboardSidebar({
         title: 'Marketplace',
         href: '/marketplace',
         icon: ShoppingBag,
-        // FIXED: Removed placeholder 'New' badge
         roles: ['client', 'freelancer'],
       },
       {
         title: 'Messages',
         href: '/messages',
         icon: MessageSquare,
-        // FIXED: Removed placeholder badge: '3' — badge will reflect real unread count when implemented
+        // Badge intentionally omitted — will reflect real unread count when implemented
         roles: ['client', 'freelancer'],
       },
       {
@@ -128,20 +128,17 @@ export function DashboardSidebar({
         roles: ['client', 'freelancer'],
       },
 
-      // Freelancer-specific
+      // ── Freelancer-specific ──────────────────────────────────────────────
       {
         title: 'My Services',
         href: '/freelancer/services',
         icon: ShoppingBag,
         roles: ['freelancer'],
       },
-      {
-        title: 'Browse Jobs',
-        href: '/freelancer/jobs',
-        icon: Briefcase,
-        // FIXED: Removed placeholder 'New' badge
-        roles: ['freelancer'],
-      },
+      // REMOVED: "Browse Jobs" (/freelancer/jobs) — was identical destination to
+      // client-side "My Jobs" (/client/jobs) and caused user confusion.
+      // Freelancers discover jobs through the Jobs board which is accessible
+      // from the main nav. The sidebar should only show *owned* resources.
       {
         title: 'My Proposals',
         href: '/freelancer/proposals',
@@ -152,7 +149,7 @@ export function DashboardSidebar({
         title: 'Active Orders',
         href: '/freelancer/orders',
         icon: Clock,
-        // FIXED: Removed placeholder badge: '2' — will reflect real active order count when implemented
+        // Badge intentionally omitted — will reflect real active order count when implemented
         roles: ['freelancer'],
       },
       {
@@ -162,7 +159,7 @@ export function DashboardSidebar({
         roles: ['freelancer'],
       },
 
-      // Client-specific
+      // ── Client-specific ──────────────────────────────────────────────────
       {
         title: 'Post a Job',
         href: '/client/post-job',
@@ -176,17 +173,13 @@ export function DashboardSidebar({
         icon: Briefcase,
         roles: ['client'],
       },
-      {
-        title: 'Browse Services',
-        href: '/services',
-        icon: ShoppingBag,
-        roles: ['client'],
-      },
+      // REMOVED: "Browse Services" (/services) — was identical destination to
+      // "My Services" for freelancers. Clients can browse services via the
+      // top-level Services page; keeping it in the sidebar caused duplication.
       {
         title: 'Active Orders',
         href: '/client/orders',
         icon: Clock,
-        // FIXED: Removed placeholder badge: '1'
         roles: ['client'],
       },
       {
@@ -196,7 +189,7 @@ export function DashboardSidebar({
         roles: ['client'],
       },
 
-      // Analytics & Settings
+      // ── Analytics & Settings ─────────────────────────────────────────────
       {
         title: 'Analytics',
         href: '/analytics',
@@ -265,7 +258,7 @@ export function DashboardSidebar({
 
           return (
             <Link
-              key={item.href}
+              key={`${item.href}-${item.title}`}
               href={item.href}
               onClick={onItemClick}
               className={cn(
