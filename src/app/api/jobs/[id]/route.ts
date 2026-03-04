@@ -13,7 +13,7 @@ import { z } from 'zod';
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
-) {
+): Promise<NextResponse> {
   try {
     const jobId = sanitizeUuid(params.id);
     if (!jobId) {
@@ -75,11 +75,10 @@ export async function GET(
     }
 
     // Increment view count (fire-and-forget)
-    supabase
+    void supabase
       .from('jobs')
       .update({ views_count: (job.views_count ?? 0) + 1 })
-      .eq('id', jobId)
-      .then();
+      .eq('id', jobId);
 
     logger.info('Job viewed', { jobId, viewCount: (job.views_count ?? 0) + 1 });
 
@@ -100,7 +99,7 @@ export async function GET(
 export async function PATCH(
   request: NextRequest,
   { params }: { params: { id: string } }
-) {
+): Promise<NextResponse> {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
@@ -208,7 +207,7 @@ export async function PATCH(
 export async function DELETE(
   request: NextRequest,
   { params }: { params: { id: string } }
-) {
+): Promise<NextResponse> {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
