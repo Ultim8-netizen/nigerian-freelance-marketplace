@@ -12,10 +12,11 @@ import { z } from 'zod';
 // GET - Get job details
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
   try {
-    const jobId = sanitizeUuid(params.id);
+    const { id } = await params;
+    const jobId = sanitizeUuid(id);
     if (!jobId) {
       return NextResponse.json(
         { success: false, error: 'Invalid job ID' },
@@ -98,9 +99,10 @@ export async function GET(
 // PATCH - Update job (owner only)
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
   try {
+    const { id } = await params;
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
       rateLimit: 'api',
@@ -114,7 +116,7 @@ export async function PATCH(
       );
     }
 
-    const jobId = sanitizeUuid(params.id);
+    const jobId = sanitizeUuid(id);
     if (!jobId) {
       return NextResponse.json(
         { success: false, error: 'Invalid job ID' },
@@ -206,9 +208,10 @@ export async function PATCH(
 // DELETE - Close/cancel job (owner only)
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
   try {
+    const { id } = await params;
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
       rateLimit: 'api',
@@ -222,7 +225,7 @@ export async function DELETE(
       );
     }
 
-    const jobId = sanitizeUuid(params.id);
+    const jobId = sanitizeUuid(id);
     if (!jobId) {
       return NextResponse.json(
         { success: false, error: 'Invalid job ID' },
