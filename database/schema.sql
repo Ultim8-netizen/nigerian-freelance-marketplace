@@ -3159,3 +3159,80 @@ SELECT
 FROM public.products
 ORDER BY reviews_count DESC
 LIMIT 10;
+
+-- Drop existing trigger and function first
+DROP TRIGGER IF EXISTS enforce_f9_identity ON profiles;
+DROP FUNCTION IF EXISTS prevent_f9_identity();
+
+-- 1. RESERVE "F9" IDENTITY
+CREATE OR REPLACE FUNCTION prevent_f9_identity()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.full_name ILIKE 'f9' OR NEW.full_name ILIKE 'f-9' OR NEW.full_name ILIKE 'f 9' THEN
+        RAISE EXCEPTION 'Reserved identity violation. You cannot use this name.';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER enforce_f9_identity
+    BEFORE INSERT OR UPDATE OF full_name ON profiles
+    FOR EACH ROW EXECUTE FUNCTION prevent_f9_identity();
+
+    -- 2. AUTOMATION CONFIGURATION TABLE
+-- Controls for the automation engine (toggles and thresholds)
+CREATE TABLE platform_config (
+    key TEXT PRIMARY KEY,
+    enabled BOOLEAN DEFAULT true,
+    value NUMERIC,
+    string_value TEXT,
+    description TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Insert Default Automation Rules
+INSERT INTO platform_config (key, enabled, value, description) VALUES
+    ('wallet_hold_hours', true, 24, 'Hours to hold withdrawal for new bank + no orders'),
+    ('max_disputes_30d', true, 3, 'Max disputes before Level 1 advisory'),
+    ('max_listing_unverified', true, 50000, 'Max listing price for Trust Score 40-59'),
+    ('withdrawal_gate_threshold', false, 100000, 'Manual approval required above this amount');
+
+    -- 3. CONTEST TICKETS
+-- For users to dispute automated actions
+CREATE TABLE contest_tickets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+    action_contested TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    status TEXT CHECK (status IN ('pending', 'dismissed', 'reversed')) DEFAULT 'pending',
+    reviewed_by UUID REFERENCES profiles(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. STAFF ARCHITECTURE (Dormant)
+CREATE TABLE staff_roles (
+    user_id UUID PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
+    role TEXT CHECK (role IN ('admin', 'moderator', 'financial_analyst', 'community_manager')),
+    permissions JSONB DEFAULT '{}'::jsonb,
+    is_active BOOLEAN DEFAULT true,
+    assigned_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Staff Accountability Log
+CREATE TABLE admin_action_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    staff_id UUID NOT NULL REFERENCES profiles(id),
+    target_user_id UUID REFERENCES profiles(id),
+    action_type TEXT NOT NULL,
+    details TEXT,
+    can_reverse_until TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '48 hours'),
+    is_reversed BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Ensure your main profile exists and is admin
+-- NOTE: Replace 'your_email@f9.ng' with your actual admin email
+UPDATE profiles SET user_type = 'admin' WHERE email = 'your_email@f9.ng';
+INSERT INTO staff_roles (user_id, role) 
+SELECT id, 'admin' FROM profiles WHERE email = 'your_email@f9.ng' ON CONFLICT DO NOTHING;

@@ -1,6 +1,7 @@
 // middleware.ts
 // FIXED: Added '/jobs' to protectedPaths — the new /jobs/[id] page requires authentication
-// (FreelancerS browse and submit proposals; clients view their postings — both need auth).
+// (Freelancers browse and submit proposals; clients view their postings — both need auth).
+// ADDED: Admin route protection for '/f9-control' — enforces session + 'admin' user_type role.
 
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
@@ -62,6 +63,35 @@ export async function middleware(request: NextRequest) {
   const {
     data: { session },
   } = await supabase.auth.getSession();
+
+  // ============================================================================
+  // ADMIN ROUTE PROTECTION (SESSION + ROLE CHECK)
+  // Evaluated before general protected paths to apply stricter admin-only logic.
+  // A DB query is intentional here — role must be verified server-side on every
+  // request, not just derived from the JWT, to reflect real-time profile changes.
+  // ============================================================================
+  const adminPaths = ['/f9-control'];
+  const isAdminPath = adminPaths.some((path) => pathname.startsWith(path));
+
+  if (isAdminPath) {
+    // The admin login page itself must remain publicly accessible
+    if (pathname !== '/f9-control/login') {
+      if (!session) {
+        return NextResponse.redirect(new URL('/f9-control/login', request.url));
+      }
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('user_type')
+        .eq('id', session.user.id)
+        .single();
+
+      if (profile?.user_type !== 'admin') {
+        // Non-admin authenticated user — bounce to their own dashboard
+        return NextResponse.redirect(new URL('/dashboard', request.url));
+      }
+    }
+  }
 
   // ============================================================================
   // ROUTE PROTECTION (TOKEN-BASED ONLY)

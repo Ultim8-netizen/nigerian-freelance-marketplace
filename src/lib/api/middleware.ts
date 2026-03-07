@@ -21,75 +21,77 @@ function getRedisClient(): Redis {
 }
 
 // ============================================================================
-// RATE LIMITERS (Singleton Pattern)
+// RATE LIMITERS (Lazy Singleton Pattern)
+// FIX: Deferred initialization — rate limiters are created on first use, not at
+// module load time. Previously, calling getRedisClient() at the top level would
+// throw immediately if UPSTASH_REDIS_REST_URL/TOKEN env vars were missing
+// (e.g. during tests, build, or misconfigured environments).
 // ============================================================================
-const rateLimiters = {
-  // Authentication: 5 attempts per 15 minutes
-  auth: new Ratelimit({
-    redis: getRedisClient(),
-    limiter: Ratelimit.slidingWindow(5, '15 m'),
-    analytics: true,
-    prefix: 'rl:auth',
-  }),
-  
-  // Registration: 3 attempts per hour
-  register: new Ratelimit({
-    redis: getRedisClient(),
-    limiter: Ratelimit.slidingWindow(3, '1 h'),
-    analytics: true,
-    prefix: 'rl:register',
-  }),
-  
-  // General API: 100 per minute
-  api: new Ratelimit({
-    redis: getRedisClient(),
-    limiter: Ratelimit.slidingWindow(100, '1 m'),
-    analytics: true,
-    prefix: 'rl:api',
-  }),
-  
-  // Job creation: 5 per day
-  createJob: new Ratelimit({
-    redis: getRedisClient(),
-    limiter: Ratelimit.slidingWindow(5, '24 h'),
-    analytics: true,
-    prefix: 'rl:job',
-  }),
-  
-  // Service creation: 10 per hour
-  createService: new Ratelimit({
-    redis: getRedisClient(),
-    limiter: Ratelimit.slidingWindow(10, '1 h'),
-    analytics: true,
-    prefix: 'rl:service',
-  }),
-  
-  // Proposal submission: 20 per day
-  submitProposal: new Ratelimit({
-    redis: getRedisClient(),
-    limiter: Ratelimit.slidingWindow(20, '24 h'),
-    analytics: true,
-    prefix: 'rl:proposal',
-  }),
-  
-  // Payment initiation: 5 per hour
-  initiatePayment: new Ratelimit({
-    redis: getRedisClient(),
-    limiter: Ratelimit.slidingWindow(5, '1 h'),
-    analytics: true,
-    prefix: 'rl:payment',
-  }),
 
-  // File uploads: 20 per hour
-  fileUpload: new Ratelimit({
-    redis: getRedisClient(),
-    limiter: Ratelimit.slidingWindow(20, '1 h'),
-    analytics: true,
-    prefix: 'rl:upload',
-  }),
+type RateLimiterConfig = {
+  limiter: ReturnType<typeof Ratelimit.slidingWindow>;
+  prefix: string;
 };
 
-export type RateLimiterType = keyof typeof rateLimiters;
+const rateLimiterConfigs: Record<string, RateLimiterConfig> = {
+  // Authentication: 5 attempts per 15 minutes
+  auth: {
+    limiter: Ratelimit.slidingWindow(5, '15 m'),
+    prefix: 'rl:auth',
+  },
+  // Registration: 3 attempts per hour
+  register: {
+    limiter: Ratelimit.slidingWindow(3, '1 h'),
+    prefix: 'rl:register',
+  },
+  // General API: 100 per minute
+  api: {
+    limiter: Ratelimit.slidingWindow(100, '1 m'),
+    prefix: 'rl:api',
+  },
+  // Job creation: 5 per day
+  createJob: {
+    limiter: Ratelimit.slidingWindow(5, '24 h'),
+    prefix: 'rl:job',
+  },
+  // Service creation: 10 per hour
+  createService: {
+    limiter: Ratelimit.slidingWindow(10, '1 h'),
+    prefix: 'rl:service',
+  },
+  // Proposal submission: 20 per day
+  submitProposal: {
+    limiter: Ratelimit.slidingWindow(20, '24 h'),
+    prefix: 'rl:proposal',
+  },
+  // Payment initiation: 5 per hour
+  initiatePayment: {
+    limiter: Ratelimit.slidingWindow(5, '1 h'),
+    prefix: 'rl:payment',
+  },
+  // File uploads: 20 per hour
+  fileUpload: {
+    limiter: Ratelimit.slidingWindow(20, '1 h'),
+    prefix: 'rl:upload',
+  },
+};
+
+const rateLimiterInstances: Partial<Record<string, Ratelimit>> = {};
+
+function getRateLimiter(type: RateLimiterType): Ratelimit {
+  if (!rateLimiterInstances[type]) {
+    const config = rateLimiterConfigs[type];
+    rateLimiterInstances[type] = new Ratelimit({
+      redis: getRedisClient(),
+      limiter: config.limiter,
+      analytics: true,
+      prefix: config.prefix,
+    });
+  }
+  return rateLimiterInstances[type]!;
+}
+
+export type RateLimiterType = keyof typeof rateLimiterConfigs;
 
 // ============================================================================
 // AUTHENTICATION (Optimized for API Routes)
@@ -103,7 +105,6 @@ export async function requireAuth() {
   try {
     const supabase = await createClient();
     
-    // Get user from session (no DB call if JWT is valid)
     const { data: { user }, error } = await supabase.auth.getUser();
 
     if (error || !user) {
@@ -132,7 +133,7 @@ export async function requireAuth() {
 }
 
 // ============================================================================
-// OWNERSHIP VERIFICATION (Optimized with caching potential)
+// OWNERSHIP VERIFICATION
 // ============================================================================
 
 /**
@@ -159,15 +160,12 @@ export async function requireOwnership(
       );
     }
 
-    // Only fetch the owner column for efficiency
     // FIX: Type assertion for dynamic table name - TS2769
-    // Since 'table' is a runtime string, we use 'as never' to satisfy TypeScript
-    // while maintaining runtime flexibility for any valid table name
     const { data: resource, error } = await supabase
       .from(table as never)
       .select(ownerColumn)
       .eq('id', resourceId)
-      .maybeSingle(); // Use maybeSingle to avoid errors on not found
+      .maybeSingle();
 
     if (error) {
       console.error('Ownership check query error:', error);
@@ -192,7 +190,7 @@ export async function requireOwnership(
       );
     }
 
-    // FIX: Safe type assertion by converting to unknown first to satisfy TS2352
+    // FIX: Safe type assertion - TS2352
     const resourceData = resource as unknown as Record<string, unknown>;
     if (resourceData[ownerColumn] !== user.id) {
       return NextResponse.json(
@@ -220,11 +218,11 @@ export async function requireOwnership(
 }
 
 // ============================================================================
-// RATE LIMITING (Optimized with proper headers)
+// RATE LIMITING
 // ============================================================================
 
 /**
- * Apply rate limit with comprehensive headers
+ * Apply rate limit with comprehensive headers.
  * OPTIMIZATION: Fails open if Redis is down (availability over strict limiting)
  */
 export async function applyRateLimit(
@@ -232,7 +230,6 @@ export async function applyRateLimit(
   request: NextRequest
 ): Promise<NextResponse | null> {
   try {
-    // Get identifier (prefer user ID from header, fallback to IP)
     const userId = request.headers.get('x-user-id');
     const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 
                request.headers.get('x-real-ip') || 
@@ -240,11 +237,9 @@ export async function applyRateLimit(
     
     const identifier = userId || ip;
 
-    // Check rate limit
-    const { success, limit, reset, remaining } = 
-      await rateLimiters[limiterType].limit(identifier);
+    const { success, limit, reset, remaining } =
+      await getRateLimiter(limiterType).limit(identifier);
 
-    // Prepare rate limit headers
     const rateLimitHeaders = {
       'X-RateLimit-Limit': limit.toString(),
       'X-RateLimit-Remaining': remaining.toString(),
@@ -272,11 +267,10 @@ export async function applyRateLimit(
       );
     }
 
-    return null; // Rate limit passed
+    return null;
   } catch (error) {
     console.error('Rate limit check error:', error);
-    // Fail open - don't block users if Redis is down
-    return null;
+    return null; // Fail open
   }
 }
 
@@ -295,7 +289,16 @@ export async function withRateLimit(
 // ============================================================================
 
 /**
- * Get current rate limit status (for client-side display)
+ * Get current rate limit status (for client-side display).
+ *
+ * FIX: The previous implementation called .limit() here, which consumed a
+ * token from the user's quota on every status check (e.g. page load,
+ * dashboard render). We now read the underlying Redis key directly to inspect
+ * the current window count without any side effects.
+ *
+ * NOTE: This reads the internal sliding window key written by Upstash
+ * Ratelimit. Key format is `{prefix}:{identifier}`. If Upstash changes
+ * their internal key schema this will need updating.
  */
 export async function getRateLimitStatus(
   limiterType: RateLimiterType,
@@ -305,21 +308,47 @@ export async function getRateLimitStatus(
   remaining: number;
   reset: Date;
 }> {
+  const config = rateLimiterConfigs[limiterType];
+
+  // Parse window duration from limiter config string (e.g. '1 h', '15 m', '24 h')
+  const windowDurations: Record<string, number> = {
+    'm': 60 * 1000,
+    'h': 60 * 60 * 1000,
+    'd': 24 * 60 * 60 * 1000,
+  };
+  const limiterSource = config.limiter.toString();
+  const windowMatch = limiterSource.match(/(\d+)\s*([mhd])/);
+  const windowMs = windowMatch
+    ? parseInt(windowMatch[1]) * (windowDurations[windowMatch[2]] ?? 60000)
+    : 60 * 1000;
+
+  // Extract configured max requests from limiter string
+  const maxMatch = limiterSource.match(/(\d+)/);
+  const configuredLimit = maxMatch ? parseInt(maxMatch[1]) : 0;
+
   try {
-    const { limit, remaining, reset } = 
-      await rateLimiters[limiterType].limit(identifier);
-    
+    const redisClient = getRedisClient();
+    const key = `${config.prefix}:${identifier}`;
+
+    // Read current count and TTL without consuming a token
+    const currentCount = await redisClient.get<number>(key) ?? 0;
+    const ttlSeconds = await redisClient.ttl(key);
+
+    const resetDate = ttlSeconds > 0
+      ? new Date(Date.now() + ttlSeconds * 1000)
+      : new Date(Date.now() + windowMs);
+
     return {
-      limit,
-      remaining: Math.max(0, remaining),
-      reset: new Date(reset),
+      limit: configuredLimit,
+      remaining: Math.max(0, configuredLimit - currentCount),
+      reset: resetDate,
     };
   } catch (error) {
     console.error('Rate limit status check error:', error);
     return {
-      limit: 0,
+      limit: configuredLimit,
       remaining: 0,
-      reset: new Date(),
+      reset: new Date(Date.now() + windowMs),
     };
   }
 }
@@ -333,9 +362,7 @@ export async function resetRateLimit(
 ): Promise<boolean> {
   try {
     const redisClient = getRedisClient();
-    
-    // Delete all keys matching the pattern
-    const pattern = `rl:${limiterType}:${identifier}*`;
+    const pattern = `${rateLimiterConfigs[limiterType].prefix}:${identifier}*`;
     const keys = await redisClient.keys(pattern);
     
     if (keys.length > 0) {
@@ -359,7 +386,7 @@ export async function batchResetRateLimits(
   let failed = 0;
 
   for (const identifier of identifiers) {
-    for (const limiterType of Object.keys(rateLimiters) as RateLimiterType[]) {
+    for (const limiterType of Object.keys(rateLimiterConfigs) as RateLimiterType[]) {
       const result = await resetRateLimit(limiterType, identifier);
       if (result) {
         success++;

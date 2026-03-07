@@ -14,6 +14,54 @@ export type Database = {
   }
   public: {
     Tables: {
+      admin_action_logs: {
+        Row: {
+          action_type: string
+          can_reverse_until: string | null
+          created_at: string | null
+          details: string | null
+          id: string
+          is_reversed: boolean | null
+          staff_id: string
+          target_user_id: string | null
+        }
+        Insert: {
+          action_type: string
+          can_reverse_until?: string | null
+          created_at?: string | null
+          details?: string | null
+          id?: string
+          is_reversed?: boolean | null
+          staff_id: string
+          target_user_id?: string | null
+        }
+        Update: {
+          action_type?: string
+          can_reverse_until?: string | null
+          created_at?: string | null
+          details?: string | null
+          id?: string
+          is_reversed?: boolean | null
+          staff_id?: string
+          target_user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "admin_action_logs_staff_id_fkey"
+            columns: ["staff_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "admin_action_logs_target_user_id_fkey"
+            columns: ["target_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       artifact_storage: {
         Row: {
           created_at: string | null
@@ -125,6 +173,54 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: []
+      }
+      contest_tickets: {
+        Row: {
+          action_contested: string
+          created_at: string | null
+          explanation: string
+          id: string
+          reviewed_by: string | null
+          status: string | null
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          action_contested: string
+          created_at?: string | null
+          explanation: string
+          id?: string
+          reviewed_by?: string | null
+          status?: string | null
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          action_contested?: string
+          created_at?: string | null
+          explanation?: string
+          id?: string
+          reviewed_by?: string | null
+          status?: string | null
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contest_tickets_reviewed_by_fkey"
+            columns: ["reviewed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "contest_tickets_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       conversations: {
         Row: {
@@ -810,6 +906,33 @@ export type Database = {
           },
         ]
       }
+      platform_config: {
+        Row: {
+          description: string | null
+          enabled: boolean | null
+          key: string
+          string_value: string | null
+          updated_at: string | null
+          value: number | null
+        }
+        Insert: {
+          description?: string | null
+          enabled?: boolean | null
+          key: string
+          string_value?: string | null
+          updated_at?: string | null
+          value?: number | null
+        }
+        Update: {
+          description?: string | null
+          enabled?: boolean | null
+          key?: string
+          string_value?: string | null
+          updated_at?: string | null
+          value?: number | null
+        }
+        Relationships: []
+      }
       platform_revenue: {
         Row: {
           amount: number
@@ -1427,6 +1550,38 @@ export type Database = {
             foreignKeyName: "services_freelancer_id_fkey"
             columns: ["freelancer_id"]
             isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      staff_roles: {
+        Row: {
+          assigned_at: string | null
+          is_active: boolean | null
+          permissions: Json | null
+          role: string | null
+          user_id: string
+        }
+        Insert: {
+          assigned_at?: string | null
+          is_active?: boolean | null
+          permissions?: Json | null
+          role?: string | null
+          user_id: string
+        }
+        Update: {
+          assigned_at?: string | null
+          is_active?: boolean | null
+          permissions?: Json | null
+          role?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "staff_roles_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
             referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
