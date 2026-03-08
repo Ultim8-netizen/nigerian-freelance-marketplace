@@ -40,8 +40,6 @@ export function CreateProductForm() {
     images: [],
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // ADDED: restriction state for 403 Trust Gate responses from /api/marketplace/products
   const [restriction, setRestriction] = useState<{ type: string; reason: string } | null>(null);
 
   const categories = [
@@ -68,7 +66,6 @@ export function CreateProductForm() {
     if (e.target.files) {
       const filesArray = Array.from(e.target.files);
 
-      // Enforce max limit
       if (formData.images.length + filesArray.length > MAX_IMAGES) {
         toast({
           title: 'Limit Reached',
@@ -79,7 +76,7 @@ export function CreateProductForm() {
       }
 
       setFormData(prev => ({ ...prev, images: [...prev.images, ...filesArray] }));
-      e.target.value = ''; // Clear input for re-selection
+      e.target.value = '';
     }
   };
 
@@ -88,39 +85,6 @@ export function CreateProductForm() {
       ...prev,
       images: prev.images.filter((_, i) => i !== index),
     }));
-  };
-
-  // ADDED: Upload all staged File objects to Cloudinary and return their secure URLs.
-  // Mirrors the pattern used in CreateServiceForm.
-  const uploadImagesToCloudinary = async (files: File[]): Promise<string[]> => {
-    const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
-    const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
-
-    if (!cloudName || !uploadPreset) {
-      throw new Error(
-        'Cloudinary is not configured. Please set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET.'
-      );
-    }
-
-    const uploadedUrls: string[] = [];
-
-    for (const file of files) {
-      const data = new FormData();
-      data.append('file', file);
-      data.append('upload_preset', uploadPreset);
-      data.append('folder', 'f9/marketplace');
-
-      const res = await fetch(
-        `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
-        { method: 'POST', body: data }
-      );
-
-      if (!res.ok) throw new Error('Image upload failed. Please try again.');
-      const json = await res.json();
-      uploadedUrls.push(json.secure_url as string);
-    }
-
-    return uploadedUrls;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -156,60 +120,65 @@ export function CreateProductForm() {
     }
 
     try {
-      // UPDATED: Upload images to Cloudinary first, then send URLs to the API.
-      // Previously this was a mock setTimeout — now it's a real two-step flow.
-      let imageUrls: string[];
-      try {
-        imageUrls = await uploadImagesToCloudinary(formData.images);
-      } catch (uploadErr) {
-        toast({
-          title: 'Image Upload Failed',
-          description: uploadErr instanceof Error ? uploadErr.message : 'Could not upload images.',
-          variant: 'destructive',
-        });
-        setIsSubmitting(false);
-        return;
+      // 1. UPLOAD IMAGES TO CLOUDINARY FIRST
+      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+      const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+
+      if (!cloudName || !uploadPreset) {
+        throw new Error('Cloudinary is not configured in your environment variables.');
       }
 
-      // UPDATED: Real API call — replaced `await new Promise(resolve => setTimeout(resolve, 2000))`
+      const uploadedImageUrls: string[] = [];
+
+      for (const file of formData.images) {
+        const data = new FormData();
+        data.append('file', file);
+        data.append('upload_preset', uploadPreset);
+        data.append('folder', 'f9/products');
+
+        const res = await fetch(
+          `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+          { method: 'POST', body: data }
+        );
+
+        if (!res.ok) throw new Error('Failed to upload one or more images.');
+        const json = await res.json();
+        uploadedImageUrls.push(json.secure_url);
+      }
+
+      // 2. PREPARE PAYLOAD WITH STRING URLS
+      const payload = {
+        title: formData.title,
+        description: formData.description,
+        price: Number(formData.price),
+        category: formData.category,
+        condition: formData.condition,
+        location: formData.location,
+        delivery_options: ['pickup'],
+        images: uploadedImageUrls, // Send strings, not Files
+      };
+
+      // 3. SEND TO F9 API (WHICH TRIGGERS THE TRUST GATE)
       const response = await fetch('/api/marketplace/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: formData.title,
-          description: formData.description,
-          price: formData.price,
-          category: formData.category,
-          condition: formData.condition,
-          location: formData.location,
-          images: imageUrls,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const result = await response.json();
 
-      // ADDED: Handle 403 Trust Gate restriction
-      if (response.status === 403) {
+      if (!response.ok) {
         if (result.restrictionType) {
           setRestriction({ type: result.restrictionType, reason: result.error });
+          setIsSubmitting(false);
           return;
         }
-        // 403 without a restrictionType — surface as a toast error
-        toast({
-          title: 'Not Permitted',
-          description: result.error ?? 'You are not allowed to list a product at this time.',
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      if (!response.ok) {
-        throw new Error(result.error ?? `Failed to list product (${response.status}).`);
+        throw new Error(result.error || 'Failed to create product');
       }
 
       toast({
         title: 'Success!',
-        description: 'Product listed successfully. Redirecting to your dashboard...',
+        description: 'Product listed successfully. Redirecting...',
       });
 
       // Reset form
@@ -223,7 +192,6 @@ export function CreateProductForm() {
         images: [],
       });
 
-      // Redirect to seller dashboard
       router.push('/marketplace/seller/products');
     } catch (error) {
       console.error('Submission Error:', error);
@@ -254,9 +222,7 @@ export function CreateProductForm() {
       <CardContent className="pt-6">
         <form onSubmit={handleSubmit} className="space-y-6">
 
-          {/* ADDED: restriction banner — shown when /api/marketplace/products returns a 403
-              with a restrictionType. Rendered at the top of the form so it is immediately
-              visible without the user needing to scroll. */}
+          {/* Restriction banner — shown when API returns a non-ok response with a restrictionType */}
           {restriction && (
             <div className="flex flex-col gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
               <div className="flex items-start gap-3">
@@ -325,7 +291,9 @@ export function CreateProductForm() {
                 <Label htmlFor="condition" className="text-gray-700">Condition *</Label>
                 <Select
                   value={formData.condition}
-                  onValueChange={(val: 'new' | 'used' | 'refurbished') => handleSelectChange('condition', val)}
+                  onValueChange={(val: 'new' | 'used' | 'refurbished') =>
+                    handleSelectChange('condition', val)
+                  }
                 >
                   <SelectTrigger id="condition" className="bg-white text-gray-900 border-gray-300">
                     <SelectValue placeholder="Select condition" />
@@ -349,7 +317,10 @@ export function CreateProductForm() {
                   </SelectTrigger>
                   <SelectContent className="bg-white">
                     {categories.map(cat => (
-                      <SelectItem key={cat} value={cat.toLowerCase().replace(/[^a-z0-9]/g, '-')}>
+                      <SelectItem
+                        key={cat}
+                        value={cat.toLowerCase().replace(/[^a-z0-9]/g, '-')}
+                      >
                         {cat}
                       </SelectItem>
                     ))}
@@ -367,9 +338,11 @@ export function CreateProductForm() {
             </p>
 
             <div className="flex flex-wrap gap-4">
-              {/* Image Previews */}
               {formData.images.map((file, index) => (
-                <div key={index} className="relative w-24 h-24 border-2 border-gray-300 rounded-lg overflow-hidden shadow-sm">
+                <div
+                  key={index}
+                  className="relative w-24 h-24 border-2 border-gray-300 rounded-lg overflow-hidden shadow-sm"
+                >
                   <ImagePreview file={file} />
                   <button
                     type="button"
@@ -382,7 +355,6 @@ export function CreateProductForm() {
                 </div>
               ))}
 
-              {/* Upload Button */}
               {formData.images.length < MAX_IMAGES && (
                 <Label
                   htmlFor="images"
@@ -456,10 +428,8 @@ export function CreateProductForm() {
 
 // Image Preview Component
 const ImagePreview: React.FC<{ file: File }> = ({ file }) => {
-  // Generate the URL only when the file changes
   const imageUrl = React.useMemo(() => URL.createObjectURL(file), [file]);
 
-  // Handle cleanup separately
   React.useEffect(() => {
     return () => {
       URL.revokeObjectURL(imageUrl);
