@@ -11,6 +11,9 @@
 // 4. App crash after posting: was caused by badge.tsx missing 'use client' (already fixed
 //    in that file). The crash here was downstream of that, not this file's fault.
 // 5. Cancel button now actually navigates back instead of doing nothing.
+// 6. Direct supabase.from('jobs').insert call replaced with fetch('/api/jobs') to go
+//    through the proper API endpoint.
+// 7. Added restriction state + ContestButton rendering for 403 restriction responses.
 
 import React, { useState, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
@@ -18,6 +21,7 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { X, Plus, AlertCircle } from 'lucide-react';
+import { ContestButton } from '@/components/admin/ContestButton';
 
 // FIXED: Module-level client — one instance, not re-created on every render
 const supabase = createClient(
@@ -69,6 +73,9 @@ export function CreateJobForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [skillInput, setSkillInput] = useState('');
+
+  // NEW: restriction state for 403 responses from /api/jobs
+  const [restriction, setRestriction] = useState<{ type: string; reason: string } | null>(null);
 
   const [formData, setFormData] = useState<JobFormData>({
     title: '',
@@ -122,6 +129,7 @@ export function CreateJobForm() {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setRestriction(null);
 
     try {
       const {
@@ -134,27 +142,29 @@ export function CreateJobForm() {
         return;
       }
 
-      const userId = user.id;
-
-      const { error: dbError } = await supabase.from('jobs').insert({
-        client_id: userId,
-        title: formData.title,
-        description: formData.description,
-        category: formData.category,
-        subcategory: formData.subcategory || null,
-        budget_min: formData.budget_min || null,
-        budget_max: formData.budget_max || null,
-        budget_type: formData.budget_type,
-        required_skills: formData.required_skills,
-        experience_level: formData.experience_level,
-        estimated_duration: formData.estimated_duration,
-        deadline: formData.deadline || null,
-        status: 'open',
+      // FIXED: replaced direct supabase.from('jobs').insert(...) with a proper
+      // fetch call to /api/jobs so the request goes through the API layer.
+      const response = await fetch('/api/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
       });
 
-      if (dbError) {
-        console.error('Supabase error:', dbError);
-        setError(`Error posting job: ${dbError.message}`);
+      const result = await response.json();
+
+      // Handle 403 restriction responses
+      if (response.status === 403) {
+        if (result.restrictionType) {
+          setRestriction({ type: result.restrictionType, reason: result.error });
+          return;
+        }
+        setError(result.error ?? 'You are not allowed to post jobs at this time.');
+        return;
+      }
+
+      if (!response.ok) {
+        console.error('API error:', result);
+        setError(result.error ?? `Error posting job (${response.status}). Please try again.`);
         return;
       }
 
@@ -174,6 +184,19 @@ export function CreateJobForm() {
         <div className="flex items-start gap-3 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg">
           <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
           <p className="text-sm text-red-800 dark:text-red-200 font-medium">{error}</p>
+        </div>
+      )}
+
+      {/* Restriction banner — shown when API returns a 403 with a restrictionType */}
+      {restriction && (
+        <div className="flex flex-col gap-3 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <p className="text-sm text-amber-800 dark:text-amber-200 font-medium">
+              {restriction.reason}
+            </p>
+          </div>
+          <ContestButton actionContested={restriction.type} />
         </div>
       )}
 

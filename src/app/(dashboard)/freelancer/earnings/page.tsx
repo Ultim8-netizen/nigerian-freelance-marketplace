@@ -2,6 +2,8 @@
 // FIX: Next.js 15 made `searchParams` a Promise — it must be awaited before use.
 // Previously accessing searchParams.success synchronously caused a hydration crash
 // at line 127 because the server and client resolved the param differently.
+// UPDATED: Trust Gate check added to initiateWithdrawal server action.
+//          ContestButton rendered in the error banner when error === 'restricted'.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -9,6 +11,8 @@ import { revalidatePath } from 'next/cache';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatCurrency } from '@/lib/utils';
+import { evaluateTrustGate } from '@/lib/trust/feature-gates';
+import { ContestButton } from '@/components/admin/ContestButton';
 import {
   DollarSign,
   TrendingUp,
@@ -48,6 +52,17 @@ async function initiateWithdrawal(formData: FormData) {
   if (amount < 5000)    redirect('/freelancer/earnings?error=below_minimum');
   if (amount > balance) redirect('/freelancer/earnings?error=insufficient_funds');
 
+  // ADDED: Evaluate the Trust Gate before inserting the withdrawal record.
+  // If the user's trust level does not permit withdrawals at this amount,
+  // redirect with a structured error that the JSX can surface alongside
+  // the ContestButton.
+  const gate = await evaluateTrustGate(user.id, 'request_withdrawal', amount);
+  if (!gate.allowed) {
+    redirect(
+      `/freelancer/earnings?error=restricted&reason=${encodeURIComponent(gate.reason || '')}`
+    );
+  }
+
   const { error } = await supabase.from('withdrawals').insert({
     user_id:        user.id,
     wallet_id:      wallet?.id ?? null,
@@ -73,13 +88,15 @@ const ERROR_MESSAGES: Record<string, string> = {
   below_minimum:      'Minimum withdrawal amount is ₦5,000.',
   insufficient_funds: 'Withdrawal amount exceeds your available balance.',
   request_failed:     'Something went wrong. Please try again.',
+  // ADDED: fallback message for Trust Gate restrictions
+  restricted:         'Your withdrawal was restricted by the system.',
 };
 
 // FIX: Next.js 15 — searchParams is now a Promise and must be awaited.
 export default async function EarningsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; success?: string }>;
+  searchParams: Promise<{ error?: string; success?: string; reason?: string }>;
 }) {
   // CRITICAL FIX: await searchParams before any access
   const params = await searchParams;
@@ -117,6 +134,11 @@ export default async function EarningsPage({
   const minimumWithdrawal = 5000;
   const canWithdraw       = availableBalance >= minimumWithdrawal;
 
+  // Decode the optional human-readable reason forwarded by the Trust Gate redirect
+  const restrictionReason = params.reason
+    ? decodeURIComponent(params.reason)
+    : ERROR_MESSAGES.restricted;
+
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
       <div className="mb-8">
@@ -126,7 +148,7 @@ export default async function EarningsPage({
         <p className="text-gray-600 dark:text-gray-400">Track your income and manage withdrawals</p>
       </div>
 
-      {/* FIX: Use awaited `params` instead of raw `searchParams` */}
+      {/* Success banner */}
       {params.success === 'withdrawal_requested' && (
         <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl flex items-center gap-3">
           <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 shrink-0" />
@@ -135,12 +157,29 @@ export default async function EarningsPage({
           </p>
         </div>
       )}
+
+      {/* Error / restriction banner */}
       {params.error && (
-        <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl flex items-center gap-3">
-          <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0" />
-          <p className="text-red-800 dark:text-red-200 font-medium">
-            {ERROR_MESSAGES[params.error] ?? 'An error occurred.'}
-          </p>
+        <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl">
+          <div className="flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0" />
+            <p className="text-red-800 dark:text-red-200 font-medium">
+              {/* For restriction errors, show the decoded reason from the Trust Gate;
+                  for all other errors, look up the static message as before. */}
+              {params.error === 'restricted'
+                ? restrictionReason
+                : (ERROR_MESSAGES[params.error] ?? 'An error occurred.')}
+            </p>
+          </div>
+
+          {/* ADDED: ContestButton is a Client Component and can be rendered directly
+              from this Server Component. It only appears for Trust Gate restrictions
+              so the user has a clear path to appeal. */}
+          {params.error === 'restricted' && (
+            <div className="mt-3 pl-8">
+              <ContestButton actionContested="Blocked Withdrawal" />
+            </div>
+          )}
         </div>
       )}
 

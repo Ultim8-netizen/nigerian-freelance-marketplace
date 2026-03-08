@@ -1,5 +1,6 @@
 // src/app/api/jobs/route.ts
 // PRODUCTION-READY: Enhanced jobs API with comprehensive security
+// UPDATED: Trust Gate check added to POST handler before job insertion.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -8,6 +9,7 @@ import { jobSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeText } from '@/lib/security/sanitize';
 import { containsSqlInjection } from '@/lib/security/sql-injection-check';
 import { logger } from '@/lib/logger';
+import { evaluateTrustGate } from '@/lib/trust/feature-gates';
 import { z } from 'zod';
 
 // GET - Browse jobs with filtering
@@ -114,7 +116,8 @@ export async function POST(request: NextRequest) {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
       roles: ['client', 'both'],
-      rateLimit:'createJob', });
+      rateLimit: 'createJob',
+    });
 
     if (error) return error;
     if (!user) {
@@ -126,7 +129,33 @@ export async function POST(request: NextRequest) {
 
     // Parse and sanitize request
     const body = await request.json();
-    
+
+    // ADDED: Determine the budget amount to pass to the Trust Gate.
+    // Prefer budget_max when present; fall back to budget_min.
+    const checkAmount = body.budget_max ? Number(body.budget_max) : Number(body.budget_min);
+
+    // ADDED: Evaluate the Trust Gate before any further processing.
+    // If the user is not allowed to post a listing at this budget level,
+    // return a 403 immediately so the client can surface the restriction.
+    const gate = await evaluateTrustGate(user.id, 'post_listing', checkAmount);
+
+    if (!gate.allowed) {
+      logger.warn('Trust Gate blocked job post', {
+        userId: user.id,
+        restrictionType: gate.restrictionType,
+        checkAmount,
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          error: gate.reason,
+          restrictionType: gate.restrictionType,
+          capAmount: gate.capAmount,
+        },
+        { status: 403 }
+      );
+    }
+
     const sanitizedBody = {
       ...body,
       title: sanitizeText(body.title || ''),

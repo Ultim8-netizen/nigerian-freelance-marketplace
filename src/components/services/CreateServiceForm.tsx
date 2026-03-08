@@ -1,6 +1,9 @@
 'use client';
 
 // src/components/services/CreateServiceForm.tsx
+// UPDATED: Replaced direct supabase.from('services').insert(...) with fetch('/api/services')
+//          to route through the API layer. Added restriction state + ContestButton rendering
+//          for 403 Trust Gate responses.
 
 import React, { useState } from 'react';
 import Image from 'next/image';
@@ -13,6 +16,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alerts';
 import { SERVICE_CATEGORIES } from '@/types/service.categories';
 import { CheckCircle, AlertCircle, Plus, Trash2, Upload, X } from 'lucide-react';
+import { ContestButton } from '@/components/admin/ContestButton';
 
 interface PackageData {
   name: string;
@@ -83,6 +87,9 @@ export default function CreateServiceForm() {
   const [status, setStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [usePackages, setUsePackages] = useState(false);
+
+  // ADDED: restriction state for 403 Trust Gate responses from /api/services
+  const [restriction, setRestriction] = useState<{ type: string; reason: string } | null>(null);
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
@@ -215,6 +222,7 @@ export default function CreateServiceForm() {
     e.preventDefault();
     setSaving(true);
     setStatus(null);
+    setRestriction(null);
 
     try {
       const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -222,57 +230,37 @@ export default function CreateServiceForm() {
 
       const portfolioLinks = form.portfolio_links.filter((l) => l.trim() !== '');
 
-      const { data: service, error: serviceError } = await supabase
-        .from('services')
-        .insert({
-          freelancer_id: user.id,
-          title: form.title.trim(),
-          description: form.description.trim(),
-          category: form.category,
-          subcategory: form.subcategory || null,
-          base_price: Number(form.base_price),
-          currency: 'NGN',
-          delivery_days: Number(form.delivery_days),
-          revisions_included: Number(form.revisions_included) || 1,
-          requirements: form.requirements.trim() || null,
+      // UPDATED: replaced direct supabase.from('services').insert(...) with a fetch
+      // call to /api/services so the request goes through the full API + Trust Gate layer.
+      const response = await fetch('/api/services', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
           images: images.length > 0 ? images : null,
           portfolio_links: portfolioLinks.length > 0 ? portfolioLinks : null,
-          service_location: form.service_location.trim() || null,
-          location_required: form.location_required,
-          remote_ok: form.remote_ok,
+          currency: 'NGN',
           is_active: true,
-        })
-        .select()
-        .single();
+        }),
+      });
 
-      if (serviceError) throw serviceError;
+      const result = await response.json();
 
-      if (usePackages && service) {
-        const tiers = ['basic', 'standard', 'premium'] as const;
-        const packageInserts = tiers
-          .map((tier) => {
-            const pkg = form.packages[tier];
-            if (!pkg.name.trim() || !pkg.price || !pkg.delivery_days) return null;
-            return {
-              service_id: service.id,
-              package_type: tier,
-              name: pkg.name.trim(),
-              description: pkg.description.trim() || null,
-              price: Number(pkg.price),
-              delivery_days: Number(pkg.delivery_days),
-              revisions: Number(pkg.revisions) || 1,
-              features: pkg.features.filter((f) => f.trim() !== ''),
-            };
-          })
-          .filter(Boolean);
-
-        if (packageInserts.length > 0) {
-          const { error: pkgError } = await supabase
-            .from('service_packages')
-            .insert(packageInserts as Parameters<typeof supabase.from>[0] extends never ? never : never[]);
-
-          if (pkgError) console.warn('Package insert error (non-fatal):', pkgError);
+      // Handle 403 Trust Gate restriction
+      if (response.status === 403) {
+        if (result.restrictionType) {
+          setRestriction({ type: result.restrictionType, reason: result.error });
+          // Navigate back to Step 1 so the restriction banner is visible
+          setStep(1);
+          return;
         }
+        setStatus({ type: 'error', message: result.error ?? 'You are not allowed to create a service at this time.' });
+        setStep(1);
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(result.error ?? `Failed to create service (${response.status}).`);
       }
 
       setStatus({ type: 'success', message: 'Service created successfully! Redirecting...' });
@@ -287,7 +275,7 @@ export default function CreateServiceForm() {
     }
   };
 
-  // FIX 1 (TS2352): Cast to `{ options: readonly string[] }` instead of
+  // FIX (TS2352): Cast to `{ options: readonly string[] }` instead of
   // `{ options: string[] }`. SERVICE_CATEGORIES options are readonly tuples,
   // which are assignable to `readonly string[]` but NOT to mutable `string[]`.
   const subcategoryOptions =
@@ -346,6 +334,21 @@ export default function CreateServiceForm() {
         {step === 1 && (
           <Card className="p-6 space-y-6">
             <h2 className="text-xl font-semibold">Service Details</h2>
+
+            {/* ADDED: restriction banner — shown when /api/services returns a 403
+                with a restrictionType. Rendered at the top of Step 1 so it's the
+                first thing the user sees after being redirected back. */}
+            {restriction && (
+              <div className="flex flex-col gap-3 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <p className="text-sm text-amber-800 dark:text-amber-200 font-medium">
+                    {restriction.reason}
+                  </p>
+                </div>
+                <ContestButton actionContested={restriction.type} />
+              </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
@@ -522,13 +525,6 @@ export default function CreateServiceForm() {
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
                 {images.map((url, i) => (
                   <div key={i} className="relative group aspect-video rounded-lg overflow-hidden border">
-                    {/*
-                      FIX 2 (no-img-element): Replaced <img> with next/image <Image />.
-                      - `fill` makes it behave like w-full h-full (requires position:relative on parent).
-                      - `sizes` gives the browser accurate viewport hints to pick the right srcset entry.
-                      - `object-cover` preserves the original crop behaviour.
-                      - `z-10` on the delete button keeps it above the image layer.
-                    */}
                     <Image
                       src={url}
                       alt={`Service image ${i + 1}`}

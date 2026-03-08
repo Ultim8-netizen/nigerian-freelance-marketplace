@@ -1,5 +1,6 @@
 // src/app/api/services/route.ts
 // PRODUCTION-READY: Enhanced services API with full security stack
+// UPDATED: Trust Gate check added to POST handler before service insertion.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -8,6 +9,7 @@ import { serviceSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeText } from '@/lib/security/sanitize';
 import { containsSqlInjection } from '@/lib/security/sql-injection-check';
 import { logger } from '@/lib/logger';
+import { evaluateTrustGate } from '@/lib/trust/feature-gates';
 import { z } from 'zod';
 
 // GET - Browse services with advanced filtering
@@ -132,7 +134,8 @@ export async function POST(request: NextRequest) {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
       roles: ['freelancer', 'both'],
-      rateLimit:'createService',});
+      rateLimit: 'createService',
+    });
 
     if (error) return error;
     if (!user) {
@@ -154,6 +157,29 @@ export async function POST(request: NextRequest) {
     };
 
     const validatedData = serviceSchema.parse(sanitizedBody);
+
+    // ADDED: Evaluate the Trust Gate against the validated base price before any
+    // database work. If the user's trust level does not permit posting a listing
+    // at this price, halt immediately and return a structured 403 that the client
+    // can use to surface the restriction and render the ContestButton.
+    const gate = await evaluateTrustGate(user.id, 'post_listing', Number(validatedData.base_price));
+
+    if (!gate.allowed) {
+      logger.warn('Trust Gate blocked service creation', {
+        userId: user.id,
+        restrictionType: gate.restrictionType,
+        basePrice: validatedData.base_price,
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          error: gate.reason,
+          restrictionType: gate.restrictionType,
+          capAmount: gate.capAmount,
+        },
+        { status: 403 }
+      );
+    }
 
     const supabase = await createClient();
 

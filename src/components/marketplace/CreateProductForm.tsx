@@ -1,15 +1,20 @@
 'use client';
 
-import React, { useState, } from 'react';
+// src/components/marketplace/CreateProductForm.tsx
+// UPDATED: Replaced mock timeout with real Cloudinary image upload + fetch('/api/marketplace/products').
+//          Added restriction state + ContestButton rendering for 403 Trust Gate responses.
+
+import React, { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PlusCircle, Image as ImageIcon, Send, Loader2, Trash2 } from 'lucide-react';
+import { PlusCircle, Image as ImageIcon, Send, Loader2, Trash2, AlertCircle } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
+import { ContestButton } from '@/components/admin/ContestButton';
 
 interface FormData {
   title: string;
@@ -24,7 +29,7 @@ interface FormData {
 export function CreateProductForm() {
   const router = useRouter();
   const MAX_IMAGES = 2; // Cloudinary free tier optimization
-  
+
   const [formData, setFormData] = useState<FormData>({
     title: '',
     description: '',
@@ -35,7 +40,10 @@ export function CreateProductForm() {
     images: [],
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
+
+  // ADDED: restriction state for 403 Trust Gate responses from /api/marketplace/products
+  const [restriction, setRestriction] = useState<{ type: string; reason: string } | null>(null);
+
   const categories = [
     'Electronics & Gadgets',
     'Fashion & Apparel',
@@ -59,17 +67,17 @@ export function CreateProductForm() {
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const filesArray = Array.from(e.target.files);
-      
+
       // Enforce max limit
       if (formData.images.length + filesArray.length > MAX_IMAGES) {
-        toast({ 
-          title: "Limit Reached", 
-          description: `You can only upload ${MAX_IMAGES} photos.`, 
-          variant: "destructive" 
+        toast({
+          title: 'Limit Reached',
+          description: `You can only upload ${MAX_IMAGES} photos.`,
+          variant: 'destructive',
         });
         return;
       }
-      
+
       setFormData(prev => ({ ...prev, images: [...prev.images, ...filesArray] }));
       e.target.value = ''; // Clear input for re-selection
     }
@@ -82,12 +90,52 @@ export function CreateProductForm() {
     }));
   };
 
+  // ADDED: Upload all staged File objects to Cloudinary and return their secure URLs.
+  // Mirrors the pattern used in CreateServiceForm.
+  const uploadImagesToCloudinary = async (files: File[]): Promise<string[]> => {
+    const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+    const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+
+    if (!cloudName || !uploadPreset) {
+      throw new Error(
+        'Cloudinary is not configured. Please set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET.'
+      );
+    }
+
+    const uploadedUrls: string[] = [];
+
+    for (const file of files) {
+      const data = new FormData();
+      data.append('file', file);
+      data.append('upload_preset', uploadPreset);
+      data.append('folder', 'f9/marketplace');
+
+      const res = await fetch(
+        `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+        { method: 'POST', body: data }
+      );
+
+      if (!res.ok) throw new Error('Image upload failed. Please try again.');
+      const json = await res.json();
+      uploadedUrls.push(json.secure_url as string);
+    }
+
+    return uploadedUrls;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
-    
+    setRestriction(null);
+
     // Client-side validation
-    if (!formData.title || !formData.description || formData.price === '' || !formData.category || !formData.condition) {
+    if (
+      !formData.title ||
+      !formData.description ||
+      formData.price === '' ||
+      !formData.category ||
+      !formData.condition
+    ) {
       toast({
         title: 'Validation Error',
         description: 'Please fill in all required fields.',
@@ -108,12 +156,57 @@ export function CreateProductForm() {
     }
 
     try {
-      // TODO: Implement actual API call
-      console.log('Product Data to be Sent:', formData);
-      
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
+      // UPDATED: Upload images to Cloudinary first, then send URLs to the API.
+      // Previously this was a mock setTimeout — now it's a real two-step flow.
+      let imageUrls: string[];
+      try {
+        imageUrls = await uploadImagesToCloudinary(formData.images);
+      } catch (uploadErr) {
+        toast({
+          title: 'Image Upload Failed',
+          description: uploadErr instanceof Error ? uploadErr.message : 'Could not upload images.',
+          variant: 'destructive',
+        });
+        setIsSubmitting(false);
+        return;
+      }
+
+      // UPDATED: Real API call — replaced `await new Promise(resolve => setTimeout(resolve, 2000))`
+      const response = await fetch('/api/marketplace/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: formData.title,
+          description: formData.description,
+          price: formData.price,
+          category: formData.category,
+          condition: formData.condition,
+          location: formData.location,
+          images: imageUrls,
+        }),
+      });
+
+      const result = await response.json();
+
+      // ADDED: Handle 403 Trust Gate restriction
+      if (response.status === 403) {
+        if (result.restrictionType) {
+          setRestriction({ type: result.restrictionType, reason: result.error });
+          return;
+        }
+        // 403 without a restrictionType — surface as a toast error
+        toast({
+          title: 'Not Permitted',
+          description: result.error ?? 'You are not allowed to list a product at this time.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(result.error ?? `Failed to list product (${response.status}).`);
+      }
+
       toast({
         title: 'Success!',
         description: 'Product listed successfully. Redirecting to your dashboard...',
@@ -132,16 +225,15 @@ export function CreateProductForm() {
 
       // Redirect to seller dashboard
       router.push('/marketplace/seller/products');
-      
     } catch (error) {
       console.error('Submission Error:', error);
-      
+
       toast({
         title: 'Submission Failed',
-        description: 'A network error occurred. Please try again.',
+        description:
+          error instanceof Error ? error.message : 'A network error occurred. Please try again.',
         variant: 'destructive',
       });
-      
     } finally {
       setIsSubmitting(false);
     }
@@ -158,13 +250,27 @@ export function CreateProductForm() {
           Get your goods visible to the F9 community. Free to list, hassle-free selling.
         </CardDescription>
       </CardHeader>
-      
+
       <CardContent className="pt-6">
         <form onSubmit={handleSubmit} className="space-y-6">
+
+          {/* ADDED: restriction banner — shown when /api/marketplace/products returns a 403
+              with a restrictionType. Rendered at the top of the form so it is immediately
+              visible without the user needing to scroll. */}
+          {restriction && (
+            <div className="flex flex-col gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <p className="text-sm text-amber-800 font-medium">{restriction.reason}</p>
+              </div>
+              <ContestButton actionContested={restriction.type} />
+            </div>
+          )}
+
           {/* Section 1: Core Information */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold border-b pb-2 text-gray-900">1. Core Information</h3>
-            
+
             <div>
               <Label htmlFor="title" className="text-gray-700">Product Title *</Label>
               <Input
@@ -177,7 +283,7 @@ export function CreateProductForm() {
                 maxLength={100}
               />
             </div>
-            
+
             <div>
               <Label htmlFor="description" className="text-gray-700">Detailed Description *</Label>
               <Textarea
@@ -195,11 +301,11 @@ export function CreateProductForm() {
               </p>
             </div>
           </div>
-          
+
           {/* Section 2: Pricing and Condition */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold border-b pb-2 text-gray-900">2. Pricing & Details</h3>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <Label htmlFor="price" className="text-gray-700">Price (₦) *</Label>
@@ -217,8 +323,8 @@ export function CreateProductForm() {
 
               <div>
                 <Label htmlFor="condition" className="text-gray-700">Condition *</Label>
-                <Select 
-                  value={formData.condition} 
+                <Select
+                  value={formData.condition}
                   onValueChange={(val: 'new' | 'used' | 'refurbished') => handleSelectChange('condition', val)}
                 >
                   <SelectTrigger id="condition" className="bg-white text-gray-900 border-gray-300">
@@ -234,8 +340,8 @@ export function CreateProductForm() {
 
               <div>
                 <Label htmlFor="category" className="text-gray-700">Category *</Label>
-                <Select 
-                  value={formData.category} 
+                <Select
+                  value={formData.category}
                   onValueChange={(val) => handleSelectChange('category', val)}
                 >
                   <SelectTrigger id="category" className="bg-white text-gray-900 border-gray-300">
@@ -252,14 +358,14 @@ export function CreateProductForm() {
               </div>
             </div>
           </div>
-          
+
           {/* Section 3: Images */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold border-b pb-2 text-gray-900">3. Product Images *</h3>
             <p className="text-sm text-gray-600">
               Upload up to {MAX_IMAGES} clear photos. ({formData.images.length}/{MAX_IMAGES} uploaded)
             </p>
-            
+
             <div className="flex flex-wrap gap-4">
               {/* Image Previews */}
               {formData.images.map((file, index) => (
@@ -275,11 +381,11 @@ export function CreateProductForm() {
                   </button>
                 </div>
               ))}
-              
+
               {/* Upload Button */}
               {formData.images.length < MAX_IMAGES && (
-                <Label 
-                  htmlFor="images" 
+                <Label
+                  htmlFor="images"
                   className="flex flex-col items-center justify-center w-24 h-24 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 hover:border-purple-400 transition"
                 >
                   <ImageIcon className="w-6 h-6 text-gray-400" />
@@ -300,7 +406,7 @@ export function CreateProductForm() {
               Clear photos help attract buyers. First image will be the main display.
             </p>
           </div>
-          
+
           {/* Section 4: Location */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold border-b pb-2 text-gray-900">4. Pickup Location</h3>
@@ -319,11 +425,11 @@ export function CreateProductForm() {
               />
             </div>
           </div>
-          
+
           {/* Submit Button */}
-          <Button 
-            type="submit" 
-            className="w-full bg-linear-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white shadow-md" 
+          <Button
+            type="submit"
+            className="w-full bg-linear-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white shadow-md"
             disabled={isSubmitting}
           >
             {isSubmitting ? (
@@ -338,7 +444,7 @@ export function CreateProductForm() {
               </>
             )}
           </Button>
-          
+
           <p className="text-xs text-center text-gray-500 pt-2">
             By listing, you agree to F9&apos;s marketplace policies. All transactions are protected by escrow.
           </p>

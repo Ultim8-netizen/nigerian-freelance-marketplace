@@ -1,5 +1,6 @@
 // src/app/api/marketplace/products/route.ts
 // PRODUCTION-READY: Marketplace products with full security
+// UPDATED: Trust Gate check added to POST handler before product insertion.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -7,6 +8,7 @@ import { createClient } from '@/lib/supabase/server';
 import { sanitizeText, sanitizeHtml, sanitizeUrl } from '@/lib/security/sanitize';
 import { containsSqlInjection } from '@/lib/security/sql-injection-check';
 import { logger } from '@/lib/logger';
+import { evaluateTrustGate } from '@/lib/trust/feature-gates';
 import { z } from 'zod';
 
 const productSchema = z.object({
@@ -114,7 +116,8 @@ export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
-      rateLimit: 'createService', });
+      rateLimit: 'createService',
+    });
 
     if (error) return error;
 
@@ -138,7 +141,30 @@ export async function POST(request: NextRequest) {
     };
 
     const validated = productSchema.parse(sanitizedBody);
-    
+
+    // ADDED: Evaluate the Trust Gate against the validated price before any database
+    // work. If the user's trust level does not permit listing a product at this price,
+    // return a structured 403 immediately — the client uses restrictionType to render
+    // the ContestButton rather than a generic error message.
+    const gate = await evaluateTrustGate(user.id, 'post_listing', validated.price);
+
+    if (!gate.allowed) {
+      logger.warn('Trust Gate blocked product listing', {
+        userId: user.id,
+        restrictionType: gate.restrictionType,
+        price: validated.price,
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          error: gate.reason,
+          restrictionType: gate.restrictionType,
+          capAmount: gate.capAmount,
+        },
+        { status: 403 }
+      );
+    }
+
     const supabase = await createClient();
 
     const { data, error: createError } = await supabase
