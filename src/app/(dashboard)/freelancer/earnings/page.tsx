@@ -4,6 +4,10 @@
 // at line 127 because the server and client resolved the param differently.
 // UPDATED: Trust Gate check added to initiateWithdrawal server action.
 //          ContestButton rendered in the error banner when error === 'restricted'.
+// FIXED: Query structure for wallet and trust_score separated.
+//        wallets is a one-to-one relationship, so we query wallets table directly
+//        instead of trying to access it as an array from the profiles select.
+// FIXED: Removed incorrect cast of order.title — it's string (required) in schema, not optional.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -42,25 +46,39 @@ async function initiateWithdrawal(formData: FormData) {
   if (account_number.length !== 10 || !/^\d+$/.test(account_number))
     redirect('/freelancer/earnings?error=invalid_account');
 
+  // FIXED: Query wallet directly from wallets table (one-to-one relationship)
   const { data: wallet } = await supabase
     .from('wallets')
     .select('id, balance')
     .eq('user_id', user.id)
     .single();
 
+  // Query trust score from profiles table
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('trust_score')
+    .eq('id', user.id)
+    .single();
+
   const balance = wallet?.balance ?? 0;
+  const trustScore = profile?.trust_score ?? 0;
+
   if (amount < 5000)    redirect('/freelancer/earnings?error=below_minimum');
   if (amount > balance) redirect('/freelancer/earnings?error=insufficient_funds');
 
-  // ADDED: Evaluate the Trust Gate before inserting the withdrawal record.
-  // If the user's trust level does not permit withdrawals at this amount,
-  // redirect with a structured error that the JSX can surface alongside
-  // the ContestButton.
+  // Evaluate the Trust Gate (Soft Lock < 20)
   const gate = await evaluateTrustGate(user.id, 'request_withdrawal', amount);
   if (!gate.allowed) {
-    redirect(
-      `/freelancer/earnings?error=restricted&reason=${encodeURIComponent(gate.reason || '')}`
-    );
+    redirect(`/freelancer/earnings?error=restricted&reason=${encodeURIComponent(gate.reason || '')}`);
+  }
+
+  // Determine Hold Status based on Trust Score
+  let withdrawalStatus = 'pending';
+  let holdReason = null;
+
+  if (trustScore >= 40 && trustScore <= 59) {
+    withdrawalStatus = 'held';
+    holdReason = 'Mandatory 48-hour delay applied due to Trust Tier (40-59).';
   }
 
   const { error } = await supabase.from('withdrawals').insert({
@@ -70,12 +88,25 @@ async function initiateWithdrawal(formData: FormData) {
     bank_name,
     account_number,
     account_name,
-    status:         'pending',
+    status:         withdrawalStatus,
+    failure_reason: holdReason,
   });
 
   if (error) {
     console.error('Withdrawal error:', error);
     redirect('/freelancer/earnings?error=request_failed');
+  }
+
+  // Notify user if held
+  if (withdrawalStatus === 'held') {
+    await supabase.from('notifications').insert({
+      user_id: user.id,
+      type:    'withdrawal_held',
+      title:   'Withdrawal Delayed',
+      message: 'Your withdrawal request has been placed on a standard 48-hour hold based on your current Trust Score tier.',
+    });
+    revalidatePath('/freelancer/earnings');
+    redirect('/freelancer/earnings?success=withdrawal_held');
   }
 
   revalidatePath('/freelancer/earnings');
@@ -148,12 +179,22 @@ export default async function EarningsPage({
         <p className="text-gray-600 dark:text-gray-400">Track your income and manage withdrawals</p>
       </div>
 
-      {/* Success banner */}
+      {/* Success banner — withdrawal_requested */}
       {params.success === 'withdrawal_requested' && (
         <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl flex items-center gap-3">
           <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 shrink-0" />
           <p className="text-green-800 dark:text-green-200 font-medium">
             Withdrawal request submitted! Processing takes 1–3 business days.
+          </p>
+        </div>
+      )}
+
+      {/* Success banner — withdrawal_held (Trust Tier 40–59) */}
+      {params.success === 'withdrawal_held' && (
+        <div className="mb-6 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded-xl flex items-center gap-3">
+          <Clock className="w-5 h-5 text-yellow-600 dark:text-yellow-400 shrink-0" />
+          <p className="text-yellow-800 dark:text-yellow-200 font-medium">
+            Withdrawal submitted, but a standard 48-hour hold has been applied based on your current Trust Score tier. You will be notified once it is released for processing.
           </p>
         </div>
       )}
@@ -375,7 +416,8 @@ export default async function EarningsPage({
                         : 'N/A'}
                     </td>
                     <td className="py-3 text-gray-800 dark:text-gray-200 max-w-[180px] truncate">
-                      {(order as { title?: string }).title ?? '—'}
+                      {/* FIXED: Removed incorrect cast — orders.title is string (required) not optional */}
+                      {order.title}
                     </td>
                     <td className="py-3 font-semibold text-gray-900 dark:text-white">
                       {formatCurrency(order.amount || 0)}

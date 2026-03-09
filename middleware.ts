@@ -2,6 +2,7 @@
 // FIXED: Added '/jobs' to protectedPaths — the new /jobs/[id] page requires authentication
 // (Freelancers browse and submit proposals; clients view their postings — both need auth).
 // ADDED: Admin route protection for '/f9-control' — enforces session + 'admin' user_type role.
+// ADDED: Automation route protection for '/api/admin/automation' — enforces CRON_SECRET bearer token.
 
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
@@ -23,6 +24,22 @@ export async function middleware(request: NextRequest) {
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': '86400',
         },
+      });
+    }
+  }
+
+  // ============================================================================
+  // AUTOMATION ROUTE PROTECTION (CRON SECRET)
+  // Checked before session logic — these endpoints are called by the scheduler,
+  // not by authenticated users, so a static bearer token is the correct gate.
+  // ============================================================================
+  if (pathname.startsWith('/api/admin/automation')) {
+    const authHeader = request.headers.get('authorization');
+    // CRON_SECRET should be a long random string in your .env
+    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
       });
     }
   }

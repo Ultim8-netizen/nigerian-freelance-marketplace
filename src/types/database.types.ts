@@ -12,43 +12,68 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "13.0.5"
   }
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
   public: {
     Tables: {
       admin_action_logs: {
         Row: {
           action_type: string
-          can_reverse_until: string | null
+          admin_id: string
           created_at: string | null
-          details: string | null
           id: string
           is_reversed: boolean | null
-          staff_id: string
+          reason: string | null
+          reversible_until: string | null
           target_user_id: string | null
         }
         Insert: {
           action_type: string
-          can_reverse_until?: string | null
+          admin_id: string
           created_at?: string | null
-          details?: string | null
           id?: string
           is_reversed?: boolean | null
-          staff_id: string
+          reason?: string | null
+          reversible_until?: string | null
           target_user_id?: string | null
         }
         Update: {
           action_type?: string
-          can_reverse_until?: string | null
+          admin_id?: string
           created_at?: string | null
-          details?: string | null
           id?: string
           is_reversed?: boolean | null
-          staff_id?: string
+          reason?: string | null
+          reversible_until?: string | null
           target_user_id?: string | null
         }
         Relationships: [
           {
             foreignKeyName: "admin_action_logs_staff_id_fkey"
-            columns: ["staff_id"]
+            columns: ["admin_id"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
@@ -789,6 +814,7 @@ export type Database = {
       orders: {
         Row: {
           amount: number
+          cleared_at: string | null
           client_id: string
           client_rating: number | null
           client_review: string | null
@@ -816,6 +842,7 @@ export type Database = {
         }
         Insert: {
           amount: number
+          cleared_at?: string | null
           client_id: string
           client_rating?: number | null
           client_review?: string | null
@@ -843,6 +870,7 @@ export type Database = {
         }
         Update: {
           amount?: number
+          cleared_at?: string | null
           client_id?: string
           client_rating?: number | null
           client_review?: string | null
@@ -1092,7 +1120,7 @@ export type Database = {
           {
             foreignKeyName: "product_reviews_order_id_fkey"
             columns: ["order_id"]
-            isOneToOne: false
+            isOneToOne: true
             referencedRelation: "product_orders"
             referencedColumns: ["id"]
           },
@@ -1120,7 +1148,7 @@ export type Database = {
           rating: number
           reviews_count: number
           sales_count: number | null
-          seller_id: string | null
+          seller_id: string
           stock_status: string | null
           subcategory: string | null
           title: string
@@ -1141,7 +1169,7 @@ export type Database = {
           rating?: number
           reviews_count?: number
           sales_count?: number | null
-          seller_id?: string | null
+          seller_id: string
           stock_status?: string | null
           subcategory?: string | null
           title: string
@@ -1162,7 +1190,7 @@ export type Database = {
           rating?: number
           reviews_count?: number
           sales_count?: number | null
-          seller_id?: string | null
+          seller_id?: string
           stock_status?: string | null
           subcategory?: string | null
           title?: string
@@ -1557,24 +1585,27 @@ export type Database = {
       }
       staff_roles: {
         Row: {
-          assigned_at: string | null
+          created_at: string | null
+          id: string
           is_active: boolean | null
           permissions: Json | null
-          role: string | null
+          role_type: string | null
           user_id: string
         }
         Insert: {
-          assigned_at?: string | null
+          created_at?: string | null
+          id?: string
           is_active?: boolean | null
           permissions?: Json | null
-          role?: string | null
+          role_type?: string | null
           user_id: string
         }
         Update: {
-          assigned_at?: string | null
+          created_at?: string | null
+          id?: string
           is_active?: boolean | null
           permissions?: Json | null
-          role?: string | null
+          role_type?: string | null
           user_id?: string
         }
         Relationships: [
@@ -2035,6 +2066,12 @@ export type Database = {
         }
         Returns: Json
       }
+      find_frequent_disputers: {
+        Args: { since_date: string }
+        Returns: {
+          id: string
+        }[]
+      }
       get_cloudinary_usage_stats: {
         Args: never
         Returns: {
@@ -2099,8 +2136,12 @@ export type Database = {
         Returns: Json
       }
       release_escrow_to_wallet: {
-        Args: { p_amount: number; p_freelancer_id: string }
+        Args: { p_amount: number; p_freelancer_id: string; p_order_id: string }
         Returns: undefined
+      }
+      reverse_admin_action: {
+        Args: { p_log_id: string; p_reversed_by?: string; p_ticket_id?: string }
+        Returns: Json
       }
       update_freelancer_rating: {
         Args: { p_freelancer_id: string }
@@ -2234,6 +2275,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {},
   },

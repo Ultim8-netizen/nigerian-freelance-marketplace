@@ -2,7 +2,7 @@
 import { Shield, Star, Award, Crown, } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-type TrustLevel = 'new' | 'verified' | 'trusted' | 'top_rated' | 'elite';
+export type TrustLevel = 'new' | 'verified' | 'trusted' | 'top_rated' | 'elite';
 
 interface TrustBadgeProps {
   level: TrustLevel;

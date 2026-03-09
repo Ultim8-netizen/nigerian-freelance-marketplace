@@ -3236,3 +3236,1915 @@ CREATE TABLE admin_action_logs (
 UPDATE profiles SET user_type = 'admin' WHERE email = 'your_email@f9.ng';
 INSERT INTO staff_roles (user_id, role) 
 SELECT id, 'admin' FROM profiles WHERE email = 'your_email@f9.ng' ON CONFLICT DO NOTHING;
+
+-- ==========================================
+-- 1. F9 IDENTITY PROTECTION (Part 1 of Spec)
+-- ==========================================
+
+-- Trigger to prevent anyone from using "F9" variants
+CREATE OR REPLACE FUNCTION protect_f9_identity()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF LOWER(NEW.full_name) IN ('f9', 'f 9', 'f-9', 'admin', 'administrator', 'ultim8') THEN
+        RAISE EXCEPTION 'This identity is reserved for platform systems.';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER enforce_f9_identity_signup
+BEFORE INSERT OR UPDATE ON profiles
+FOR EACH ROW EXECUTE FUNCTION protect_f9_identity();
+
+-- ==========================================
+-- 2. TRUST SCORE ENGINE (Part 2 of Spec)
+-- ==========================================
+
+-- Main function to adjust trust scores and update levels
+CREATE OR REPLACE FUNCTION add_trust_score_event(
+    p_user_id UUID, 
+    p_event_type TEXT, 
+    p_score_change INTEGER
+)
+RETURNS VOID AS $$
+DECLARE
+    current_score INTEGER;
+    new_score INTEGER;
+BEGIN
+    SELECT trust_score INTO current_score FROM profiles WHERE id = p_user_id;
+    
+    -- Bound score between 0 and 100
+    new_score := GREATEST(0, LEAST(100, current_score + p_score_change));
+    
+    UPDATE profiles 
+    SET 
+        trust_score = new_score,
+        trust_level = CASE 
+            WHEN new_score >= 80 THEN 'trusted'
+            WHEN new_score >= 60 THEN 'verified'
+            WHEN new_score >= 40 THEN 'standard'
+            ELSE 'restricted'
+        END,
+        updated_at = NOW()
+    WHERE id = p_user_id;
+
+    -- Audit log for the change
+    INSERT INTO security_logs (user_id, event_type, description, severity)
+    VALUES (p_user_id, 'trust_update', p_event_type || ' (' || p_score_change || ')', 'low');
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- RPC for the Automation Cron: Find frequent disputers
+CREATE OR REPLACE FUNCTION find_frequent_disputers(since_date TIMESTAMPTZ)
+RETURNS TABLE (id UUID) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT client_id FROM disputes
+    WHERE created_at >= since_date
+    GROUP BY client_id
+    HAVING COUNT(id) >= 3;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ==========================================
+-- 4. DORMANT STAFF SYSTEM (Part 6b)
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS staff_roles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES profiles(id) UNIQUE,
+    role_type TEXT NOT NULL, -- 'moderator', 'finance', 'support'
+    permissions JSONB,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS admin_action_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    admin_id UUID REFERENCES profiles(id),
+    target_user_id UUID REFERENCES profiles(id),
+    action_type TEXT NOT NULL,
+    reason TEXT,
+    reversible_until TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '48 hours'),
+    is_reversed BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ==========================================
+-- 5. ROW LEVEL SECURITY (RLS)
+-- ==========================================
+
+ALTER TABLE platform_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contest_tickets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_action_logs ENABLE ROW LEVEL SECURITY;
+
+-- Only Admins can view/edit config and logs
+CREATE POLICY "Admin full access" ON platform_config FOR ALL USING (
+  EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+);
+
+CREATE POLICY "Admin logs access" ON admin_action_logs FOR ALL USING (
+  EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+);
+
+-- Users can view and create their own tickets
+CREATE POLICY "User contest access" ON contest_tickets FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "User contest create" ON contest_tickets FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Admin contest access" ON contest_tickets FOR ALL USING (
+  EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+);
+
+-- 1. Function to find users with 3+ disputes in the last 30 days
+CREATE OR REPLACE FUNCTION find_frequent_disputers(since_date TIMESTAMPTZ)
+RETURNS TABLE (id UUID) 
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT client_id as id
+    FROM disputes
+    WHERE created_at >= since_date
+    GROUP BY client_id
+    HAVING COUNT(id) >= 3;
+END;
+$$;
+
+-- 2. Robust Trust Score Update Function (Handles thresholds and history)
+CREATE OR REPLACE FUNCTION add_trust_score_event(
+    p_user_id UUID, 
+    p_event_type TEXT, 
+    p_score_change INTEGER
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    current_score INTEGER;
+    new_score INTEGER;
+BEGIN
+    -- Get current score
+    SELECT trust_score INTO current_score FROM profiles WHERE id = p_user_id;
+    
+    -- Calculate new score with boundaries (0-100)
+    new_score := GREATEST(0, LEAST(100, current_score + p_score_change));
+    
+    -- Update Profile
+    UPDATE profiles 
+    SET 
+        trust_score = new_score,
+        trust_level = CASE 
+            WHEN new_score >= 80 THEN 'trusted'
+            WHEN new_score >= 60 THEN 'verified'
+            WHEN new_score >= 40 THEN 'standard'
+            ELSE 'restricted'
+        END,
+        updated_at = NOW()
+    WHERE id = p_user_id;
+
+    -- Log the change for Audit/Contest capability
+    INSERT INTO security_logs (
+        user_id, 
+        event_type, 
+        description, 
+        severity
+    ) VALUES (
+        p_user_id, 
+        'trust_score_change', 
+        p_event_type || ': Change of ' || p_score_change || '. New score: ' || new_score,
+        CASE WHEN p_score_change < 0 THEN 'medium' ELSE 'low' END
+    );
+END;
+$$;
+
+-- 3. Escrow Analytics Helper (For the Admin Finance Page)
+CREATE OR REPLACE FUNCTION get_escrow_total()
+RETURNS NUMERIC
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    RETURN (SELECT SUM(amount) FROM escrow WHERE status = 'held');
+END;
+$$;
+
+-- 4. Ensure Contest Tickets table exists as per spec
+CREATE TABLE IF NOT EXISTS contest_tickets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES profiles(id),
+    action_contested TEXT NOT NULL, -- e.g., 'Score Docked: excessive_disputes'
+    explanation TEXT NOT NULL,
+    status TEXT DEFAULT 'pending', -- pending, resolved, dismissed
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable RLS for contest tickets
+ALTER TABLE contest_tickets ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can create their own tickets" ON contest_tickets
+    FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Admins have full access to tickets" ON contest_tickets
+    FOR ALL USING (
+        EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+    );
+
+    ALTER TABLE admin_action_logs RENAME COLUMN staff_id TO admin_id;
+ALTER TABLE admin_action_logs RENAME COLUMN details TO reason;
+ALTER TABLE admin_action_logs RENAME COLUMN can_reverse_until TO reversible_until;
+
+-- Add surrogate PK and rename column
+ALTER TABLE staff_roles ADD COLUMN id UUID DEFAULT gen_random_uuid();
+ALTER TABLE staff_roles RENAME COLUMN role TO role_type;
+ALTER TABLE staff_roles RENAME COLUMN assigned_at TO created_at;
+
+CREATE OR REPLACE FUNCTION add_trust_score_event(
+    p_user_id UUID,
+    p_event_type TEXT,
+    p_score_change INTEGER,
+    p_related_entity_type TEXT DEFAULT NULL,
+    p_related_entity_id UUID DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+    v_current INTEGER;
+    v_new INTEGER;
+BEGIN
+    SELECT trust_score INTO v_current FROM profiles WHERE id = p_user_id;
+    v_new := GREATEST(0, LEAST(100, v_current + p_score_change));
+
+    UPDATE profiles SET trust_score = v_new WHERE id = p_user_id;
+    -- trust_level is handled by the update_profile_trust_level BEFORE trigger
+
+    INSERT INTO trust_score_events (
+        user_id, event_type, score_change,
+        previous_score, new_score,
+        related_entity_type, related_entity_id, notes
+    ) VALUES (
+        p_user_id, p_event_type, p_score_change,
+        v_current, v_new,
+        p_related_entity_type, p_related_entity_id, p_notes
+    );
+END;
+$$;
+
+DROP TRIGGER IF EXISTS enforce_f9_identity ON profiles;
+DROP FUNCTION IF EXISTS prevent_f9_identity();
+
+-- ============================================================================
+-- FIX 5: Remove redundant trust_level assignment from add_trust_score_event
+-- The BEFORE trigger `update_profile_trust_level` already handles this.
+-- Keeping it in the function creates a misleading suggestion that the 
+-- function controls trust_level — it does not, and never executes.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION add_trust_score_event(
+    p_user_id UUID,
+    p_event_type TEXT,
+    p_score_change INTEGER,
+    p_related_entity_type TEXT DEFAULT NULL,
+    p_related_entity_id UUID DEFAULT NULL,
+    p_notes TEXT DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_current_score INTEGER;
+    v_new_score     INTEGER;
+BEGIN
+    -- Get current score
+    SELECT trust_score INTO v_current_score
+    FROM profiles
+    WHERE id = p_user_id;
+
+    -- Clamp new score between 0 and 100
+    v_new_score := GREATEST(0, LEAST(100, v_current_score + p_score_change));
+
+    -- Update trust_score ONLY.
+    -- trust_level is intentionally NOT set here.
+    -- The BEFORE trigger `update_profile_trust_level` on profiles
+    -- fires on UPDATE OF trust_score and sets trust_level authoritatively.
+    UPDATE profiles
+    SET
+        trust_score = v_new_score,
+        updated_at  = NOW()
+    WHERE id = p_user_id;
+
+    -- Write to trust_score_events for full audit trail
+    INSERT INTO trust_score_events (
+        user_id,
+        event_type,
+        score_change,
+        previous_score,
+        new_score,
+        related_entity_type,
+        related_entity_id,
+        notes
+    ) VALUES (
+        p_user_id,
+        p_event_type,
+        p_score_change,
+        v_current_score,
+        v_new_score,
+        p_related_entity_type,
+        p_related_entity_id,
+        p_notes
+    );
+END;
+$$;
+
+-- ============================================================================
+-- VERIFY: Confirm the function no longer contains trust_level logic
+-- Should return the function body — check it has no "trust_level" in the UPDATE
+-- ============================================================================
+SELECT pg_get_functiondef(oid)
+FROM pg_proc
+WHERE proname = 'add_trust_score_event'
+AND pronargs = 6; -- confirms we're looking at the right overload
+
+-- Check both overloads exist
+SELECT
+    p.proname                        AS function_name,
+    pg_get_function_arguments(p.oid) AS arguments,
+    pronargs                         AS param_count
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'public'
+  AND p.proname = 'add_trust_score_event'
+ORDER BY pronargs;
+
+-- ============================================================================
+-- FIX: Drop the 3-param overload of add_trust_score_event.
+-- The 6-param version already has DEFAULT NULL on params 4, 5, 6,
+-- so calling it with just 3 args still works identically.
+-- ============================================================================
+DROP FUNCTION IF EXISTS public.add_trust_score_event(uuid, text, integer);
+
+-- ============================================================================
+-- VERIFY: Should now return exactly 1 row with 6 params
+-- ============================================================================
+DO $$
+DECLARE
+    v_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO v_count
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname = 'add_trust_score_event';
+
+    IF v_count = 1 THEN
+        RAISE NOTICE '✅  Exactly 1 overload of add_trust_score_event exists (6-param). All callers will resolve to it.';
+    ELSIF v_count = 0 THEN
+        RAISE WARNING '❌  Function was dropped entirely — something went wrong.';
+    ELSE
+        RAISE WARNING '❌  Still % overloads found — manual inspection needed.', v_count;
+    END IF;
+END $$;
+
+-- Step 1: Drop the old constraint
+ALTER TABLE profiles 
+DROP CONSTRAINT IF EXISTS profiles_user_type_check;
+
+-- Step 2: Add new constraint that includes 'admin'
+ALTER TABLE profiles 
+ADD CONSTRAINT profiles_user_type_check 
+CHECK (user_type IN ('freelancer', 'client', 'both', 'admin'));
+
+-- Step 3: Now set your actual admin email
+UPDATE profiles 
+SET user_type = 'admin' 
+WHERE email = 'your_actual_email@f9.ng'; -- replace with real email
+
+-- Verify it worked (must return 1 row)
+SELECT id, email, user_type FROM profiles WHERE user_type = 'admin';
+
+-- Step 1: Populate id for any existing rows (can't make NOT NULL otherwise)
+UPDATE staff_roles SET id = gen_random_uuid() WHERE id IS NULL;
+
+-- Step 2: Make it NOT NULL
+ALTER TABLE staff_roles ALTER COLUMN id SET NOT NULL;
+
+-- Step 3: Drop the existing primary key
+ALTER TABLE staff_roles DROP CONSTRAINT staff_roles_pkey;
+
+-- Step 4: Make user_id a unique FK (not PK) instead
+ALTER TABLE staff_roles ADD CONSTRAINT staff_roles_user_id_unique UNIQUE (user_id);
+
+-- Step 5: Make id the new primary key
+ALTER TABLE staff_roles ADD PRIMARY KEY (id);
+
+-- Verify
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'staff_roles'
+ORDER BY ordinal_position;
+
+-- See all 5 policies currently active
+SELECT policyname, cmd, qual 
+FROM pg_policies 
+WHERE tablename = 'contest_tickets'
+ORDER BY policyname;
+
+-- Drop the redundant second set (they duplicate what the first set already covers)
+DROP POLICY IF EXISTS "Users can create their own tickets" ON contest_tickets;
+DROP POLICY IF EXISTS "Admins have full access to tickets" ON contest_tickets;
+
+-- Verify only 3 clean policies remain
+SELECT policyname FROM pg_policies WHERE tablename = 'contest_tickets';
+-- Expected: "User contest access", "User contest create", "Admin contest access"
+
+-- ============================================================================
+-- FIX 1: wallets — Add missing SELECT and UPDATE policies
+-- ============================================================================
+
+-- Users need to read their own balance (dashboard, withdrawal page, etc.)
+CREATE POLICY "Users can view own wallet"
+  ON wallets FOR SELECT
+  USING (user_id = auth.uid());
+
+-- Users need to update their own bank details (account_number, bank_name, etc.)
+-- Note: balance/total_earned/pending_clearance are only modified by
+-- SECURITY DEFINER functions (complete_order_with_payment, release_escrow_to_wallet)
+-- which bypass RLS entirely, so this UPDATE policy is safe — it won't let
+-- users manipulate their own balance directly from the client.
+CREATE POLICY "Users can update own wallet"
+  ON wallets FOR UPDATE
+  USING (user_id = auth.uid());
+
+-- Verify
+SELECT policyname, cmd 
+FROM pg_policies 
+WHERE tablename = 'wallets'
+ORDER BY cmd, policyname;
+-- Expected: INSERT (Users can create own wallet), SELECT (Users can view own wallet), UPDATE (Users can update own wallet)
+
+
+-- ============================================================================
+-- FIX 2: transactions — Add policies from scratch
+-- Context: transactions are financial records. Users should be able to
+-- read their own (for order history/receipts) but NEVER insert/update
+-- directly — that must only happen via SECURITY DEFINER functions
+-- (process_successful_payment) which bypass RLS.
+-- ============================================================================
+
+-- Users can view transactions that belong to their orders
+-- (both as client who paid, and freelancer who earned)
+CREATE POLICY "Users can view own transactions"
+  ON transactions FOR SELECT
+  USING (
+    order_id IN (
+      SELECT id FROM orders
+      WHERE client_id = auth.uid()
+         OR freelancer_id = auth.uid()
+    )
+  );
+
+-- No INSERT policy — transactions are only created by process_successful_payment()
+-- which is SECURITY DEFINER and bypasses RLS. Direct client inserts are blocked
+-- by the absence of an INSERT policy, which is correct and intentional.
+
+-- No UPDATE policy — same reason. Transaction records are immutable from
+-- the client perspective.
+
+-- Verify
+SELECT policyname, cmd 
+FROM pg_policies 
+WHERE tablename = 'transactions'
+ORDER BY cmd, policyname;
+-- Expected: exactly 1 row — SELECT policy
+
+-- ============================================================================
+-- FIX 3: proposals — Add policies for both parties
+-- Context: proposals involve two parties — the freelancer who submitted,
+-- and the client who owns the job. Each needs appropriate access.
+-- ============================================================================
+
+-- Freelancers: full control over their own proposals
+-- (create, view, withdraw/update status to 'withdrawn')
+CREATE POLICY "Freelancers can manage own proposals"
+  ON proposals FOR ALL
+  USING (freelancer_id = auth.uid())
+  WITH CHECK (freelancer_id = auth.uid());
+
+-- Clients: read-only access to proposals on their jobs
+-- (they need to see who bid, at what price, to accept/reject)
+-- Clients do not INSERT proposals — only UPDATE status (accept/reject).
+-- The UPDATE is handled by application logic calling the DB, so we
+-- need a separate UPDATE policy for clients.
+CREATE POLICY "Clients can view proposals on own jobs"
+  ON proposals FOR SELECT
+  USING (
+    job_id IN (
+      SELECT id FROM jobs
+      WHERE client_id = auth.uid()
+    )
+  );
+
+-- Clients need to update proposal status (accept / reject)
+-- This is separate from SELECT so we can keep it tightly scoped.
+CREATE POLICY "Clients can update proposals on own jobs"
+  ON proposals FOR UPDATE
+  USING (
+    job_id IN (
+      SELECT id FROM jobs
+      WHERE client_id = auth.uid()
+    )
+  );
+
+-- Verify
+SELECT policyname, cmd 
+FROM pg_policies 
+WHERE tablename = 'proposals'
+ORDER BY cmd, policyname;
+-- Expected:
+-- ALL   → Freelancers can manage own proposals
+-- SELECT → Clients can view proposals on own jobs
+-- UPDATE → Clients can update proposals on own jobs
+
+-- ============================================================================
+-- FIX 4: profiles — Drop the duplicate UPDATE policy
+-- Two identical UPDATE policies exist:
+--   "Users can update own profile"      → auth.uid() = id
+--   "Users can update their own profile" → auth.uid() = id
+-- They are functionally identical. Drop the second one.
+-- ============================================================================
+
+-- Check both exist before dropping (safe to run regardless)
+SELECT policyname, cmd, qual 
+FROM pg_policies 
+WHERE tablename = 'profiles' AND cmd = 'UPDATE'
+ORDER BY policyname;
+
+DROP POLICY IF EXISTS "Users can update their own profile" ON profiles;
+
+-- Verify only one UPDATE policy remains
+SELECT policyname, cmd 
+FROM pg_policies 
+WHERE tablename = 'profiles' AND cmd = 'UPDATE';
+-- Expected: exactly 1 row — "Users can update own profile"
+
+-- ============================================================================
+-- FIX 5: Double wallet-credit guard — Database-level protection
+-- Context: complete_order_with_payment() credits the wallet directly.
+--          release_escrow_to_wallet() also credits the wallet.
+-- If app code accidentally calls both for the same order, the freelancer
+-- gets paid twice. We add a guard at the escrow level — once escrow is
+-- released, any further release attempt is blocked.
+-- ============================================================================
+
+-- The escrow table already has status CHECK:
+--   ('held', 'released_to_freelancer', 'refunded_to_client', 'disputed')
+-- complete_order_with_payment already checks:
+--   SELECT * FROM escrow WHERE order_id = p_order_id AND status = 'held'
+--   and raises EXCEPTION 'Escrow not found or already released' if not found.
+-- So the DB-level guard already EXISTS inside complete_order_with_payment.
+
+-- The risk is only if app code calls release_escrow_to_wallet() DIRECTLY
+-- (bypassing the atomic function) after complete_order_with_payment ran.
+-- We close this by adding a trigger that blocks wallet credits on
+-- already-released escrow rows.
+
+CREATE OR REPLACE FUNCTION guard_against_double_wallet_credit()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- If escrow is already released or refunded, block any further
+  -- status change that would imply another payout
+  IF OLD.status IN ('released_to_freelancer', 'refunded_to_client')
+     AND NEW.status IN ('released_to_freelancer', 'refunded_to_client') THEN
+    RAISE EXCEPTION 
+      'Double-payout blocked: escrow % is already in status %. Cannot change to %.',
+      OLD.order_id, OLD.status, NEW.status;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS prevent_double_escrow_release ON escrow;
+CREATE TRIGGER prevent_double_escrow_release
+  BEFORE UPDATE OF status ON escrow
+  FOR EACH ROW
+  EXECUTE FUNCTION guard_against_double_wallet_credit();
+
+-- Additionally, make release_escrow_to_wallet itself aware of escrow state
+-- so it cannot be called standalone without a valid held escrow:
+CREATE OR REPLACE FUNCTION release_escrow_to_wallet(
+    p_freelancer_id UUID,
+    p_amount DECIMAL,
+    p_order_id UUID  -- now required, used to verify escrow state
+)
+RETURNS VOID AS $$
+DECLARE
+  v_escrow_status TEXT;
+BEGIN
+    -- Verify escrow is still held before touching wallet
+    SELECT status INTO v_escrow_status
+    FROM escrow
+    WHERE order_id = p_order_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'release_escrow_to_wallet: No escrow record found for order %', p_order_id;
+    END IF;
+
+    IF v_escrow_status != 'held' THEN
+        RAISE EXCEPTION 
+          'release_escrow_to_wallet: Escrow for order % is already "%" — double-credit blocked.',
+          p_order_id, v_escrow_status;
+    END IF;
+
+    -- Safe to proceed
+    UPDATE wallets
+    SET 
+        balance = balance + p_amount,
+        total_earned = total_earned + p_amount,
+        updated_at = NOW()
+    WHERE user_id = p_freelancer_id;
+    
+    IF NOT FOUND THEN
+        INSERT INTO wallets (user_id, balance, total_earned)
+        VALUES (p_freelancer_id, p_amount, p_amount);
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $verify$
+DECLARE
+  v_count INTEGER;
+BEGIN
+  -- FIX 1: wallets
+  SELECT COUNT(*) INTO v_count FROM pg_policies WHERE tablename = 'wallets';
+  RAISE NOTICE 'wallets policies: % (expected 3)', v_count;
+  IF v_count = 3 THEN 
+    RAISE NOTICE 'OK: wallets RLS complete';
+  ELSE 
+    RAISE WARNING 'FAIL: wallets has % policies, expected 3', v_count; 
+  END IF;
+
+  -- FIX 2: transactions
+  SELECT COUNT(*) INTO v_count FROM pg_policies WHERE tablename = 'transactions';
+  RAISE NOTICE 'transactions policies: % (expected 1)', v_count;
+  IF v_count = 1 THEN 
+    RAISE NOTICE 'OK: transactions RLS complete';
+  ELSE 
+    RAISE WARNING 'FAIL: transactions has % policies, expected 1', v_count; 
+  END IF;
+
+  -- FIX 3: proposals
+  SELECT COUNT(*) INTO v_count FROM pg_policies WHERE tablename = 'proposals';
+  RAISE NOTICE 'proposals policies: % (expected 3)', v_count;
+  IF v_count = 3 THEN 
+    RAISE NOTICE 'OK: proposals RLS complete';
+  ELSE 
+    RAISE WARNING 'FAIL: proposals has % policies, expected 3', v_count; 
+  END IF;
+
+  -- FIX 4: profiles UPDATE duplicate
+  SELECT COUNT(*) INTO v_count 
+  FROM pg_policies 
+  WHERE tablename = 'profiles' AND cmd = 'UPDATE';
+  RAISE NOTICE 'profiles UPDATE policies: % (expected 1)', v_count;
+  IF v_count = 1 THEN 
+    RAISE NOTICE 'OK: profiles UPDATE policy deduplicated';
+  ELSE 
+    RAISE WARNING 'FAIL: profiles has % UPDATE policies, expected 1', v_count; 
+  END IF;
+
+  -- FIX 5: double-credit trigger
+  SELECT COUNT(*) INTO v_count 
+  FROM pg_trigger t
+  JOIN pg_class c ON c.oid = t.tgrelid
+  WHERE c.relname = 'escrow' 
+    AND t.tgname = 'prevent_double_escrow_release';
+  RAISE NOTICE 'escrow double-credit trigger: % (expected 1)', v_count;
+  IF v_count = 1 THEN 
+    RAISE NOTICE 'OK: double-credit guard in place';
+  ELSE 
+    RAISE WARNING 'FAIL: prevent_double_escrow_release trigger missing'; 
+  END IF;
+
+END $verify$;
+
+-- withdrawals
+ALTER TABLE withdrawals ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can view own withdrawals"
+  ON withdrawals FOR SELECT USING (user_id = auth.uid());
+CREATE POLICY "Users can create own withdrawals"
+  ON withdrawals FOR INSERT WITH CHECK (user_id = auth.uid());
+
+-- security_logs (read-only for own entries; writes are internal only)
+ALTER TABLE security_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can view own security logs"
+  ON security_logs FOR SELECT USING (user_id = auth.uid());
+
+-- user_devices
+ALTER TABLE user_devices ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can view own devices"
+  ON user_devices FOR SELECT USING (user_id = auth.uid());
+CREATE POLICY "Users can manage own devices"
+  ON user_devices FOR ALL USING (user_id = auth.uid());
+
+-- support_tickets
+ALTER TABLE support_tickets ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can manage own tickets"
+  ON support_tickets FOR ALL USING (user_id = auth.uid());
+
+-- verification_documents
+ALTER TABLE verification_documents ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can manage own documents"
+  ON verification_documents FOR ALL USING (user_id = auth.uid());
+
+-- platform_revenue (admin only)
+ALTER TABLE platform_revenue ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Admin can view revenue"
+  ON platform_revenue FOR SELECT USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+  );
+
+-- webhook_logs (admin only — no user should ever access this)
+ALTER TABLE webhook_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Admin can view webhook logs"
+  ON webhook_logs FOR SELECT USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+  );
+
+-- audit_logs (admin only)
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Admin can view audit logs"
+  ON audit_logs FOR ALL USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+  );
+
+-- product_orders and product_reviews (superseded, lock them down)
+ALTER TABLE product_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE product_reviews ENABLE ROW LEVEL SECURITY;
+-- No policies = no access for anyone except service role. Intentional.
+
+-- Inside process_successful_payment, after creating the escrow record,
+-- add the freelancer earnings to pending_clearance (not balance yet)
+CREATE OR REPLACE FUNCTION process_successful_payment(
+  p_transaction_id UUID,
+  p_order_id UUID,
+  p_flw_tx_id TEXT,
+  p_amount NUMERIC
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $func$
+DECLARE
+  v_order RECORD;
+  v_result jsonb;
+BEGIN
+  UPDATE transactions
+  SET status = 'successful', flutterwave_tx_ref = p_flw_tx_id, paid_at = NOW()
+  WHERE id = p_transaction_id;
+
+  SELECT * INTO v_order FROM orders WHERE id = p_order_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Order not found'; END IF;
+
+  UPDATE orders SET status = 'awaiting_delivery' WHERE id = p_order_id;
+
+  INSERT INTO escrow (order_id, transaction_id, amount, status)
+  VALUES (p_order_id, p_transaction_id, p_amount, 'held');
+
+  -- THIS WAS MISSING: load freelancer earnings into pending_clearance
+  INSERT INTO wallets (user_id, pending_clearance)
+  VALUES (v_order.freelancer_id, v_order.freelancer_earnings)
+  ON CONFLICT (user_id) DO UPDATE
+    SET pending_clearance = wallets.pending_clearance + v_order.freelancer_earnings,
+        updated_at = NOW();
+
+  INSERT INTO notifications (user_id, type, title, message, link) VALUES
+    (v_order.freelancer_id, 'new_order', 'New Order Received!',
+     'Payment confirmed. Start working on: ' || v_order.title,
+     '/freelancer/orders/' || p_order_id),
+    (v_order.client_id, 'payment_success', 'Payment Successful',
+     'Your payment is secured in escrow for: ' || v_order.title,
+     '/client/orders/' || p_order_id);
+
+  RETURN jsonb_build_object('success', true, 'order_id', p_order_id, 'status', 'awaiting_delivery');
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'Payment processing failed: %', SQLERRM;
+  RETURN jsonb_build_object('success', false, 'error', SQLERRM);
+END;
+$func$;
+
+ALTER TABLE staff_roles
+ADD CONSTRAINT staff_roles_role_type_check
+CHECK (role_type IN ('admin', 'moderator', 'financial_analyst', 'community_manager'));
+
+-- One trigger function already exists: update_updated_at_column()
+-- Just need to attach it to the missing tables
+
+CREATE TRIGGER update_proposals_updated_at
+  BEFORE UPDATE ON proposals
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_wallets_updated_at
+  BEFORE UPDATE ON wallets
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_products_updated_at
+  BEFORE UPDATE ON products
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_marketplace_orders_updated_at
+  BEFORE UPDATE ON marketplace_orders
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_liveness_verifications_updated_at
+  BEFORE UPDATE ON liveness_verifications
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_contest_tickets_updated_at
+  BEFORE UPDATE ON contest_tickets
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_platform_config_updated_at
+  BEFORE UPDATE ON platform_config
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+  ALTER TABLE products ALTER COLUMN seller_id SET NOT NULL;
+
+  DROP POLICY IF EXISTS "Users can update their own profile" ON profiles;
+
+  -- escrow
+ALTER TABLE escrow ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Order participants can view escrow"
+  ON escrow FOR SELECT USING (
+    order_id IN (
+      SELECT id FROM orders
+      WHERE client_id = auth.uid() OR freelancer_id = auth.uid()
+    )
+  );
+
+-- reviews (respects is_public flag)
+ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Public reviews viewable by all"
+  ON reviews FOR SELECT USING (is_public = true);
+CREATE POLICY "Users can view own reviews"
+  ON reviews FOR SELECT
+  USING (reviewee_id = auth.uid() OR reviewer_id = auth.uid());
+
+-- conversations
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Participants can view own conversations"
+  ON conversations FOR SELECT
+  USING (participant_1 = auth.uid() OR participant_2 = auth.uid());
+CREATE POLICY "Users can create conversations"
+  ON conversations FOR INSERT
+  WITH CHECK (participant_1 = auth.uid() OR participant_2 = auth.uid());
+
+-- disputes
+ALTER TABLE disputes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Dispute parties can view their disputes"
+  ON disputes FOR SELECT
+  USING (raised_by = auth.uid() OR against = auth.uid());
+CREATE POLICY "Users can raise disputes"
+  ON disputes FOR INSERT WITH CHECK (raised_by = auth.uid());
+CREATE POLICY "Admins can manage all disputes"
+  ON disputes FOR ALL USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+  );
+
+-- staff_roles
+ALTER TABLE staff_roles ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Admins can manage staff roles"
+  ON staff_roles FOR ALL USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND user_type = 'admin')
+  );
+CREATE POLICY "Staff can view own role"
+  ON staff_roles FOR SELECT USING (user_id = auth.uid());
+
+  CREATE POLICY "Participants can send messages"
+  ON messages FOR INSERT
+  WITH CHECK (
+    sender_id = auth.uid()
+    AND conversation_id IN (
+      SELECT id FROM conversations
+      WHERE participant_1 = auth.uid() OR participant_2 = auth.uid()
+    )
+  );
+
+CREATE POLICY "Participants can update own messages"
+  ON messages FOR UPDATE
+  USING (sender_id = auth.uid());
+
+  CREATE OR REPLACE FUNCTION update_wallet_on_withdrawal_complete()
+RETURNS TRIGGER AS $func$
+BEGIN
+  IF NEW.status = 'completed' AND OLD.status != 'completed' THEN
+    UPDATE wallets
+    SET total_withdrawn = total_withdrawn + NEW.amount,
+        balance = GREATEST(0, balance - NEW.amount),
+        updated_at = NOW()
+    WHERE id = NEW.wallet_id;
+  END IF;
+  RETURN NEW;
+END;
+$func$ LANGUAGE plpgsql;
+
+CREATE TRIGGER sync_wallet_on_withdrawal
+  AFTER UPDATE OF status ON withdrawals
+  FOR EACH ROW EXECUTE FUNCTION update_wallet_on_withdrawal_complete();
+
+  -- Redundant SELECT policy on profiles
+DROP POLICY IF EXISTS "Users can view their own profile" ON profiles;
+
+-- artifact_storage missing updated_at trigger
+CREATE TRIGGER update_artifact_storage_updated_at
+  BEFORE UPDATE ON artifact_storage
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+  -- VERIFY first — confirm nothing currently calls the 2-param form
+SELECT routine_name, specific_name
+FROM information_schema.routines
+WHERE routine_schema = 'public'
+  AND routine_name = 'release_escrow_to_wallet';
+
+-- FIX — drop the unsafe overload
+DROP FUNCTION IF EXISTS public.release_escrow_to_wallet(uuid, numeric);
+
+CREATE OR REPLACE FUNCTION public.find_frequent_disputers(since_date timestamp with time zone)
+RETURNS TABLE(id uuid)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $func$
+BEGIN
+    RETURN QUERY
+    SELECT raised_by AS id          -- was: client_id (does not exist)
+    FROM disputes
+    WHERE created_at >= since_date
+    GROUP BY raised_by
+    HAVING COUNT(id) >= 3;
+END;
+$func$;
+
+-- DROP the open UPDATE policy
+DROP POLICY IF EXISTS "Users can update own wallet" ON public.wallets;
+
+-- Also lock down INSERT — wallets should be created by process_successful_payment,
+-- not by a raw client INSERT. If you haven't already:
+DROP POLICY IF EXISTS "Users can create own wallet" ON public.wallets;
+
+-- Optionally re-add a narrow SELECT-only policy for the dashboard
+-- (wallets are already SELECT-covered, so nothing else needed here)
+
+ALTER TABLE public.service_packages ENABLE ROW LEVEL SECURITY;
+
+-- Public read: only if the parent service is active (or owned by viewer)
+CREATE POLICY "Service packages viewable if service is active"
+ON public.service_packages FOR SELECT
+USING (
+  EXISTS (
+    SELECT 1 FROM services s
+    WHERE s.id = service_packages.service_id
+      AND (s.is_active = true OR s.freelancer_id = auth.uid())
+  )
+);
+
+-- Write: only the service owner
+CREATE POLICY "Freelancer can manage own service packages"
+ON public.service_packages FOR ALL
+USING (
+  EXISTS (
+    SELECT 1 FROM services s
+    WHERE s.id = service_packages.service_id
+      AND s.freelancer_id = auth.uid()
+  )
+)
+WITH CHECK (
+  EXISTS (
+    SELECT 1 FROM services s
+    WHERE s.id = service_packages.service_id
+      AND s.freelancer_id = auth.uid()
+  )
+);
+
+CREATE OR REPLACE FUNCTION public.complete_order_with_payment(
+  p_order_id uuid,
+  p_client_rating integer,
+  p_client_review text DEFAULT NULL,
+  p_communication_rating integer DEFAULT NULL,
+  p_quality_rating integer DEFAULT NULL,
+  p_professionalism_rating integer DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $func$
+DECLARE
+  v_order  RECORD;
+  v_escrow RECORD;
+  v_result jsonb;
+BEGIN
+  SELECT * INTO v_order FROM orders WHERE id = p_order_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Order not found'; END IF;
+  IF v_order.status != 'delivered' THEN
+    RAISE EXCEPTION 'Order must be in delivered status before completion';
+  END IF;
+
+  SELECT * INTO v_escrow FROM escrow
+  WHERE order_id = p_order_id AND status = 'held';
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Escrow not found or already released';
+  END IF;
+
+  -- 1. Complete the order
+  UPDATE orders
+  SET status        = 'completed',
+      client_rating = p_client_rating,
+      client_review = p_client_review
+  WHERE id = p_order_id;
+
+  -- 2. Release escrow record
+  UPDATE escrow
+  SET status      = 'released_to_freelancer',
+      released_at = NOW()
+  WHERE id = v_escrow.id;
+
+  -- 3. DO NOT touch wallet here.
+  --    pending_clearance was already loaded by process_successful_payment.
+  --    process_pending_clearances() (cron) will move it to balance after 7 days.
+
+  -- 4. Record the review
+  INSERT INTO reviews (
+    order_id, reviewer_id, reviewee_id, rating, review_text,
+    communication_rating, quality_rating, professionalism_rating
+  ) VALUES (
+    p_order_id, v_order.client_id, v_order.freelancer_id,
+    p_client_rating, p_client_review,
+    p_communication_rating, p_quality_rating, p_professionalism_rating
+  );
+
+  -- 5. Update freelancer profile stats
+  UPDATE profiles
+  SET total_jobs_completed = total_jobs_completed + 1,
+      freelancer_rating = (
+        SELECT AVG(rating)::NUMERIC(3,2)
+        FROM reviews WHERE reviewee_id = v_order.freelancer_id
+      )
+  WHERE id = v_order.freelancer_id;
+
+  -- 6. Increment service order count
+  IF v_order.service_id IS NOT NULL THEN
+    UPDATE services SET orders_count = orders_count + 1
+    WHERE id = v_order.service_id;
+  END IF;
+
+  -- 7. Close the linked job
+  IF v_order.job_id IS NOT NULL THEN
+    UPDATE jobs SET status = 'completed' WHERE id = v_order.job_id;
+  END IF;
+
+  -- 8. Notify freelancer (funds are pending clearance, not yet available)
+  INSERT INTO notifications (user_id, type, title, message, link) VALUES (
+    v_order.freelancer_id,
+    'order_completed',
+    'Order Completed! ⏳',
+    '₦' || v_order.freelancer_earnings ||
+      ' will clear to your wallet in 7 days for: ' || v_order.title,
+    '/freelancer/orders/' || p_order_id
+  );
+
+  RETURN jsonb_build_object(
+    'success',         true,
+    'order_id',        p_order_id,
+    'amount_clearing', v_order.freelancer_earnings
+  );
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'Order completion failed: %', SQLERRM;
+  RETURN jsonb_build_object('success', false, 'error', SQLERRM);
+END;
+$func$;
+
+CREATE OR REPLACE FUNCTION public.update_conversation_last_message()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $func$
+BEGIN
+  UPDATE conversations
+  SET last_message_at = NEW.created_at
+  WHERE id = NEW.conversation_id;
+  RETURN NEW;
+END;
+$func$;
+
+CREATE TRIGGER trg_update_conversation_last_message
+AFTER INSERT ON public.messages
+FOR EACH ROW
+EXECUTE FUNCTION update_conversation_last_message();
+
+CREATE POLICY "Participants can update own conversations"
+ON public.conversations FOR UPDATE
+USING ((participant_1 = auth.uid()) OR (participant_2 = auth.uid()));
+
+-- product_orders: drop and re-add with CASCADE
+ALTER TABLE public.product_orders
+  DROP CONSTRAINT IF EXISTS product_orders_product_id_fkey,
+  DROP CONSTRAINT IF EXISTS product_orders_buyer_id_fkey,
+  DROP CONSTRAINT IF EXISTS product_orders_seller_id_fkey;
+
+ALTER TABLE public.product_orders
+  ADD CONSTRAINT product_orders_product_id_fkey
+    FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE,
+  ADD CONSTRAINT product_orders_buyer_id_fkey
+    FOREIGN KEY (buyer_id)   REFERENCES public.profiles(id) ON DELETE CASCADE,
+  ADD CONSTRAINT product_orders_seller_id_fkey
+    FOREIGN KEY (seller_id)  REFERENCES public.profiles(id) ON DELETE CASCADE;
+
+-- product_reviews: cascade from order and product
+ALTER TABLE public.product_reviews
+  DROP CONSTRAINT IF EXISTS product_reviews_order_id_fkey,
+  DROP CONSTRAINT IF EXISTS product_reviews_product_id_fkey,
+  DROP CONSTRAINT IF EXISTS product_reviews_buyer_id_fkey;
+
+ALTER TABLE public.product_reviews
+  ADD CONSTRAINT product_reviews_order_id_fkey
+    FOREIGN KEY (order_id)   REFERENCES public.product_orders(id) ON DELETE CASCADE,
+  ADD CONSTRAINT product_reviews_product_id_fkey
+    FOREIGN KEY (product_id) REFERENCES public.products(id)       ON DELETE CASCADE,
+  ADD CONSTRAINT product_reviews_buyer_id_fkey
+    FOREIGN KEY (buyer_id)   REFERENCES public.profiles(id)       ON DELETE CASCADE;
+
+    -- ────────────────────────────────────────────────────────────
+-- SECTION 2: updated_at triggers
+-- ────────────────────────────────────────────────────────────
+
+CREATE TRIGGER update_product_orders_updated_at
+  BEFORE UPDATE ON public.product_orders
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_product_reviews_updated_at
+  BEFORE UPDATE ON public.product_reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 3: product_reviews → recalculate products.rating
+-- The existing recalculate_product_rating() function reads from
+-- marketplace_reviews. We need a parallel function that reads
+-- from product_reviews instead.
+-- ────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.recalculate_product_rating_from_reviews()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $func$
+DECLARE
+  v_product_id uuid;
+BEGIN
+  v_product_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.product_id ELSE NEW.product_id END;
+
+  UPDATE public.products
+  SET
+    reviews_count = (
+      SELECT COUNT(*)
+      FROM   public.product_reviews
+      WHERE  product_id = v_product_id
+    ),
+    rating = COALESCE(
+      (
+        SELECT ROUND(AVG(rating)::numeric, 2)
+        FROM   public.product_reviews
+        WHERE  product_id = v_product_id
+      ),
+      0
+    )
+  WHERE id = v_product_id;
+
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$func$;
+
+CREATE TRIGGER trg_recalculate_product_rating_from_reviews
+  AFTER INSERT OR UPDATE OR DELETE ON public.product_reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION recalculate_product_rating_from_reviews();
+
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 4: order_number sequence for product_orders
+-- Re-use the existing order_number_seq from orders, or create
+-- a dedicated one. Using dedicated to avoid cross-table collisions.
+-- ────────────────────────────────────────────────────────────
+
+CREATE SEQUENCE IF NOT EXISTS product_order_number_seq START 1;
+
+CREATE OR REPLACE FUNCTION public.generate_product_order_number()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $func$
+BEGIN
+  NEW.order_number := 'PO-'
+    || TO_CHAR(NOW(), 'YYYYMMDD')
+    || '-'
+    || LPAD(NEXTVAL('product_order_number_seq')::TEXT, 6, '0');
+  RETURN NEW;
+END;
+$func$;
+
+CREATE TRIGGER set_product_order_number
+  BEFORE INSERT ON public.product_orders
+  FOR EACH ROW
+  EXECUTE FUNCTION generate_product_order_number();
+
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 5: RLS policies — product_orders
+-- Pattern mirrors marketplace_orders exactly.
+-- ────────────────────────────────────────────────────────────
+
+-- Buyers can place orders
+CREATE POLICY "Buyers can create product orders"
+ON public.product_orders
+FOR INSERT
+WITH CHECK (auth.uid() = buyer_id);
+
+-- Buyers can view their own orders
+CREATE POLICY "Buyers can view their product orders"
+ON public.product_orders
+FOR SELECT
+USING (auth.uid() = buyer_id);
+
+-- Sellers can view orders for their products
+CREATE POLICY "Sellers can view product orders for their listings"
+ON public.product_orders
+FOR SELECT
+USING (auth.uid() = seller_id);
+
+-- Sellers can update order status (confirm, ship, etc.)
+CREATE POLICY "Sellers can update product orders"
+ON public.product_orders
+FOR UPDATE
+USING (auth.uid() = seller_id);
+
+-- Buyers can cancel orders in early statuses
+CREATE POLICY "Buyers can cancel pending product orders"
+ON public.product_orders
+FOR UPDATE
+USING (
+  auth.uid() = buyer_id
+  AND status = ANY (ARRAY['pending_payment'::text, 'confirmed'::text])
+);
+
+-- Admins can see everything
+CREATE POLICY "Admins can manage all product orders"
+ON public.product_orders
+FOR ALL
+USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND user_type = 'admin'
+  )
+);
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 6: RLS policies — product_reviews
+-- Pattern mirrors marketplace_reviews exactly.
+-- ────────────────────────────────────────────────────────────
+
+-- Anyone can read reviews (public trust signal)
+CREATE POLICY "Anyone can view product reviews"
+ON public.product_reviews
+FOR SELECT
+USING (true);
+
+-- Only verified buyers (order exists + delivered) can write a review
+CREATE POLICY "Buyers can create reviews for delivered orders"
+ON public.product_reviews
+FOR INSERT
+WITH CHECK (
+  auth.uid() = buyer_id
+  AND EXISTS (
+    SELECT 1 FROM public.product_orders po
+    WHERE po.id        = product_reviews.order_id
+      AND po.buyer_id  = auth.uid()
+      AND po.status    = 'delivered'
+  )
+);
+
+-- Reviewers can update their own review
+CREATE POLICY "Buyers can update their own product reviews"
+ON public.product_reviews
+FOR UPDATE
+USING (auth.uid() = buyer_id);
+
+-- Reviewers can delete their own review
+CREATE POLICY "Buyers can delete their own product reviews"
+ON public.product_reviews
+FOR DELETE
+USING (auth.uid() = buyer_id);
+
+-- Admins
+CREATE POLICY "Admins can manage all product reviews"
+ON public.product_reviews
+FOR ALL
+USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND user_type = 'admin'
+  )
+);
+
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 7: UNIQUE constraint — one review per order
+-- Prevents duplicate reviews for the same product order.
+-- ────────────────────────────────────────────────────────────
+
+ALTER TABLE public.product_reviews
+  ADD CONSTRAINT product_reviews_order_id_key UNIQUE (order_id);
+
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 8: trust score trigger for product reviews
+-- Mirrors the trigger on the freelancer reviews table.
+-- ────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.trigger_product_review_trust_score()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $func$
+DECLARE
+  v_seller_id uuid;
+BEGIN
+  -- Get the seller of the ordered product
+  SELECT seller_id INTO v_seller_id
+  FROM public.product_orders
+  WHERE id = NEW.order_id;
+
+  IF v_seller_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.rating >= 4 THEN
+    PERFORM add_trust_score_event(
+      v_seller_id,
+      'positive_product_review',
+      2,
+      'product_review',
+      NEW.id,
+      'Received ' || NEW.rating || '-star product review'
+    );
+  ELSIF NEW.rating <= 2 THEN
+    PERFORM add_trust_score_event(
+      v_seller_id,
+      'negative_product_review',
+      -3,
+      'product_review',
+      NEW.id,
+      'Received ' || NEW.rating || '-star product review'
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+CREATE TRIGGER product_review_trust_score
+  AFTER INSERT ON public.product_reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION trigger_product_review_trust_score();
+
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 9: Verification query
+-- Run after applying to confirm everything is wired correctly.
+-- ────────────────────────────────────────────────────────────
+
+DO $verify$
+DECLARE
+  v_po_policies  int;
+  v_pr_policies  int;
+  v_po_triggers  int;
+  v_pr_triggers  int;
+BEGIN
+  SELECT COUNT(*) INTO v_po_policies FROM pg_policies
+  WHERE schemaname = 'public' AND tablename = 'product_orders';
+
+  SELECT COUNT(*) INTO v_pr_policies FROM pg_policies
+  WHERE schemaname = 'public' AND tablename = 'product_reviews';
+
+  SELECT COUNT(*) INTO v_po_triggers FROM information_schema.triggers
+  WHERE event_object_schema = 'public' AND event_object_table = 'product_orders';
+
+  SELECT COUNT(*) INTO v_pr_triggers FROM information_schema.triggers
+  WHERE event_object_schema = 'public' AND event_object_table = 'product_reviews';
+
+  RAISE NOTICE 'product_orders  → policies: %, triggers: %', v_po_policies, v_po_triggers;
+  RAISE NOTICE 'product_reviews → policies: %, triggers: %', v_pr_policies, v_pr_triggers;
+
+  IF v_po_policies < 5 THEN
+    RAISE WARNING 'product_orders may be missing policies (expected ≥5, got %)', v_po_policies;
+  END IF;
+  IF v_pr_policies < 4 THEN
+    RAISE WARNING 'product_reviews may be missing policies (expected ≥4, got %)', v_pr_policies;
+  END IF;
+END;
+$verify$;
+
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 1: FK CASCADE fixes
+-- All 6 FKs were NO ACTION — change to CASCADE so that deleting
+-- a product or profile cleans up orders and reviews automatically.
+-- ────────────────────────────────────────────────────────────
+
+ALTER TABLE public.product_orders
+  DROP CONSTRAINT IF EXISTS product_orders_product_id_fkey,
+  DROP CONSTRAINT IF EXISTS product_orders_buyer_id_fkey,
+  DROP CONSTRAINT IF EXISTS product_orders_seller_id_fkey;
+
+ALTER TABLE public.product_orders
+  ADD CONSTRAINT product_orders_product_id_fkey
+    FOREIGN KEY (product_id) REFERENCES public.products(id)  ON DELETE CASCADE,
+  ADD CONSTRAINT product_orders_buyer_id_fkey
+    FOREIGN KEY (buyer_id)   REFERENCES public.profiles(id)  ON DELETE CASCADE,
+  ADD CONSTRAINT product_orders_seller_id_fkey
+    FOREIGN KEY (seller_id)  REFERENCES public.profiles(id)  ON DELETE CASCADE;
+
+ALTER TABLE public.product_reviews
+  DROP CONSTRAINT IF EXISTS product_reviews_order_id_fkey,
+  DROP CONSTRAINT IF EXISTS product_reviews_product_id_fkey,
+  DROP CONSTRAINT IF EXISTS product_reviews_buyer_id_fkey;
+
+ALTER TABLE public.product_reviews
+  ADD CONSTRAINT product_reviews_order_id_fkey
+    FOREIGN KEY (order_id)   REFERENCES public.product_orders(id) ON DELETE CASCADE,
+  ADD CONSTRAINT product_reviews_product_id_fkey
+    FOREIGN KEY (product_id) REFERENCES public.products(id)       ON DELETE CASCADE,
+  ADD CONSTRAINT product_reviews_buyer_id_fkey
+    FOREIGN KEY (buyer_id)   REFERENCES public.profiles(id)       ON DELETE CASCADE;
+
+DROP TRIGGER IF EXISTS update_product_orders_updated_at ON public.product_orders;
+
+CREATE TRIGGER update_product_orders_updated_at
+  BEFORE UPDATE ON public.product_orders
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+  CREATE OR REPLACE FUNCTION public.recalculate_product_rating_from_reviews()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $func$
+DECLARE
+  v_product_id uuid;
+BEGIN
+  v_product_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.product_id ELSE NEW.product_id END;
+
+  UPDATE public.products
+  SET
+    reviews_count = (
+      SELECT COUNT(*)
+      FROM   public.product_reviews
+      WHERE  product_id     = v_product_id
+        AND  product_rating IS NOT NULL
+    ),
+    rating = COALESCE(
+      (
+        SELECT ROUND(AVG(product_rating)::numeric, 2)
+        FROM   public.product_reviews
+        WHERE  product_id     = v_product_id
+          AND  product_rating IS NOT NULL
+      ),
+      0
+    )
+  WHERE id = v_product_id;
+
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$func$;
+
+DROP TRIGGER IF EXISTS trg_recalculate_product_rating_from_reviews ON public.product_reviews;
+
+CREATE TRIGGER trg_recalculate_product_rating_from_reviews
+  AFTER INSERT OR UPDATE OR DELETE ON public.product_reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION recalculate_product_rating_from_reviews();
+
+  CREATE SEQUENCE IF NOT EXISTS product_order_number_seq START 1;
+
+CREATE OR REPLACE FUNCTION public.generate_product_order_number()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $func$
+BEGIN
+  NEW.order_number := 'PO-'
+    || TO_CHAR(NOW(), 'YYYYMMDD')
+    || '-'
+    || LPAD(NEXTVAL('product_order_number_seq')::TEXT, 6, '0');
+  RETURN NEW;
+END;
+$func$;
+
+DROP TRIGGER IF EXISTS set_product_order_number ON public.product_orders;
+
+CREATE TRIGGER set_product_order_number
+  BEFORE INSERT ON public.product_orders
+  FOR EACH ROW
+  WHEN (NEW.order_number IS NULL OR NEW.order_number = '')
+  EXECUTE FUNCTION generate_product_order_number();
+
+  -- ────────────────────────────────────────────────────────────
+-- SECTION 7: One review per order (UNIQUE)
+-- Prevents a buyer from submitting multiple reviews for the
+-- same product_order. Only add if it doesn't already exist.
+-- ────────────────────────────────────────────────────────────
+
+DO $verify$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'product_reviews_order_id_key'
+      AND conrelid = 'public.product_reviews'::regclass
+  ) THEN
+    ALTER TABLE public.product_reviews
+      ADD CONSTRAINT product_reviews_order_id_key UNIQUE (order_id);
+    RAISE NOTICE 'Added UNIQUE constraint product_reviews_order_id_key';
+  ELSE
+    RAISE NOTICE 'UNIQUE constraint product_reviews_order_id_key already exists — skipped';
+  END IF;
+END;
+$verify$;
+
+-- ────────────────────────────────────────────────────────────
+-- SECTION 9: is_verified_purchase auto-set on INSERT
+-- Sets is_verified_purchase = true automatically when the
+-- linked product_order exists and belongs to the buyer,
+-- so the app never has to set this manually.
+-- ────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.set_verified_purchase_flag()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $func$
+BEGIN
+  NEW.is_verified_purchase := EXISTS (
+    SELECT 1
+    FROM public.product_orders po
+    WHERE po.id       = NEW.order_id
+      AND po.buyer_id = NEW.buyer_id
+      AND po.status   = 'delivered'
+  );
+  RETURN NEW;
+END;
+$func$;
+
+CREATE TRIGGER trg_set_verified_purchase
+  BEFORE INSERT ON public.product_reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION set_verified_purchase_flag();
+
+  -- ────────────────────────────────────────────────────────────
+-- SECTION 10: Verification
+-- Run after applying — confirms expected policy and trigger counts.
+-- ────────────────────────────────────────────────────────────
+
+DO $verify$
+DECLARE
+  v_po_policies  int;
+  v_pr_policies  int;
+  v_po_triggers  int;
+  v_pr_triggers  int;
+BEGIN
+  SELECT COUNT(*) INTO v_po_policies FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'product_orders';
+  SELECT COUNT(*) INTO v_pr_policies FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'product_reviews';
+  SELECT COUNT(*) INTO v_po_triggers FROM information_schema.triggers
+    WHERE event_object_schema = 'public' AND event_object_table = 'product_orders';
+  SELECT COUNT(*) INTO v_pr_triggers FROM information_schema.triggers
+    WHERE event_object_schema = 'public' AND event_object_table = 'product_reviews';
+
+  RAISE NOTICE 'product_orders  → policies: % (expected 6), triggers: % (expected 1)', v_po_policies, v_po_triggers;
+  RAISE NOTICE 'product_reviews → policies: % (expected 5), triggers: % (expected 3)', v_pr_policies, v_pr_triggers;
+
+  IF v_po_policies < 6 THEN
+    RAISE WARNING 'product_orders missing policies — check for errors above';
+  END IF;
+  IF v_pr_policies < 5 THEN
+    RAISE WARNING 'product_reviews missing policies — check for errors above';
+  END IF;
+END;
+$verify$;
+
+CREATE OR REPLACE FUNCTION public.trigger_product_review_trust_score()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $body$
+DECLARE
+  v_seller_id uuid;
+BEGIN
+  SELECT seller_id INTO v_seller_id
+  FROM public.product_orders
+  WHERE id = NEW.order_id;
+
+  IF v_seller_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.product_rating >= 4 THEN
+    PERFORM add_trust_score_event(
+      v_seller_id,
+      'positive_product_review',
+      2,
+      'product_review',
+      NEW.id,
+      'Received ' || NEW.product_rating || '-star product review'
+    );
+  ELSIF NEW.product_rating <= 2 THEN
+    PERFORM add_trust_score_event(
+      v_seller_id,
+      'negative_product_review',
+      -3,
+      'product_review',
+      NEW.id,
+      'Received ' || NEW.product_rating || '-star product review'
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$body$;
+
+DROP TRIGGER IF EXISTS trg_recalculate_product_rating ON public.marketplace_reviews;
+
+-- The recalculate_product_rating() function (marketplace variant) is now orphaned.
+-- Drop it to avoid confusion. The correct function is
+-- recalculate_product_rating_from_reviews() which remains.
+DROP FUNCTION IF EXISTS public.recalculate_product_rating();
+
+-- Step 1: add cleared_at to orders for per-order tracking
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS cleared_at timestamp with time zone;
+
+-- Step 2: replace the function with a per-order scoped version
+CREATE OR REPLACE FUNCTION public.process_pending_clearances()
+RETURNS TABLE(processed_count integer)
+LANGUAGE plpgsql
+AS $body$
+DECLARE
+  v_count INT := 0;
+  v_rec   RECORD;
+BEGIN
+  -- For each freelancer, sum only the earnings from orders that:
+  --   (a) are completed
+  --   (b) have not yet been cleared (cleared_at IS NULL)
+  --   (c) completed more than 7 days ago (updated_at is set by trigger on status change)
+  FOR v_rec IN
+    SELECT
+      freelancer_id,
+      SUM(freelancer_earnings) AS clearable_amount
+    FROM public.orders
+    WHERE status      = 'completed'
+      AND cleared_at  IS NULL
+      AND updated_at  < NOW() - INTERVAL '7 days'
+    GROUP BY freelancer_id
+  LOOP
+    -- Move that exact amount from pending_clearance to balance
+    UPDATE public.wallets
+    SET
+      balance           = balance + v_rec.clearable_amount,
+      pending_clearance = GREATEST(0, pending_clearance - v_rec.clearable_amount),
+      updated_at        = NOW()
+    WHERE user_id = v_rec.freelancer_id;
+
+    -- Mark those orders as cleared so they are never double-released
+    UPDATE public.orders
+    SET cleared_at = NOW()
+    WHERE freelancer_id = v_rec.freelancer_id
+      AND status        = 'completed'
+      AND cleared_at    IS NULL
+      AND updated_at    < NOW() - INTERVAL '7 days';
+
+    v_count := v_count + 1;
+  END LOOP;
+
+  RETURN QUERY SELECT v_count;
+END;
+$body$;
+
+-- Step 1: add a default so existing INSERT paths are safe immediately
+ALTER TABLE public.profiles
+  ALTER COLUMN trust_level SET DEFAULT 'new';
+
+-- Step 2: backfill any existing NULLs
+UPDATE public.profiles
+SET trust_level = 'new'
+WHERE trust_level IS NULL;
+
+-- Step 3: extend the trigger to also fire on INSERT
+DROP TRIGGER IF EXISTS update_profile_trust_level ON public.profiles;
+
+CREATE TRIGGER update_profile_trust_level
+  BEFORE INSERT OR UPDATE OF trust_score
+  ON public.profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION update_trust_level();
+-- update_trust_level() already exists and returns NEW with trust_level set
+
+CREATE OR REPLACE FUNCTION public.decrement_job_proposals_count()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $body$
+BEGIN
+  -- Hard DELETE
+  IF TG_OP = 'DELETE' THEN
+    UPDATE public.jobs
+    SET proposals_count = GREATEST(0, proposals_count - 1)
+    WHERE id = OLD.job_id;
+    RETURN OLD;
+  END IF;
+
+  -- Status transition into withdrawn or cancelled
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.status NOT IN ('withdrawn', 'cancelled')
+       AND NEW.status IN ('withdrawn', 'cancelled') THEN
+      UPDATE public.jobs
+      SET proposals_count = GREATEST(0, proposals_count - 1)
+      WHERE id = NEW.job_id;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$body$;
+
+DROP TRIGGER IF EXISTS sync_proposals_count_decrement ON public.proposals;
+
+CREATE TRIGGER sync_proposals_count_decrement
+  AFTER DELETE OR UPDATE OF status
+  ON public.proposals
+  FOR EACH ROW
+  EXECUTE FUNCTION decrement_job_proposals_count();
+
+CREATE OR REPLACE FUNCTION public.reverse_admin_action(
+  p_log_id        uuid,
+  p_ticket_id     uuid    DEFAULT NULL,
+  p_reversed_by   uuid    DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $body$
+DECLARE
+  v_log RECORD;
+BEGIN
+  -- Load and validate the action log
+  SELECT * INTO v_log
+  FROM public.admin_action_logs
+  WHERE id = p_log_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reverse_admin_action: log % not found', p_log_id;
+  END IF;
+
+  IF v_log.is_reversed THEN
+    RAISE EXCEPTION 'reverse_admin_action: action % has already been reversed', p_log_id;
+  END IF;
+
+  IF v_log.reversible_until IS NOT NULL AND v_log.reversible_until < NOW() THEN
+    RAISE EXCEPTION 'reverse_admin_action: reversal window for action % expired at %',
+      p_log_id, v_log.reversible_until;
+  END IF;
+
+  -- Mark the action as reversed
+  UPDATE public.admin_action_logs
+  SET is_reversed = true
+  WHERE id = p_log_id;
+
+  -- Update the linked contest ticket if provided
+  IF p_ticket_id IS NOT NULL THEN
+    UPDATE public.contest_tickets
+    SET
+      status      = 'reversed',
+      reviewed_by = p_reversed_by,
+      updated_at  = NOW()
+    WHERE id = p_ticket_id;
+
+    IF NOT FOUND THEN
+      RAISE WARNING 'reverse_admin_action: ticket % not found — log marked reversed anyway', p_ticket_id;
+    END IF;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'success',        true,
+    'log_id',         p_log_id,
+    'action_type',    v_log.action_type,
+    'target_user_id', v_log.target_user_id,
+    'ticket_updated', p_ticket_id IS NOT NULL
+  );
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'reverse_admin_action failed: %', SQLERRM;
+  RETURN jsonb_build_object('success', false, 'error', SQLERRM);
+END;
+$body$;
+
+CREATE OR REPLACE FUNCTION public.validate_withdrawal_balance()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $body$
+DECLARE
+  v_balance numeric;
+BEGIN
+  -- Fetch current spendable balance
+  SELECT balance INTO v_balance
+  FROM public.wallets
+  WHERE user_id = NEW.user_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'validate_withdrawal_balance: no wallet found for user %', NEW.user_id;
+  END IF;
+
+  IF NEW.amount <= 0 THEN
+    RAISE EXCEPTION 'validate_withdrawal_balance: withdrawal amount must be positive (got ₦%)', NEW.amount;
+  END IF;
+
+  IF NEW.amount > v_balance THEN
+    RAISE EXCEPTION
+      'validate_withdrawal_balance: insufficient balance — wallet has ₦% but withdrawal requests ₦%',
+      v_balance, NEW.amount;
+  END IF;
+
+  RETURN NEW;
+END;
+$body$;
+
+DROP TRIGGER IF EXISTS guard_withdrawal_balance ON public.withdrawals;
+
+CREATE TRIGGER guard_withdrawal_balance
+  BEFORE INSERT
+  ON public.withdrawals
+  FOR EACH ROW
+  EXECUTE FUNCTION validate_withdrawal_balance();
+
+  DO $verify$
+DECLARE
+  v_col_exists    boolean;
+  v_trig_exists   boolean;
+  v_fn_exists     boolean;
+BEGIN
+  -- M-3: orders.cleared_at column
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'cleared_at'
+  ) INTO v_col_exists;
+  ASSERT v_col_exists, 'FAIL: orders.cleared_at missing';
+
+  -- M-5: profiles.trust_level default
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'profiles'
+      AND column_name = 'trust_level' AND column_default IS NOT NULL
+  ) INTO v_col_exists;
+  ASSERT v_col_exists, 'FAIL: profiles.trust_level default missing';
+
+  -- L-2: set_user_location_last_updated trigger
+  SELECT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE c.relname = 'user_locations' AND t.tgname = 'set_user_location_last_updated'
+  ) INTO v_trig_exists;
+  ASSERT v_trig_exists, 'FAIL: set_user_location_last_updated trigger missing';
+
+  -- L-3: sync_proposals_count_decrement trigger
+  SELECT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE c.relname = 'proposals' AND t.tgname = 'sync_proposals_count_decrement'
+  ) INTO v_trig_exists;
+  ASSERT v_trig_exists, 'FAIL: sync_proposals_count_decrement trigger missing';
+
+  -- L-4: reverse_admin_action function
+  SELECT EXISTS (
+    SELECT 1 FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = 'reverse_admin_action'
+  ) INTO v_fn_exists;
+  ASSERT v_fn_exists, 'FAIL: reverse_admin_action function missing';
+
+  -- L-5: guard_withdrawal_balance trigger
+  SELECT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE c.relname = 'withdrawals' AND t.tgname = 'guard_withdrawal_balance'
+  ) INTO v_trig_exists;
+  ASSERT v_trig_exists, 'FAIL: guard_withdrawal_balance trigger missing';
+
+  RAISE NOTICE 'All batch-2 checks passed.';
+END;
+$verify$;
