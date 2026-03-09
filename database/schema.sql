@@ -5148,3 +5148,92 @@ BEGIN
   RAISE NOTICE 'All batch-2 checks passed.';
 END;
 $verify$;
+
+-- Function: fires after a new auth user is created
+CREATE OR REPLACE FUNCTION handle_new_user()
+RETURNS TRIGGER
+SECURITY DEFINER
+SET search_path = public
+LANGUAGE plpgsql
+AS $func$
+BEGIN
+  -- Create profile
+  INSERT INTO public.profiles (
+    id,
+    email,
+    full_name,
+    phone_number,
+    user_type,
+    university,
+    location,
+    account_status,
+    trust_score,
+    trust_level,
+    identity_verified,
+    student_verified,
+    liveness_verified
+  ) VALUES (
+    NEW.id,
+    NEW.email,
+    NEW.raw_user_meta_data->>'full_name',
+    NEW.raw_user_meta_data->>'phone_number',
+    NEW.raw_user_meta_data->>'user_type',
+    NEW.raw_user_meta_data->>'university',
+    NEW.raw_user_meta_data->>'location',
+    'active',
+    0,
+    'new',
+    false,
+    false,
+    false
+  );
+
+  -- Create wallet for freelancers and 'both'
+  IF (NEW.raw_user_meta_data->>'user_type') IN ('freelancer', 'both') THEN
+    INSERT INTO public.wallets (
+      user_id,
+      balance,
+      pending_clearance
+    ) VALUES (
+      NEW.id,
+      0,
+      0
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+-- Trigger: attach to auth.users
+CREATE OR REPLACE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION handle_new_user();
+
+  ALTER TABLE transactions ADD COLUMN marketplace_order_id UUID REFERENCES marketplace_orders(id) ON DELETE CASCADE;
+ALTER TABLE escrow ADD COLUMN marketplace_order_id UUID REFERENCES marketplace_orders(id) ON DELETE CASCADE;
+
+CREATE OR REPLACE FUNCTION public.process_marketplace_payment(
+  p_transaction_id uuid,
+  p_order_id uuid,
+  p_flw_tx_id text,
+  p_amount numeric
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_order RECORD;
+BEGIN
+  UPDATE transactions SET status = 'successful', flutterwave_tx_ref = p_flw_tx_id, paid_at = NOW() WHERE id = p_transaction_id;
+  SELECT * INTO v_order FROM marketplace_orders WHERE id = p_order_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Marketplace order not found'; END IF;
+  
+  UPDATE marketplace_orders SET status = 'confirmed', paid_at = NOW() WHERE id = p_order_id;
+  INSERT INTO escrow (marketplace_order_id, transaction_id, amount, status) VALUES (p_order_id, p_transaction_id, p_amount, 'held');
+
+  INSERT INTO notifications (user_id, type, title, message, link) VALUES
+    (v_order.seller_id, 'new_marketplace_order', 'New Order Received! 🎉', 'Payment confirmed for your product.', '/marketplace/orders/' || p_order_id),
+    (v_order.buyer_id, 'payment_success', 'Payment Successful ✓', 'Your payment is secured in escrow.', '/marketplace/orders/' || p_order_id);
+
+  RETURN jsonb_build_object('success', true, 'order_id', p_order_id, 'status', 'confirmed');
+END;
+$$;

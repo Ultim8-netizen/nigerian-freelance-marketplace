@@ -1,5 +1,6 @@
 // src/app/api/auth/register/route.ts
 // Optimized Registration: Professional, secure, and ready for progressive verification.
+// Profile + wallet creation is handled atomically by the on_auth_user_created DB trigger.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -39,12 +40,19 @@ export async function POST(request: NextRequest) {
     }
 
     // 4. Create Auth User
+    // All registration metadata is passed via options.data so the
+    // on_auth_user_created trigger can read from raw_user_meta_data
+    // and atomically create the profile + wallet in the same transaction.
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email: validatedData.email,
       password: validatedData.password,
       options: {
         data: {
           full_name: validatedData.full_name,
+          phone_number: validatedData.phone_number,
+          user_type: validatedData.user_type,
+          university: validatedData.university || null,
+          location: validatedData.location,
         },
         emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/verify`,
       },
@@ -64,61 +72,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 5. Create Profile
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .insert({
-        id: authData.user.id,
-        email: validatedData.email,
-        full_name: validatedData.full_name,
-        phone_number: validatedData.phone_number,
-        user_type: validatedData.user_type,
-        university: validatedData.university || null,
-        location: validatedData.location,
-        account_status: 'active',
-        trust_score: 0,
-        trust_level: 'new',
-        identity_verified: false,
-        student_verified: false,
-        liveness_verified: false,
-      });
-
-    if (profileError) {
-      // CRITICAL: Rollback auth user if profile creation fails.
-      await supabase.auth.admin.deleteUser(authData.user.id);
-      
-      // Logger call is now clean and type-safe due to logger.ts fix.
-      logger.error('Profile creation failed, rolled back user', { 
-        userId: authData.user.id, 
-        error: profileError 
-      });
-      
-      return NextResponse.json(
-        { success: false, error: 'Profile creation failed' },
-        { status: 500 }
-      );
-    }
-
-    // 6. Create Wallet (for freelancers/both)
-    if (['freelancer', 'both'].includes(validatedData.user_type)) {
-      try {
-        await supabase.from('wallets').insert({
-          user_id: authData.user.id,
-          balance: 0,
-          pending_clearance: 0,
-        });
-      } catch (walletError) {
-        // IMPORTANT: Wallet failure is critical for a freelancer. 
-        // Log the error but DO NOT roll back the user, as they might be able to manually fix their wallet later.
-        // We log with full context and move on.
-        logger.error('Wallet creation failed (Non-blocking)', { 
-          userId: authData.user.id, 
-          error: walletError 
-        });
-      }
-    }
-
-    // 7. Success Logging & Response
+    // 5. Success Logging & Response
     logger.info('User registered successfully', {
       userId: authData.user.id,
       userType: validatedData.user_type,
@@ -148,9 +102,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Unhandled errors are caught here
     logger.error('Registration unhandled error', error as Error);
-    
+
     return NextResponse.json(
       { success: false, error: 'Internal server error' },
       { status: 500 }

@@ -326,7 +326,39 @@ export const passwordResetSchema = z.object({
 // ============================================================================
 
 /**
- * Service creation/update schema with smart pricing suggestions
+ * Individual service package schema (basic / standard / premium tiers).
+ * Used as a sub-schema inside serviceSchema — also exported for reuse.
+ */
+export const packageSchema = z.object({
+  name: z
+    .string()
+    .min(2, { error: 'Package name must be at least 2 characters' }),
+
+  description: z
+    .string()
+    .min(5, { error: 'Package description must be at least 5 characters' }),
+
+  price: z.coerce
+    .number()
+    .min(100, { error: 'Package price must be at least ₦100' }),
+
+  delivery_days: z.coerce
+    .number()
+    .min(1, { error: 'Delivery days must be at least 1' }),
+
+  revisions: z.coerce
+    .number()
+    .min(0, { error: 'Revisions cannot be negative' }),
+
+  features: z
+    .array(z.string())
+    .min(1, { error: 'Add at least one feature to describe this package' }),
+});
+
+/**
+ * Service creation/update schema with smart pricing suggestions.
+ * Now includes service_location, location_required, remote_ok,
+ * portfolio_links, and the full packages sub-object.
  */
 export const serviceSchema = z.object({
   title: z
@@ -396,6 +428,34 @@ export const serviceSchema = z.object({
       return tags.length >= 3;
     }, {
       message: 'Add at least 3 tags to improve discoverability'
+    })
+    .optional(),
+
+  // --- Fields previously missing from schema ---
+
+  service_location: z
+    .string()
+    .max(100, { error: 'Location is too long' })
+    .optional(),
+
+  location_required: z
+    .boolean()
+    .default(false),
+
+  remote_ok: z
+    .boolean()
+    .default(true),
+
+  portfolio_links: z
+    .array(z.string().url({ error: 'Each portfolio link must be a valid URL' }))
+    .max(5, { error: 'Maximum 5 portfolio links allowed' })
+    .optional(),
+
+  packages: z
+    .object({
+      basic:    packageSchema.optional(),
+      standard: packageSchema.optional(),
+      premium:  packageSchema.optional(),
     })
     .optional(),
 });
@@ -644,10 +704,11 @@ export const reviewSchema = z.object({
 // TYPE EXPORTS
 // ============================================================================
 
-export type RegisterInput = z.infer<typeof registerSchema>;
-export type LoginInput = z.infer<typeof loginSchema>;
-export type ServiceInput = z.infer<typeof serviceSchema>;
-export type JobInput = z.infer<typeof jobSchema>;
-export type ProposalInput = z.infer<typeof proposalSchema>;
-export type WithdrawalInput = z.infer<typeof withdrawalSchema>;
-export type ReviewInput = z.infer<typeof reviewSchema>;
+export type RegisterInput    = z.infer<typeof registerSchema>;
+export type LoginInput       = z.infer<typeof loginSchema>;
+export type ServiceInput     = z.infer<typeof serviceSchema>;
+export type PackageInput     = z.infer<typeof packageSchema>;
+export type JobInput         = z.infer<typeof jobSchema>;
+export type ProposalInput    = z.infer<typeof proposalSchema>;
+export type WithdrawalInput  = z.infer<typeof withdrawalSchema>;
+export type ReviewInput      = z.infer<typeof reviewSchema>;

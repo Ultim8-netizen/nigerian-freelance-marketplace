@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
     // 6. Fetch Transaction
     const { data: transaction, error: txError } = await supabase
       .from('transactions')
-      .select('id, order_id, status, amount')
+      .select('id, order_id, marketplace_order_id, status, amount')
       .eq('transaction_ref', tx_ref)
       .single();
 
@@ -105,21 +105,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 });
     }
 
-    // Guard: order_id is nullable per schema — cannot pass null to RPC
-    if (!transaction.order_id) {
-      console.error('Transaction has no associated order:', transaction.id);
-      return NextResponse.json({ error: 'Transaction not linked to an order' }, { status: 400 });
-    }
+    // 7. Process Payment — route to the correct RPC based on order type.
+    //    Exactly one of order_id or marketplace_order_id must be present;
+    //    if neither is set the transaction is orphaned and cannot be processed.
+    let rpcError;
 
-    // 7. Process Payment (RPC)
-    // p_order_id: transaction.order_id is now narrowed to string
-    // p_flw_tx_id: payload.data.id is number, RPC expects string — convert with toString()
-    const { error: rpcError } = await supabase.rpc('process_successful_payment', {
-      p_transaction_id: transaction.id,
-      p_order_id: transaction.order_id,
-      p_flw_tx_id: flw_tx_id.toString(),
-      p_amount: amount,
-    });
+    if (transaction.order_id) {
+      // Standard freelance order
+      const res = await supabase.rpc('process_successful_payment', {
+        p_transaction_id: transaction.id,
+        p_order_id: transaction.order_id,
+        p_flw_tx_id: flw_tx_id.toString(),
+        p_amount: amount,
+      });
+      rpcError = res.error;
+    } else if (transaction.marketplace_order_id) {
+      // Marketplace product order
+      const res = await supabase.rpc('process_marketplace_payment', {
+        p_transaction_id: transaction.id,
+        p_order_id: transaction.marketplace_order_id,
+        p_flw_tx_id: flw_tx_id.toString(),
+        p_amount: amount,
+      });
+      rpcError = res.error;
+    } else {
+      console.error('Transaction not linked to any order:', transaction.id);
+      return NextResponse.json(
+        { error: 'Transaction not linked to any order' },
+        { status: 400 }
+      );
+    }
 
     if (rpcError) {
       console.error('RPC Error:', rpcError);

@@ -1,5 +1,6 @@
 // src/app/(dashboard)/client/dashboard/page.tsx
 // FIXED: Proper type handling for Order with freelancer relation and nullable status
+// FIXED: Removed proposals_count alias that was overwriting the native integer column
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -39,9 +40,13 @@ export default async function ClientDashboard() {
     .single() as { data: Profile | null }; 
 
   // Get active jobs
+  // FIXED: Removed `proposals_count:proposals(count)` alias — the jobs table has a
+  // native `proposals_count` integer column maintained by triggers. The relational
+  // alias was overwriting that integer with an array object ({ count: X }[]),
+  // causing React to crash when trying to render it as a child.
   const { data: activeJobs, count: activeJobsCount } = await supabase
     .from('jobs')
-    .select('*, proposals_count:proposals(count)', { count: 'exact' }) 
+    .select('*, proposals(count)', { count: 'exact' })
     .eq('client_id', user.id)
     .eq('status', 'open') as { data: (Job & { proposals_count: number | null })[] | null, count: number | null };
   
@@ -142,11 +147,9 @@ export default async function ClientDashboard() {
                 <div key={order.id} className="border-l-4 border-blue-500 pl-3 py-2">
                   <p className="font-medium">{order.title}</p>
                   <p className="text-sm text-gray-600">
-                    {/* FIXED: Now properly accessing freelancer relation */}
                     With {order.freelancer?.full_name || 'Unknown freelancer'}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {/* FIXED: Handle nullable status properly */}
                     Status: {order.status ? order.status.replace('_', ' ') : 'Unknown'}
                   </p>
                 </div>

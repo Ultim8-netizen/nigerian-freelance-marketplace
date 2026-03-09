@@ -1,6 +1,9 @@
 // src/app/api/services/route.ts
 // PRODUCTION-READY: Enhanced services API with full security stack
 // UPDATED: Trust Gate check added to POST handler before service insertion.
+// UPDATED: serviceSchema now covers service_location, location_required, remote_ok,
+//          portfolio_links, and packages. Packages are inserted relationally into
+//          service_packages after the parent service row is created.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -158,7 +161,7 @@ export async function POST(request: NextRequest) {
 
     const validatedData = serviceSchema.parse(sanitizedBody);
 
-    // ADDED: Evaluate the Trust Gate against the validated base price before any
+    // Evaluate the Trust Gate against the validated base price before any
     // database work. If the user's trust level does not permit posting a listing
     // at this price, halt immediately and return a structured 403 that the client
     // can use to surface the restriction and render the ContestButton.
@@ -201,17 +204,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Destructure packages out — they go into service_packages, not services
+    const { packages, ...serviceData } = validatedData;
+
     const { data, error: serviceError } = await supabase
       .from('services')
       .insert({
         freelancer_id: user.id,
-        title: validatedData.title,
-        description: validatedData.description,
-        category: validatedData.category,
-        base_price: validatedData.base_price,
-        delivery_days: validatedData.delivery_days,
+        ...serviceData,
         images: body.images || [],
-        service_location: body.service_location,
         is_active: true,
         views_count: 0,
         orders_count: 0,
@@ -224,10 +225,41 @@ export async function POST(request: NextRequest) {
       throw serviceError;
     }
 
+    // Relational package inserts — only for tiers the freelancer actually filled in
+    if (packages) {
+      const packagesToInsert = (
+        ['basic', 'standard', 'premium'] as const
+      )
+        .filter((tier) => packages[tier]?.name)
+        .map((tier) => ({
+          ...packages[tier]!,
+          package_type: tier,
+          service_id: data.id,
+        }));
+
+      if (packagesToInsert.length > 0) {
+        const { error: packagesError } = await supabase
+          .from('service_packages')
+          .insert(packagesToInsert);
+
+        if (packagesError) {
+          // Package failure is non-fatal but should be surfaced so the
+          // freelancer knows their tiers weren't saved.
+          logger.error('Service packages insert failed', packagesError, {
+            userId: user.id,
+            serviceId: data.id,
+          });
+        }
+      }
+    }
+
     logger.info('Service created successfully', {
       serviceId: data.id,
       userId: user.id,
-      category: validatedData.category
+      category: validatedData.category,
+      packageCount: packages
+        ? Object.values(packages).filter(Boolean).length
+        : 0,
     });
 
     return NextResponse.json({
@@ -235,6 +267,7 @@ export async function POST(request: NextRequest) {
       data,
       message: 'Service created successfully',
     }, { status: 201 });
+
   } catch (error) {
     if (error instanceof z.ZodError) {
       logger.warn('Service validation failed', { errors: error.issues });

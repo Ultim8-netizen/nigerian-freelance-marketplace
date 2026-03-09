@@ -375,6 +375,7 @@ export type Database = {
           amount: number
           created_at: string | null
           id: string
+          marketplace_order_id: string | null
           order_id: string | null
           released_at: string | null
           status: string | null
@@ -384,6 +385,7 @@ export type Database = {
           amount: number
           created_at?: string | null
           id?: string
+          marketplace_order_id?: string | null
           order_id?: string | null
           released_at?: string | null
           status?: string | null
@@ -393,12 +395,20 @@ export type Database = {
           amount?: number
           created_at?: string | null
           id?: string
+          marketplace_order_id?: string | null
           order_id?: string | null
           released_at?: string | null
           status?: string | null
           transaction_id?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "escrow_marketplace_order_id_fkey"
+            columns: ["marketplace_order_id"]
+            isOneToOne: false
+            referencedRelation: "marketplace_orders"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "escrow_order_id_fkey"
             columns: ["order_id"]
@@ -1680,6 +1690,7 @@ export type Database = {
           flutterwave_response: Json | null
           flutterwave_tx_ref: string | null
           id: string
+          marketplace_order_id: string | null
           order_id: string | null
           paid_at: string | null
           payment_method: string | null
@@ -1694,6 +1705,7 @@ export type Database = {
           flutterwave_response?: Json | null
           flutterwave_tx_ref?: string | null
           id?: string
+          marketplace_order_id?: string | null
           order_id?: string | null
           paid_at?: string | null
           payment_method?: string | null
@@ -1708,6 +1720,7 @@ export type Database = {
           flutterwave_response?: Json | null
           flutterwave_tx_ref?: string | null
           id?: string
+          marketplace_order_id?: string | null
           order_id?: string | null
           paid_at?: string | null
           payment_method?: string | null
@@ -1716,6 +1729,13 @@ export type Database = {
           transaction_type?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "transactions_marketplace_order_id_fkey"
+            columns: ["marketplace_order_id"]
+            isOneToOne: false
+            referencedRelation: "marketplace_orders"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "transactions_order_id_fkey"
             columns: ["order_id"]
@@ -2119,6 +2139,15 @@ export type Database = {
       increment_service_views: {
         Args: { p_service_id: string }
         Returns: undefined
+      }
+      process_marketplace_payment: {
+        Args: {
+          p_amount: number
+          p_flw_tx_id: string
+          p_order_id: string
+          p_transaction_id: string
+        }
+        Returns: Json
       }
       process_pending_clearances: {
         Args: never
