@@ -4,8 +4,9 @@ import { useState, useTransition } from 'react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { TrustBadge, type TrustLevel } from '@/components/ui/TrustBadge';
-import { AlertTriangle, ShieldOff, Ban, Lock, Sliders, CheckCircle, Loader2 } from 'lucide-react';
+import { AlertTriangle, ShieldOff, Ban, Lock, Sliders, CheckCircle, Loader2, ShieldCheck } from 'lucide-react';
 import type { Tables } from '@/types';
+import { useStepUpAuth } from '@/components/admin/StepUpAuth';
 
 // ─── Prop types ───────────────────────────────────────────────────────────────
 
@@ -63,9 +64,16 @@ interface ActionPanelProps {
   action:      (fd: FormData) => Promise<void>;
   fields?:     { name: string; label: string; type?: string; min?: number; max?: number }[];
   confirmText: string;
+  /**
+   * When provided, the action is wrapped in a step-up TOTP challenge before
+   * execution. Pass `requireStepUp` from `useStepUpAuth()` for nuclear actions.
+   */
+  requireStepUp?: (action: () => Promise<void>) => Promise<void>;
+  /** Visual indicator shown next to the label for step-up-gated actions. */
+  nuclear?: boolean;
 }
 
-function ActionPanel({ label, icon, colour, action, fields = [], confirmText }: ActionPanelProps) {
+function ActionPanel({ label, icon, colour, action, fields = [], confirmText, requireStepUp, nuclear }: ActionPanelProps) {
   const [open, setOpen]         = useState(false);
   const [feedback, setFeedback] = useState<'ok' | 'err' | null>(null);
   const [isPending, start]      = useTransition();
@@ -75,7 +83,13 @@ function ActionPanel({ label, icon, colour, action, fields = [], confirmText }: 
     const fd = new FormData(e.currentTarget);
     start(async () => {
       try {
-        await action(fd);
+        const run = () => action(fd);
+        // Nuclear actions go through step-up TOTP before the server action fires
+        if (requireStepUp) {
+          await requireStepUp(run);
+        } else {
+          await run();
+        }
         setFeedback('ok');
         setTimeout(() => { setFeedback(null); setOpen(false); }, 1500);
       } catch {
@@ -93,6 +107,11 @@ function ActionPanel({ label, icon, colour, action, fields = [], confirmText }: 
       >
         {icon}
         {label}
+        {nuclear && (
+          <span className="ml-auto flex items-center gap-1 text-xs opacity-70">
+            <ShieldCheck size={11} /> Step-Up
+          </span>
+        )}
       </button>
 
       {open && (
@@ -475,9 +494,12 @@ export function UserProfileTabs({
   onOverrideTrust,
 }: UserProfileTabsProps) {
   const [active, setActive] = useState<Tab>('Overview');
+  const { requireStepUp, StepUpModal } = useStepUpAuth();
 
   return (
     <div className="space-y-6">
+      {/* Step-up modal — rendered at root so it overlays everything */}
+      {StepUpModal}
       {/* ── Profile header ─────────────────────────────────────────────── */}
       <Card className="p-6">
         <div className="flex items-start justify-between gap-6">
@@ -538,6 +560,8 @@ export function UserProfileTabs({
             action={onBan}
             fields={[{ name: 'reason', label: 'Ban reason' }]}
             confirmText="Ban User"
+            requireStepUp={requireStepUp}
+            nuclear
           />
           <ActionPanel
             label="Freeze Wallet"
@@ -546,6 +570,8 @@ export function UserProfileTabs({
             action={onFreeze}
             fields={[{ name: 'reason', label: 'Freeze reason' }]}
             confirmText="Freeze"
+            requireStepUp={requireStepUp}
+            nuclear
           />
           <ActionPanel
             label="Override Trust Score"
