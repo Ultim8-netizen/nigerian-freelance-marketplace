@@ -1,5 +1,6 @@
 // src/app/api/marketplace/reviews/route.ts
 // PRODUCTION-READY: Product and seller reviews with rating calculations
+// + auto-suspension after 3 consecutive 1-star reviews
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/api/middleware';
@@ -26,10 +27,10 @@ const createReviewSchema = z.object({
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    
+
     const productId = sanitizeUuid(searchParams.get('product_id') || '');
-    const sellerId = sanitizeUuid(searchParams.get('seller_id') || '');
-    const orderId = sanitizeUuid(searchParams.get('order_id') || '');
+    const sellerId  = sanitizeUuid(searchParams.get('seller_id')  || '');
+    const orderId   = sanitizeUuid(searchParams.get('order_id')   || '');
 
     const supabase = await createClient();
     let query = supabase
@@ -46,8 +47,8 @@ export async function GET(request: NextRequest) {
       `);
 
     if (productId) query = query.eq('product_id', productId);
-    if (sellerId) query = query.eq('seller_id', sellerId);
-    if (orderId) query = query.eq('order_id', orderId);
+    if (sellerId)  query = query.eq('seller_id',  sellerId);
+    if (orderId)   query = query.eq('order_id',   orderId);
 
     const { data, error } = await query
       .order('created_at', { ascending: false })
@@ -81,21 +82,20 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    
-    // Sanitize inputs
+
     const sanitized = {
       ...body,
-      order_id: sanitizeUuid(body.order_id) || '',
-      product_id: sanitizeUuid(body.product_id) || '',
-      seller_id: sanitizeUuid(body.seller_id) || '',
-      review_text: sanitizeHtml(body.review_text || ''),
+      order_id:     sanitizeUuid(body.order_id)     || '',
+      product_id:   sanitizeUuid(body.product_id)   || '',
+      seller_id:    sanitizeUuid(body.seller_id)    || '',
+      review_text:  sanitizeHtml(body.review_text   || ''),
       images: Array.isArray(body.images) ? body.images : undefined,
     };
 
     const validated = createReviewSchema.parse(sanitized);
-    const supabase = await createClient();
+    const supabase  = await createClient();
 
-    // Verify order exists and belongs to user
+    // ── Order guard ──────────────────────────────────────────────────────────
     const { data: order, error: orderError } = await supabase
       .from('marketplace_orders')
       .select('buyer_id, seller_id, status')
@@ -110,7 +110,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (order.buyer_id !== user.id) {
-      logger.warn('Unauthorized review attempt', { orderId: validated.order_id, userId: user.id });
+      logger.warn('Unauthorized review attempt', {
+        orderId: validated.order_id,
+        userId: user.id,
+      });
       return NextResponse.json(
         { success: false, error: 'Only buyer can review' },
         { status: 403 }
@@ -124,7 +127,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check if already reviewed
+    // ── Duplicate guard ──────────────────────────────────────────────────────
     const { data: existing } = await supabase
       .from('marketplace_reviews')
       .select('id')
@@ -138,25 +141,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create review
+    // ── Insert review ────────────────────────────────────────────────────────
     const { data: review, error } = await supabase
       .from('marketplace_reviews')
-      .insert({
-        reviewer_id: user.id,
-        ...validated,
-      })
+      .insert({ reviewer_id: user.id, ...validated })
       .select()
       .single();
 
     if (error) throw error;
 
-    // Update product and seller ratings
+    // ── Post-insert side-effects (non-blocking) ──────────────────────────────
     await Promise.all([
       updateProductRating(supabase, validated.product_id),
       updateSellerRating(supabase, validated.seller_id),
     ]);
 
-    // Notify seller
+    // Notify seller of new review
     await supabase.from('notifications').insert({
       user_id: validated.seller_id,
       type: 'new_review',
@@ -165,13 +165,26 @@ export async function POST(request: NextRequest) {
       link: `/marketplace/reviews/${review.id}`,
     });
 
-    logger.info('Review created', { reviewId: review.id, userId: user.id, rating: validated.rating });
+    // ── 3 consecutive 1-star check → auto-suspend ────────────────────────────
+    await checkAndSuspendOnConsecutiveLowRatings(
+      supabase,
+      validated.seller_id
+    );
 
-    return NextResponse.json({
-      success: true,
-      data: review,
-      message: 'Review submitted successfully',
-    }, { status: 201 });
+    logger.info('Review created', {
+      reviewId: review.id,
+      userId: user.id,
+      rating: validated.rating,
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: review,
+        message: 'Review submitted successfully',
+      },
+      { status: 201 }
+    );
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
@@ -188,7 +201,9 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Helper: Update product average rating
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Recalculate and persist the product's average rating and review count. */
 async function updateProductRating(supabase: SupabaseClient, productId: string) {
   try {
     const { data: reviews } = await supabase
@@ -198,11 +213,11 @@ async function updateProductRating(supabase: SupabaseClient, productId: string) 
 
     if (reviews && reviews.length > 0) {
       const avgRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
-      
+
       await supabase
         .from('products')
         .update({
-          rating: Math.round(avgRating * 10) / 10, // Round to 1 decimal
+          rating: Math.round(avgRating * 10) / 10,
           reviews_count: reviews.length,
         })
         .eq('id', productId);
@@ -212,7 +227,7 @@ async function updateProductRating(supabase: SupabaseClient, productId: string) 
   }
 }
 
-// Helper: Update seller average rating
+/** Recalculate and persist the seller's marketplace average rating and review count. */
 async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
   try {
     const { data: reviews } = await supabase
@@ -222,16 +237,82 @@ async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
 
     if (reviews && reviews.length > 0) {
       const avgRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
-      
+
       await supabase
         .from('profiles')
         .update({
-          marketplace_rating: Math.round(avgRating * 10) / 10, // Round to 1 decimal
+          marketplace_rating: Math.round(avgRating * 10) / 10,
           marketplace_reviews_count: reviews.length,
         })
         .eq('id', sellerId);
     }
   } catch (err) {
     logger.error('Failed to update seller rating', err as Error, { sellerId });
+  }
+}
+
+/**
+ * After every new review, fetch the seller's 3 most recent marketplace reviews
+ * (newest first). If every one of them is 1-star, suspend the account and
+ * fire a notification.
+ *
+ * Using the 3 most-recent rather than all-time prevents a single bad batch
+ * from permanently damaging a historically good seller, while still responding
+ * quickly to genuine quality collapses.
+ */
+async function checkAndSuspendOnConsecutiveLowRatings(
+  supabase: SupabaseClient,
+  sellerId: string
+) {
+  try {
+    const { data: recentReviews, error } = await supabase
+      .from('marketplace_reviews')
+      .select('rating')
+      .eq('seller_id', sellerId)
+      .order('created_at', { ascending: false })
+      .limit(3);
+
+    if (error) {
+      logger.error('Failed to fetch recent seller reviews for suspension check', error, {
+        sellerId,
+      });
+      return;
+    }
+
+    // Need exactly 3 reviews — don't suspend on fewer (too little signal)
+    if (!recentReviews || recentReviews.length < 3) return;
+
+    const allOneStar = recentReviews.every((r) => r.rating === 1);
+    if (!allOneStar) return;
+
+    // Suspend the seller's account
+    const { error: suspendError } = await supabase
+      .from('profiles')
+      .update({ account_status: 'suspended' })
+      .eq('id', sellerId);
+
+    if (suspendError) {
+      logger.error('Failed to suspend seller after consecutive 1-star reviews', suspendError, {
+        sellerId,
+      });
+      return;
+    }
+
+    // Notify the seller
+    await supabase.from('notifications').insert({
+      user_id: sellerId,
+      type: 'account_suspended',
+      title: 'Account Suspended',
+      message:
+        'Your account has been suspended due to 3 consecutive 1-star reviews. Please contact support to appeal or resolve any outstanding issues.',
+    });
+
+    logger.warn('Seller suspended after 3 consecutive 1-star reviews', { sellerId });
+  } catch (err) {
+    logger.error(
+      'Unexpected error in consecutive low-rating suspension check',
+      err as Error,
+      { sellerId }
+    );
   }
 }

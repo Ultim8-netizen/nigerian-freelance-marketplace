@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   MessageSquare, Search, Send, Info,
-  CheckCheck, Check,
+  CheckCheck, Check, Shield,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import type { Profile, Conversation, Message, MessageInsert } from '@/types';
@@ -18,6 +18,92 @@ interface ConversationWithData extends Conversation {
   messages: MessageWithSender[];
   otherUser: Profile | null;
 }
+
+// ─── Admin masking helpers ────────────────────────────────────────────────────
+const isAdmin = (user: Profile | null): boolean =>
+  user?.user_type === 'admin';
+
+/** Returns the display name: "F9" for admins, real name otherwise. */
+const getDisplayName = (user: Profile | null): string =>
+  isAdmin(user) ? 'F9' : (user?.full_name ?? '');
+
+/** Returns the first letter used for avatar fallback (only for non-admins). */
+const getInitial = (user: Profile | null): string =>
+  isAdmin(user) ? '' : (user?.full_name?.charAt(0).toUpperCase() ?? '');
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+/** F9 Shield badge used as the admin avatar. */
+function F9ShieldAvatar({ size = 48 }: { size?: number }) {
+  return (
+    <div
+      style={{ width: size, height: size }}
+      className="rounded-full bg-blue-600 flex items-center justify-center shrink-0"
+    >
+      <Shield size={Math.round(size * 0.5)} className="text-white" />
+    </div>
+  );
+}
+
+/** Conversation list avatar — shield for admins, photo/initial for users. */
+function ConversationAvatar({
+  user,
+  isSelected,
+}: {
+  user: Profile | null;
+  isSelected: boolean;
+}) {
+  if (isAdmin(user)) return <F9ShieldAvatar size={48} />;
+
+  if (user?.profile_image_url) {
+    return (
+      <Image
+        src={user.profile_image_url}
+        alt={user.full_name}
+        width={48}
+        height={48}
+        className="rounded-full"
+      />
+    );
+  }
+
+  return (
+    <div
+      className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold ${
+        isSelected
+          ? 'bg-white/20 text-white'
+          : 'bg-gray-200 dark:bg-gray-600 text-gray-900 dark:text-white'
+      }`}
+    >
+      {getInitial(user)}
+    </div>
+  );
+}
+
+/** Chat header avatar — shield for admins, photo/initial for users. */
+function ChatHeaderAvatar({ user }: { user: Profile | null }) {
+  if (isAdmin(user)) return <F9ShieldAvatar size={48} />;
+
+  if (user?.profile_image_url) {
+    return (
+      <Image
+        src={user.profile_image_url}
+        alt={user.full_name}
+        width={48}
+        height={48}
+        className="rounded-full"
+      />
+    );
+  }
+
+  return (
+    <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center text-lg font-bold">
+      {getInitial(user)}
+    </div>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function MessagesPage() {
   const [conversations, setConversations] = useState<ConversationWithData[]>([]);
@@ -50,8 +136,8 @@ export default function MessagesPage() {
         // Enrich conversations with messages and user data
         const enrichedConversations = await Promise.all(
           (convData as Conversation[]).map(async (conv) => {
-            const otherUserId = conv.participant_1 === user.id 
-              ? conv.participant_2 
+            const otherUserId = conv.participant_1 === user.id
+              ? conv.participant_2
               : conv.participant_1;
 
             // Fetch other user profile
@@ -102,14 +188,13 @@ export default function MessagesPage() {
 
   const selected = conversations.find(c => c.id === selectedId);
   const filtered = conversations.filter(c =>
-    c.otherUser?.full_name.toLowerCase().includes(searchQuery.toLowerCase())
+    getDisplayName(c.otherUser).toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !selected || !currentUserId) return;
 
     try {
-      // Only set fields that are NOT marked as never in MessageInsert
       const newMessage: MessageInsert = {
         conversation_id: selected.id,
         sender_id: currentUserId,
@@ -122,12 +207,9 @@ export default function MessagesPage() {
 
       if (insertError) throw insertError;
 
-      // Update conversation - only update last_message_at
       const { error: updateError } = await supabase
         .from('conversations')
-        .update({
-          last_message_at: new Date().toISOString(),
-        })
+        .update({ last_message_at: new Date().toISOString() })
         .eq('id', selected.id);
 
       if (updateError) throw updateError;
@@ -151,8 +233,8 @@ export default function MessagesPage() {
 
       setConversations(prev =>
         prev.map(c =>
-          c.id === selected.id 
-            ? { ...c, messages: (messages || []) as MessageWithSender[] } 
+          c.id === selected.id
+            ? { ...c, messages: (messages || []) as MessageWithSender[] }
             : c
         )
       );
@@ -165,7 +247,7 @@ export default function MessagesPage() {
 
   const formatTime = (date: string | null) => {
     if (!date) return 'No messages';
-    
+
     const d = new Date(date);
     const now = new Date();
     const diff = now.getTime() - d.getTime();
@@ -218,57 +300,58 @@ export default function MessagesPage() {
             </div>
           ) : (
             <div className="space-y-2 p-2">
-              {filtered.map((conv) => (
-                <button
-                  key={conv.id}
-                  onClick={() => setSelectedId(conv.id)}
-                  className={`w-full p-3 rounded-lg transition-all duration-200 text-left group ${
-                    selectedId === conv.id
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-900 dark:text-white'
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    {/* Avatar */}
-                    <div className="shrink-0">
-                      {conv.otherUser?.profile_image_url ? (
-                        <Image
-                          src={conv.otherUser.profile_image_url}
-                          alt={conv.otherUser.full_name}
-                          width={48}
-                          height={48}
-                          className="rounded-full"
-                        />
-                      ) : (
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold ${
-                          selectedId === conv.id
-                            ? 'bg-white/20 text-white'
-                            : 'bg-gray-200 dark:bg-gray-600 text-gray-900 dark:text-white'
-                        }`}>
-                          {conv.otherUser?.full_name.charAt(0).toUpperCase()}
-                        </div>
-                      )}
-                    </div>
+              {filtered.map((conv) => {
+                const displayName = getDisplayName(conv.otherUser);
+                const adminConv = isAdmin(conv.otherUser);
 
-                    {/* Content */}
-                    <div className="flex-1 min-w-0">
-                      <p className={`font-semibold text-sm ${selectedId === conv.id ? 'text-white' : ''}`}>
-                        {conv.otherUser?.full_name}
-                      </p>
-                      <p className={`text-sm truncate ${
-                        selectedId === conv.id
-                          ? 'text-blue-100'
-                          : 'text-gray-600 dark:text-gray-400'
-                      }`}>
-                        {conv.messages[conv.messages.length - 1]?.message_text || 'No messages'}
-                      </p>
-                      <span className={`text-xs ${selectedId === conv.id ? 'text-blue-100' : 'text-gray-500 dark:text-gray-400'}`}>
-                        {formatTime(conv.last_message_at)}
-                      </span>
+                return (
+                  <button
+                    key={conv.id}
+                    onClick={() => setSelectedId(conv.id)}
+                    className={`w-full p-3 rounded-lg transition-all duration-200 text-left group ${
+                      selectedId === conv.id
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-900 dark:text-white'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      {/* Avatar */}
+                      <div className="shrink-0">
+                        <ConversationAvatar
+                          user={conv.otherUser}
+                          isSelected={selectedId === conv.id}
+                        />
+                      </div>
+
+                      {/* Content */}
+                      <div className="flex-1 min-w-0">
+                        {/* Name + F9 shield badge inline for admin convos */}
+                        <div className="flex items-center gap-1.5">
+                          <p className={`font-semibold text-sm ${selectedId === conv.id ? 'text-white' : ''}`}>
+                            {displayName}
+                          </p>
+                          {adminConv && (
+                            <Shield
+                              size={12}
+                              className={selectedId === conv.id ? 'text-blue-200' : 'text-blue-600 dark:text-blue-400'}
+                            />
+                          )}
+                        </div>
+                        <p className={`text-sm truncate ${
+                          selectedId === conv.id
+                            ? 'text-blue-100'
+                            : 'text-gray-600 dark:text-gray-400'
+                        }`}>
+                          {conv.messages[conv.messages.length - 1]?.message_text || 'No messages'}
+                        </p>
+                        <span className={`text-xs ${selectedId === conv.id ? 'text-blue-100' : 'text-gray-500 dark:text-gray-400'}`}>
+                          {formatTime(conv.last_message_at)}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -281,22 +364,19 @@ export default function MessagesPage() {
             {/* Chat Header */}
             <div className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                {selected.otherUser.profile_image_url ? (
-                  <Image
-                    src={selected.otherUser.profile_image_url}
-                    alt={selected.otherUser.full_name}
-                    width={48}
-                    height={48}
-                    className="rounded-full"
-                  />
-                ) : (
-                  <div className="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center text-lg font-bold">
-                    {selected.otherUser.full_name.charAt(0).toUpperCase()}
-                  </div>
-                )}
+                <ChatHeaderAvatar user={selected.otherUser} />
                 <div>
-                  <h2 className="font-semibold text-gray-900 dark:text-white">{selected.otherUser.full_name}</h2>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">Active</p>
+                  <div className="flex items-center gap-1.5">
+                    <h2 className="font-semibold text-gray-900 dark:text-white">
+                      {getDisplayName(selected.otherUser)}
+                    </h2>
+                    {isAdmin(selected.otherUser) && (
+                      <Shield size={14} className="text-blue-600 dark:text-blue-400" />
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {isAdmin(selected.otherUser) ? 'F9 Platform' : 'Active'}
+                  </p>
                 </div>
               </div>
 
@@ -311,7 +391,9 @@ export default function MessagesPage() {
                 <div className="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-500">
                   <MessageSquare size={40} className="mb-4 opacity-50" />
                   <p className="font-semibold mb-2">Start a conversation</p>
-                  <p className="text-sm">Send a message to begin chatting with {selected.otherUser.full_name}</p>
+                  <p className="text-sm">
+                    Send a message to begin chatting with {getDisplayName(selected.otherUser)}
+                  </p>
                 </div>
               ) : (
                 selected.messages.map((msg) => (
@@ -331,7 +413,7 @@ export default function MessagesPage() {
                           : 'text-gray-500 dark:text-gray-400'
                       }`}>
                         <span>
-                          {msg.created_at 
+                          {msg.created_at
                             ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                             : 'N/A'
                           }
