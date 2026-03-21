@@ -1,5 +1,11 @@
 'use client';
 
+// src/app/f9-control/login/page.tsx
+// UPDATED: Credential validation moved to /api/admin/auth (server-side) for
+//          IP-based rate limiting and breach email alerts.
+//          MFA challenge/verify remain client-side — they use the session
+//          cookies set by the server route during signInWithPassword.
+
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
@@ -15,79 +21,101 @@ export default function AdminLogin() {
   const [password,    setPassword]    = useState('');
   const [mfaCode,     setMfaCode]     = useState('');
   const [requiresMfa, setRequiresMfa] = useState(false);
+  const [isLoading,   setIsLoading]   = useState(false);
   const [error,       setError]       = useState('');
+  const [retryAfter,  setRetryAfter]  = useState<string | null>(null);
 
   // FIX #9 — Both factorId AND challengeId must be stored in state.
-  // The previous code stored only factorId and then passed factorId as
-  // challengeId to mfa.verify(), which is wrong — they are different values.
-  // challengeId comes from the .data.id of supabase.auth.mfa.challenge().
   const [factorId,    setFactorId]    = useState('');
   const [challengeId, setChallengeId] = useState('');
 
-  // ── Step 1: credential login ──────────────────────────────────────────────
+  // ── Step 1: credential login (proxied through server route) ──────────────
+  //
+  // Why server-side? The /api/admin/auth route applies IP-based rate limiting
+  // (3 attempts / 15 min) and sends an email alert on breach — neither is
+  // possible with a direct client-side signInWithPassword call.
+  //
+  // The server route calls supabase.auth.signInWithPassword via the SSR server
+  // client, which writes the session to HttpOnly cookies. Those cookies are
+  // then available to the browser Supabase client used in Step 2 below.
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setRetryAfter(null);
+    setIsLoading(true);
 
-    const { data, error: signInError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const response = await fetch('/api/admin/auth', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ email, password }),
+      });
 
-    if (signInError) {
-      setError('Invalid credentials.');
-      return;
+      const data = await response.json();
+
+      if (response.status === 429) {
+        // Rate-limited — show block message and countdown hint
+        const resetAt = data.resetAt ? new Date(data.resetAt).toLocaleTimeString() : null;
+        setRetryAfter(resetAt);
+        setError(data.error ?? 'Too many login attempts. Please wait before trying again.');
+        return;
+      }
+
+      if (!response.ok) {
+        setError(data.error ?? 'Authentication failed.');
+        return;
+      }
+
+      // Credentials accepted — server has set session cookies.
+      // Initiate MFA challenge using the browser Supabase client, which
+      // reads the session from the cookies just written by the server.
+      const { data: challengeData, error: challengeError } =
+        await supabase.auth.mfa.challenge({ factorId: data.factorId });
+
+      if (challengeError || !challengeData) {
+        setError('MFA challenge failed. Please try again.');
+        return;
+      }
+
+      setFactorId(data.factorId);
+      setChallengeId(challengeData.id);
+      setRequiresMfa(true);
+    } catch {
+      setError('Network error. Please check your connection and try again.');
+    } finally {
+      setIsLoading(false);
     }
-
-    // Require a verified TOTP factor — block if not enrolled
-    const factors    = data.user?.factors ?? [];
-    const totpFactor = factors.find(
-      (f) => f.factor_type === 'totp' && f.status === 'verified'
-    );
-
-    if (!totpFactor) {
-      await supabase.auth.signOut();
-      setError('MFA is mandatory. This account has no verified TOTP factor. Enrol via the secure setup script before logging in.');
-      return;
-    }
-
-    // Create MFA challenge
-    const { data: challengeData, error: challengeError } =
-      await supabase.auth.mfa.challenge({ factorId: totpFactor.id });
-
-    if (challengeError || !challengeData) {
-      setError('MFA challenge failed. Please try again.');
-      return;
-    }
-
-    // FIX #9 — Store both IDs separately
-    setFactorId(totpFactor.id);
-    setChallengeId(challengeData.id);  // ← was discarded in the original code
-    setRequiresMfa(true);
   };
 
-  // ── Step 2: TOTP verification ─────────────────────────────────────────────
+  // ── Step 2: TOTP verification (client-side, unchanged) ───────────────────
 
   const verifyMfa = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setIsLoading(true);
 
-    const { error: mfaError } = await supabase.auth.mfa.verify({
-      factorId,
-      challengeId, // FIX #9 — now the real challenge ID, not factorId
-      code: mfaCode,
-    });
+    try {
+      const { error: mfaError } = await supabase.auth.mfa.verify({
+        factorId,
+        challengeId, // FIX #9 — real challenge ID, not factorId
+        code: mfaCode,
+      });
 
-    if (mfaError) {
-      setError('Invalid or expired MFA code. Please try again with a fresh code from your authenticator app.');
-      // Refresh the challenge so the next attempt doesn't fail with a stale challenge ID
-      const { data: newChallenge } = await supabase.auth.mfa.challenge({ factorId });
-      if (newChallenge) setChallengeId(newChallenge.id);
-      return;
+      if (mfaError) {
+        setError('Invalid or expired MFA code. Please try again with a fresh code from your authenticator app.');
+        // Refresh challenge so next attempt doesn't fail with a stale challenge ID
+        const { data: newChallenge } = await supabase.auth.mfa.challenge({ factorId });
+        if (newChallenge) setChallengeId(newChallenge.id);
+        return;
+      }
+
+      router.push('/f9-control');
+    } catch {
+      setError('Verification failed. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
-
-    router.push('/f9-control');
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -103,6 +131,11 @@ export default function AdminLogin() {
         {error && (
           <div className="p-3 mb-4 bg-red-900/50 text-red-400 text-sm rounded">
             {error}
+            {retryAfter && (
+              <p className="mt-1 text-red-500 text-xs">
+                Access unblocked at approximately {retryAfter}.
+              </p>
+            )}
           </div>
         )}
 
@@ -114,6 +147,7 @@ export default function AdminLogin() {
               className="bg-gray-800 text-white border-gray-700"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              disabled={isLoading}
               required
             />
             <Input
@@ -122,11 +156,16 @@ export default function AdminLogin() {
               className="bg-gray-800 text-white border-gray-700"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              disabled={isLoading}
               required
             />
             {/* No "Forgot password" link per spec — out-of-band recovery only */}
-            <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white">
-              Authenticate
+            <Button
+              type="submit"
+              disabled={isLoading}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white"
+            >
+              {isLoading ? 'Authenticating…' : 'Authenticate'}
             </Button>
           </form>
         ) : (
@@ -141,16 +180,17 @@ export default function AdminLogin() {
               className="bg-gray-800 text-white border-gray-700 text-center tracking-widest text-xl"
               value={mfaCode}
               onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              disabled={isLoading}
               required
               maxLength={6}
               autoFocus
             />
             <Button
               type="submit"
-              disabled={mfaCode.length !== 6}
+              disabled={mfaCode.length !== 6 || isLoading}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white"
             >
-              Verify &amp; Enter
+              {isLoading ? 'Verifying…' : 'Verify & Enter'}
             </Button>
             <button
               type="button"

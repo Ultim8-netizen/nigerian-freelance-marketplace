@@ -5251,4 +5251,10 @@ CREATE INDEX IF NOT EXISTS idx_transactions_recipient_unlinked
   WHERE order_id IS NULL AND marketplace_order_id IS NULL;
 
 
-  
+  ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS posting_suspended_until TIMESTAMPTZ DEFAULT NULL;
+ 
+COMMENT ON COLUMN public.profiles.posting_suspended_until IS
+  'When set and in the future, the user cannot create new service or product listings. '
+  'Cleared automatically once the timestamp passes. Set to NOW()+72h after 3 consecutive '
+  '1-star marketplace reviews. Does NOT affect account login or existing listings.';

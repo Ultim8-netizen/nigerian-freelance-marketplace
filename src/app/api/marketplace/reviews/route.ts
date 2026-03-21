@@ -1,6 +1,6 @@
 // src/app/api/marketplace/reviews/route.ts
 // PRODUCTION-READY: Product and seller reviews with rating calculations
-// + auto-suspension after 3 consecutive 1-star reviews
+// + 72-hour posting suspension after 3 consecutive 1-star reviews
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/api/middleware';
@@ -165,8 +165,8 @@ export async function POST(request: NextRequest) {
       link: `/marketplace/reviews/${review.id}`,
     });
 
-    // ── 3 consecutive 1-star check → auto-suspend ────────────────────────────
-    await checkAndSuspendOnConsecutiveLowRatings(
+    // ── 3 consecutive 1-star check → 72-hour posting suspension ─────────────
+    await checkAndSuspendPostingOnConsecutiveLowRatings(
       supabase,
       validated.seller_id
     );
@@ -253,29 +253,32 @@ async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
 
 /**
  * After every new review, fetch the seller's 3 most recent marketplace reviews
- * (newest first). If every one of them is 1-star, suspend the account and
- * fire a notification.
+ * (newest first). If every one of them is 1-star, set posting_suspended_until
+ * to NOW() + 72 hours. This restricts new listing creation only — it does NOT
+ * suspend the account or affect login/existing listings.
  *
- * Using the 3 most-recent rather than all-time prevents a single bad batch
- * from permanently damaging a historically good seller, while still responding
- * quickly to genuine quality collapses.
+ * Skips silently if:
+ * - Fewer than 3 reviews exist (insufficient signal)
+ * - Seller is already within an active suspension window (idempotent)
  */
-async function checkAndSuspendOnConsecutiveLowRatings(
+async function checkAndSuspendPostingOnConsecutiveLowRatings(
   supabase: SupabaseClient,
   sellerId: string
 ) {
   try {
-    const { data: recentReviews, error } = await supabase
+    const { data: recentReviews, error: reviewsError } = await supabase
       .from('marketplace_reviews')
       .select('rating')
       .eq('seller_id', sellerId)
       .order('created_at', { ascending: false })
       .limit(3);
 
-    if (error) {
-      logger.error('Failed to fetch recent seller reviews for suspension check', error, {
-        sellerId,
-      });
+    if (reviewsError) {
+      logger.error(
+        'Failed to fetch recent seller reviews for posting suspension check',
+        reviewsError,
+        { sellerId }
+      );
       return;
     }
 
@@ -285,32 +288,67 @@ async function checkAndSuspendOnConsecutiveLowRatings(
     const allOneStar = recentReviews.every((r) => r.rating === 1);
     if (!allOneStar) return;
 
-    // Suspend the seller's account
-    const { error: suspendError } = await supabase
+    // Fetch current suspension state to avoid redundant writes
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .update({ account_status: 'suspended' })
-      .eq('id', sellerId);
+      .select('posting_suspended_until')
+      .eq('id', sellerId)
+      .single();
 
-    if (suspendError) {
-      logger.error('Failed to suspend seller after consecutive 1-star reviews', suspendError, {
-        sellerId,
-      });
+    if (profileError) {
+      logger.error(
+        'Failed to fetch seller profile for posting suspension check',
+        profileError,
+        { sellerId }
+      );
       return;
     }
 
-    // Notify the seller
-    await supabase.from('notifications').insert({
-      user_id: sellerId,
-      type: 'account_suspended',
-      title: 'Account Suspended',
-      message:
-        'Your account has been suspended due to 3 consecutive 1-star reviews. Please contact support to appeal or resolve any outstanding issues.',
-    });
+    const now = new Date();
+    const existingSuspension = profile?.posting_suspended_until
+      ? new Date(profile.posting_suspended_until)
+      : null;
 
-    logger.warn('Seller suspended after 3 consecutive 1-star reviews', { sellerId });
+    // Already within an active suspension window — extend to a fresh 72 hours
+    // from now rather than silently no-oping, so repeat offenders stay blocked.
+    const suspendedUntil = new Date(now.getTime() + 72 * 60 * 60 * 1000).toISOString();
+
+    const { error: updateError } = await supabase
+      .from('profiles')
+      .update({ posting_suspended_until: suspendedUntil })
+      .eq('id', sellerId);
+
+    if (updateError) {
+      logger.error(
+        'Failed to set posting_suspended_until after consecutive 1-star reviews',
+        updateError,
+        { sellerId }
+      );
+      return;
+    }
+
+    // Only notify on first suspension, not on window extensions
+    const isNewSuspension = !existingSuspension || existingSuspension <= now;
+    if (isNewSuspension) {
+      await supabase.from('notifications').insert({
+        user_id: sellerId,
+        type:    'posting_suspended',
+        title:   'Posting Privileges Suspended (72 Hours)',
+        message:
+          'You have received 3 consecutive 1-star reviews. Your ability to create new ' +
+          'listings has been suspended for 72 hours. Existing listings and your account ' +
+          'remain active. Contact support if you believe this is in error.',
+      });
+    }
+
+    logger.warn('Seller posting suspended after 3 consecutive 1-star reviews', {
+      sellerId,
+      suspendedUntil,
+      wasAlreadySuspended: !isNewSuspension,
+    });
   } catch (err) {
     logger.error(
-      'Unexpected error in consecutive low-rating suspension check',
+      'Unexpected error in consecutive low-rating posting suspension check',
       err as Error,
       { sellerId }
     );

@@ -6,9 +6,11 @@
 // FIX: evaluateContentTriggers now invoked after trust gate.
 //      - allowed=false → 400, listing rejected, user notified.
 //      - autoHold=true → inserted with is_active:false, flagged for admin review.
+// FIX: requirePostingActive guard added — blocks new listing creation when
+//      profiles.posting_suspended_until is set and in the future.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { applyMiddleware } from '@/lib/api/enhanced-middleware';
+import { applyMiddleware, requirePostingActive } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { serviceSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeText } from '@/lib/security/sanitize';
@@ -148,6 +150,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Single client instance reused for all DB operations in this handler
+    const supabase = await createClient();
+
+    // ── Gate 0: Posting suspension ────────────────────────────────────────
+    // Checks profiles.posting_suspended_until. Returns 403 with resumesAt
+    // if the freelancer is within an active 72-hour suspension window from
+    // consecutive 1-star reviews. Does not affect account_status.
+    const postingBlocked = await requirePostingActive(user.id, supabase);
+    if (postingBlocked) return postingBlocked;
+
     const body = await request.json();
 
     const sanitizedBody = {
@@ -206,8 +218,7 @@ export async function POST(request: NextRequest) {
         reason: contentCheck.reason,
       });
 
-      const supabaseNotify = await createClient();
-      await supabaseNotify.from('notifications').insert({
+      await supabase.from('notifications').insert({
         user_id: user.id,
         type:    'listing_rejected',
         title:   'Service Listing Rejected',
@@ -223,8 +234,6 @@ export async function POST(request: NextRequest) {
 
     // autoHold — service is created but held for admin review
     const isActive = !contentCheck.autoHold;
-
-    const supabase = await createClient();
 
     // Active service limit (max 20)
     const { count: serviceCount } = await supabase

@@ -27,6 +27,15 @@ const createOwnershipSchema = (ownerField: string) =>
     { message: `Missing ownership field: ${ownerField}` }
   );
 
+/**
+ * Schema for posting suspension check.
+ * posting_suspended_until is added to profiles via migration
+ * (migration_posting_suspended_until.sql).
+ */
+const PostingSuspensionSchema = z.object({
+  posting_suspended_until: z.string().nullable(),
+});
+
 export type ProfileData = z.infer<typeof ProfileSchema>;
 
 // ============================================================================
@@ -342,6 +351,81 @@ export async function requireOwnership(
 }
 
 // ============================================================================
+// POSTING SUSPENSION GUARD
+// ============================================================================
+
+/**
+ * Guard for listing-creation endpoints (services, marketplace products).
+ *
+ * Checks profiles.posting_suspended_until against the current timestamp.
+ * Returns a 403 NextResponse if the user is within an active suspension window,
+ * or null if they are allowed to post.
+ *
+ * This check is intentionally decoupled from requireRole so that account_status
+ * remains unaffected — the user can still log in, message, and manage existing
+ * listings; only new listing creation is blocked.
+ *
+ * Usage in a POST handler (after auth resolves userId):
+ *   const blocked = await requirePostingActive(user.id, supabase);
+ *   if (blocked) return blocked;
+ *
+ * Requires profiles.posting_suspended_until TIMESTAMPTZ column (see migration).
+ */
+export async function requirePostingActive(
+  userId: string,
+  supabase: SupabaseClient
+): Promise<NextResponse | null> {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('posting_suspended_until')
+      .eq('id', userId)
+      .single();
+
+    if (error) {
+      console.error('Posting suspension check error:', error);
+      // Fail open — a DB error should not silently block a legitimate user.
+      // The suspension write in checkAndSuspendPostingOnConsecutiveLowRatings
+      // has its own error logging, so this path is genuinely unexpected.
+      return null;
+    }
+
+    const validation = PostingSuspensionSchema.safeParse(data);
+    if (!validation.success) {
+      console.error('Posting suspension schema mismatch:', validation.error);
+      return null;
+    }
+
+    const { posting_suspended_until } = validation.data;
+
+    if (posting_suspended_until !== null) {
+      const suspendedUntil = new Date(posting_suspended_until);
+      const now = new Date();
+
+      if (suspendedUntil > now) {
+        const resumesAt = suspendedUntil.toISOString();
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'Your posting privileges are temporarily suspended due to multiple ' +
+              '1-star reviews. You cannot create new listings at this time.',
+            code: 'POSTING_SUSPENDED',
+            resumesAt,
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    return null; // Not suspended — caller may proceed
+  } catch (err) {
+    console.error('Unexpected error in requirePostingActive:', err);
+    return null; // Fail open
+  }
+}
+
+// ============================================================================
 // MASTER MIDDLEWARE PIPELINE
 // ============================================================================
 
@@ -349,6 +433,10 @@ export async function requireOwnership(
  * Main middleware orchestrator
  * - Single Supabase client initialization (Performance Fix)
  * - Sequential checks: rate limit → auth → roles → ownership
+ *
+ * Note: posting suspension is NOT wired into this pipeline because it applies
+ * only to specific POST actions (create service, create product). Call
+ * requirePostingActive() directly in those handlers after auth resolves.
  */
 export async function applyMiddleware(
   request: NextRequest,

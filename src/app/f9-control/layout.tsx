@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { AdminSessionGuard } from '@/components/admin/AdminSessionGuard';
+import { NotificationBell }  from '@/components/admin/NotificationBell';
 
 export default function F9ControlLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -43,6 +44,7 @@ export default function F9ControlLayout({ children }: { children: React.ReactNod
         {/* Main Content Zone */}
         <main className="flex-1 flex flex-col">
           <header className="h-16 bg-white border-b flex items-center justify-between px-8">
+            {/* Command palette */}
             <div className="flex items-center w-full max-w-xl relative">
               <kbd className="absolute left-3 text-xs bg-gray-100 border px-1.5 rounded text-gray-500">
                 ⌘K
@@ -53,8 +55,17 @@ export default function F9ControlLayout({ children }: { children: React.ReactNod
                 className="w-full pl-12 pr-4 py-2 bg-gray-50 border-transparent focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-200 rounded-lg text-sm transition-all"
               />
             </div>
-            <div className="w-8 h-8 rounded-full bg-gray-950 text-white flex items-center justify-center text-xs font-bold shadow-md ring-2 ring-gray-200">
-              ME
+
+            {/* Right-side controls */}
+            <div className="flex items-center gap-3">
+              {/* Notification bell — lights up for critical security events
+                  and pending contest tickets. Navigates to /f9-control/flags. */}
+              <NotificationBell />
+
+              {/* Admin avatar */}
+              <div className="w-8 h-8 rounded-full bg-gray-950 text-white flex items-center justify-center text-xs font-bold shadow-md ring-2 ring-gray-200">
+                ME
+              </div>
             </div>
           </header>
 

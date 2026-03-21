@@ -1236,6 +1236,7 @@ export type Database = {
           onboarding_completed: boolean | null
           phone_number: string | null
           phone_verified: boolean | null
+          posting_suspended_until: string | null
           profile_image_url: string | null
           student_verified: boolean | null
           suspension_reason: string | null
@@ -1266,6 +1267,7 @@ export type Database = {
           onboarding_completed?: boolean | null
           phone_number?: string | null
           phone_verified?: boolean | null
+          posting_suspended_until?: string | null
           profile_image_url?: string | null
           student_verified?: boolean | null
           suspension_reason?: string | null
@@ -1296,6 +1298,7 @@ export type Database = {
           onboarding_completed?: boolean | null
           phone_number?: string | null
           phone_verified?: boolean | null
+          posting_suspended_until?: string | null
           profile_image_url?: string | null
           student_verified?: boolean | null
           suspension_reason?: string | null
@@ -1694,6 +1697,7 @@ export type Database = {
           order_id: string | null
           paid_at: string | null
           payment_method: string | null
+          recipient_user_id: string | null
           status: string | null
           transaction_ref: string
           transaction_type: string
@@ -1709,6 +1713,7 @@ export type Database = {
           order_id?: string | null
           paid_at?: string | null
           payment_method?: string | null
+          recipient_user_id?: string | null
           status?: string | null
           transaction_ref: string
           transaction_type: string
@@ -1724,6 +1729,7 @@ export type Database = {
           order_id?: string | null
           paid_at?: string | null
           payment_method?: string | null
+          recipient_user_id?: string | null
           status?: string | null
           transaction_ref?: string
           transaction_type?: string
@@ -1741,6 +1747,13 @@ export type Database = {
             columns: ["order_id"]
             isOneToOne: false
             referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_recipient_user_id_fkey"
+            columns: ["recipient_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
         ]

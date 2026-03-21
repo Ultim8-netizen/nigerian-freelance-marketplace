@@ -4,9 +4,11 @@
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 
-// Initialize Redis client
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
+// Initialize Redis client — exported so other server modules can use it
+// for custom atomic operations (e.g. notification deduplication flags)
+// without reinitializing the connection.
+export const redis = new Redis({
+  url:   process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
@@ -15,71 +17,85 @@ export const rateLimiters = {
   // Authentication: 5 attempts per 15 minutes
   auth: new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(5, '15 m'),
+    limiter:   Ratelimit.slidingWindow(5, '15 m'),
     analytics: true,
-    prefix: 'ratelimit:auth',
+    prefix:    'ratelimit:auth',
   }),
-  
+
   // Registration: 3 attempts per hour
   register: new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(3, '1 h'),
+    limiter:   Ratelimit.slidingWindow(3, '1 h'),
     analytics: true,
-    prefix: 'ratelimit:register',
+    prefix:    'ratelimit:register',
   }),
-  
+
   // API calls: 100 per minute
   api: new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(100, '1 m'),
+    limiter:   Ratelimit.slidingWindow(100, '1 m'),
     analytics: true,
-    prefix: 'ratelimit:api',
+    prefix:    'ratelimit:api',
   }),
-  
+
   // Job creation: 5 per day
   createJob: new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(5, '24 h'),
+    limiter:   Ratelimit.slidingWindow(5, '24 h'),
     analytics: true,
-    prefix: 'ratelimit:create_job',
+    prefix:    'ratelimit:create_job',
   }),
-  
+
   // Service creation: 10 per hour
   createService: new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(10, '1 h'),
+    limiter:   Ratelimit.slidingWindow(10, '1 h'),
     analytics: true,
-    prefix: 'ratelimit:create_service',
+    prefix:    'ratelimit:create_service',
   }),
-  
+
   // Proposal submission: 20 per day
   submitProposal: new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(20, '24 h'),
+    limiter:   Ratelimit.slidingWindow(20, '24 h'),
     analytics: true,
-    prefix: 'ratelimit:proposal',
+    prefix:    'ratelimit:proposal',
   }),
-  
+
   // Payment initiation: 5 per hour
   initiatePayment: new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(5, '1 h'),
+    limiter:   Ratelimit.slidingWindow(5, '1 h'),
     analytics: true,
-    prefix: 'ratelimit:payment',
+    prefix:    'ratelimit:payment',
+  }),
+
+  // Admin login: 3 attempts per 15 minutes per IP.
+  // Deliberately tighter than the user auth limiter — the admin panel is a
+  // high-value target and its login endpoint should be aggressively defended.
+  // Breaching this limit also triggers an out-of-band email alert to the admin.
+  adminLogin: new Ratelimit({
+    redis,
+    limiter:   Ratelimit.slidingWindow(3, '15 m'),
+    analytics: true,
+    prefix:    'ratelimit:admin_login',
   }),
 };
 
+export type RateLimiterType = keyof typeof rateLimiters;
+
 /**
- * Apply rate limit check
- * Returns: { success: true } or { success: false, reset: Date }
+ * Apply rate limit check.
+ * Returns { success: true } or { success: false, reset: Date }.
  */
 export async function checkRateLimit(
-  limiterType: keyof typeof rateLimiters,
-  identifier: string
+  limiterType: RateLimiterType,
+  identifier:  string
 ) {
   try {
-    const { success, limit, reset, remaining } = await rateLimiters[limiterType].limit(identifier);
-    
+    const { success, limit, reset, remaining } =
+      await rateLimiters[limiterType].limit(identifier);
+
     return {
       success,
       limit,
@@ -95,23 +111,23 @@ export async function checkRateLimit(
 
 /**
  * Usage in API route:
- * 
+ *
  * import { checkRateLimit } from '@/lib/rate-limit-upstash';
- * 
+ *
  * export async function POST(request: NextRequest) {
  *   const ip = request.headers.get('x-forwarded-for') || 'unknown';
  *   const rateLimitResult = await checkRateLimit('api', ip);
- *   
+ *
  *   if (!rateLimitResult.success) {
  *     return NextResponse.json(
- *       { 
- *         error: 'Too many requests', 
- *         resetAt: rateLimitResult.reset 
+ *       {
+ *         error: 'Too many requests',
+ *         resetAt: rateLimitResult.reset
  *       },
  *       { status: 429 }
  *     );
  *   }
- *   
+ *
  *   // ... rest of your logic
  * }
  */
