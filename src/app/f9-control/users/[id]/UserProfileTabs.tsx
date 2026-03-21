@@ -4,7 +4,10 @@ import { useState, useTransition } from 'react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { TrustBadge, type TrustLevel } from '@/components/ui/TrustBadge';
-import { AlertTriangle, ShieldOff, Ban, Lock, Sliders, CheckCircle, Loader2, ShieldCheck } from 'lucide-react';
+import {
+  AlertTriangle, ShieldOff, Ban, Lock, Sliders,
+  CheckCircle, Loader2, ShieldCheck,
+} from 'lucide-react';
 import type { Tables } from '@/types';
 import { useStepUpAuth } from '@/components/admin/StepUpAuth';
 
@@ -21,7 +24,6 @@ export interface UserProfileTabsProps {
   devices:      Tables<'user_devices'>[];
   auditLogs:    Tables<'audit_logs'>[];
   adminNotes:   Tables<'admin_action_logs'>[];
-  // Server actions — bound to the specific userId in the server component
   onWarn:          (fd: FormData) => Promise<void>;
   onSuspend:       (fd: FormData) => Promise<void>;
   onBan:           (fd: FormData) => Promise<void>;
@@ -42,7 +44,7 @@ const TABS = [
 
 type Tab = (typeof TABS)[number];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatNGN(v: number) {
   return new Intl.NumberFormat('en-NG', {
@@ -55,25 +57,33 @@ function dt(s: string | null) {
   return new Date(s).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-// ─── Inline action panel ─────────────────────────────────────────────────────
+// ─── ActionPanel ──────────────────────────────────────────────────────────────
 
 interface ActionPanelProps {
-  label:       string;
-  icon:        React.ReactNode;
-  colour:      string;           // Tailwind bg + text classes
-  action:      (fd: FormData) => Promise<void>;
-  fields?:     { name: string; label: string; type?: string; min?: number; max?: number }[];
-  confirmText: string;
+  label:        string;
+  icon:         React.ReactNode;
+  colour:       string;
+  action:       (fd: FormData) => Promise<void>;
+  /** Visible input fields the admin fills in (e.g. reason). */
+  fields?:      { name: string; label: string; type?: string; min?: number; max?: number }[];
+  confirmText:  string;
   /**
-   * When provided, the action is wrapped in a step-up TOTP challenge before
-   * execution. Pass `requireStepUp` from `useStepUpAuth()` for nuclear actions.
+   * FIX #1 — Hidden values that are injected as <input type="hidden"> into
+   * every form submission.  This is how user_id (and any other server-side
+   * identifiers) reach the Server Action without being visible in the UI.
+   *
+   * Every panel that calls a server action reading fd.get('user_id') MUST
+   * receive { user_id: profile.id } here.
    */
+  hiddenValues?: Record<string, string>;
   requireStepUp?: (action: () => Promise<void>) => Promise<void>;
-  /** Visual indicator shown next to the label for step-up-gated actions. */
   nuclear?: boolean;
 }
 
-function ActionPanel({ label, icon, colour, action, fields = [], confirmText, requireStepUp, nuclear }: ActionPanelProps) {
+function ActionPanel({
+  label, icon, colour, action, fields = [], confirmText,
+  hiddenValues = {}, requireStepUp, nuclear,
+}: ActionPanelProps) {
   const [open, setOpen]         = useState(false);
   const [feedback, setFeedback] = useState<'ok' | 'err' | null>(null);
   const [isPending, start]      = useTransition();
@@ -84,7 +94,6 @@ function ActionPanel({ label, icon, colour, action, fields = [], confirmText, re
     start(async () => {
       try {
         const run = () => action(fd);
-        // Nuclear actions go through step-up TOTP before the server action fires
         if (requireStepUp) {
           await requireStepUp(run);
         } else {
@@ -100,6 +109,7 @@ function ActionPanel({ label, icon, colour, action, fields = [], confirmText, re
 
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">
+      {/* Toggle button */}
       <button
         type="button"
         onClick={() => { setOpen((o) => !o); setFeedback(null); }}
@@ -116,6 +126,17 @@ function ActionPanel({ label, icon, colour, action, fields = [], confirmText, re
 
       {open && (
         <form onSubmit={handleSubmit} className="px-4 py-3 bg-gray-50 border-t border-gray-200 space-y-3">
+          {/*
+            FIX #1 — Render every hiddenValues entry as a hidden input.
+            Server actions read fd.get('user_id'), fd.get('wallet_id'), etc.
+            Without these the FormData arrives with those keys missing and
+            the Supabase .eq('id', '') filter silently matches zero rows.
+          */}
+          {Object.entries(hiddenValues).map(([name, value]) => (
+            <input key={name} type="hidden" name={name} value={value} />
+          ))}
+
+          {/* Visible fields (reason, score_change, etc.) */}
           {fields.map((f) => (
             <div key={f.name}>
               <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
@@ -146,8 +167,14 @@ function ActionPanel({ label, icon, colour, action, fields = [], confirmText, re
             >
               Cancel
             </button>
-            {feedback === 'ok'  && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle size={12} /> Done</span>}
-            {feedback === 'err' && <span className="text-xs text-red-600">Failed — try again</span>}
+            {feedback === 'ok'  && (
+              <span className="text-xs text-green-600 flex items-center gap-1">
+                <CheckCircle size={12} /> Done
+              </span>
+            )}
+            {feedback === 'err' && (
+              <span className="text-xs text-red-600">Failed — try again</span>
+            )}
           </div>
         </form>
       )}
@@ -155,7 +182,7 @@ function ActionPanel({ label, icon, colour, action, fields = [], confirmText, re
   );
 }
 
-// ─── Tab sections ─────────────────────────────────────────────────────────────
+// ─── Tab sections (unchanged) ─────────────────────────────────────────────────
 
 function OverviewTab({ p }: { p: Tables<'profiles'> }) {
   const fields: [string, string | number | boolean | null][] = [
@@ -250,7 +277,9 @@ function ActivityTab({
               <div key={d.id} className="flex items-start gap-3 p-3 bg-gray-50 rounded text-sm">
                 <span className="shrink-0 w-2 h-2 rounded-full bg-red-400 mt-1.5" />
                 <div>
-                  <p className="font-medium capitalize">{d.reason} — <span className="font-normal text-gray-600">{d.status}</span></p>
+                  <p className="font-medium capitalize">
+                    {d.reason} — <span className="font-normal text-gray-600">{d.status}</span>
+                  </p>
                   <p className="text-gray-500 text-xs mt-0.5 line-clamp-2">{d.description}</p>
                   <p className="text-gray-400 text-xs mt-0.5">{dt(d.created_at)}</p>
                 </div>
@@ -348,8 +377,15 @@ function FlagsTab({
         ) : (
           <ul className="space-y-2">
             {securityLogs.map((log) => (
-              <li key={log.id} className={`flex items-start gap-3 p-3 rounded text-sm ${log.severity === 'critical' ? 'bg-red-50' : 'bg-gray-50'}`}>
-                <span className={`shrink-0 w-2 h-2 rounded-full mt-1.5 ${log.severity === 'critical' ? 'bg-red-500' : 'bg-amber-400'}`} />
+              <li
+                key={log.id}
+                className={`flex items-start gap-3 p-3 rounded text-sm ${
+                  log.severity === 'critical' ? 'bg-red-50' : 'bg-gray-50'
+                }`}
+              >
+                <span className={`shrink-0 w-2 h-2 rounded-full mt-1.5 ${
+                  log.severity === 'critical' ? 'bg-red-500' : 'bg-amber-400'
+                }`} />
                 <div className="min-w-0">
                   <p className="font-mono text-xs font-semibold uppercase text-gray-800">
                     {log.event_type.replace(/_/g, ' ')}
@@ -357,7 +393,9 @@ function FlagsTab({
                       <span className="ml-2 text-red-600 normal-case font-sans">• critical</span>
                     )}
                   </p>
-                  {log.description && <p className="text-gray-500 text-xs mt-0.5">{log.description}</p>}
+                  {log.description && (
+                    <p className="text-gray-500 text-xs mt-0.5">{log.description}</p>
+                  )}
                   <p className="text-gray-400 text-xs mt-0.5">{dt(log.created_at)}</p>
                 </div>
               </li>
@@ -429,9 +467,7 @@ function SecurityTab({
             {auditLogs.map((a) => (
               <li key={a.id} className="flex items-start justify-between py-2 border-b border-gray-100 text-sm gap-4">
                 <div className="min-w-0">
-                  <span className="font-mono text-xs font-semibold uppercase text-gray-800">
-                    {a.action}
-                  </span>
+                  <span className="font-mono text-xs font-semibold uppercase text-gray-800">{a.action}</span>
                   {a.resource_type && (
                     <span className="ml-2 text-xs text-gray-500">{a.resource_type}</span>
                   )}
@@ -496,10 +532,14 @@ export function UserProfileTabs({
   const [active, setActive] = useState<Tab>('Overview');
   const { requireStepUp, StepUpModal } = useStepUpAuth();
 
+  // FIX #1 — The user_id for this profile, passed as hiddenValues to every
+  // ActionPanel so the server action can read fd.get('user_id') correctly.
+  const userId = profile.id;
+
   return (
     <div className="space-y-6">
-      {/* Step-up modal — rendered at root so it overlays everything */}
       {StepUpModal}
+
       {/* ── Profile header ─────────────────────────────────────────────── */}
       <Card className="p-6">
         <div className="flex items-start justify-between gap-6">
@@ -524,7 +564,9 @@ export function UserProfileTabs({
               </div>
               <p className="text-sm text-gray-500 mt-0.5">{profile.email}</p>
               <p className="text-xs text-gray-400 mt-0.5 capitalize">
-                {profile.user_type}{profile.university ? ` · ${profile.university}` : ''}{profile.location ? ` · ${profile.location}` : ''}
+                {profile.user_type}
+                {profile.university ? ` · ${profile.university}` : ''}
+                {profile.location   ? ` · ${profile.location}`   : ''}
               </p>
             </div>
           </div>
@@ -544,6 +586,7 @@ export function UserProfileTabs({
             action={onWarn}
             fields={[{ name: 'reason', label: 'Warning reason' }]}
             confirmText="Send Warning"
+            hiddenValues={{ user_id: userId }}
           />
           <ActionPanel
             label="Suspend Account"
@@ -552,6 +595,7 @@ export function UserProfileTabs({
             action={onSuspend}
             fields={[{ name: 'reason', label: 'Suspension reason' }]}
             confirmText="Suspend"
+            hiddenValues={{ user_id: userId }}
           />
           <ActionPanel
             label="Ban Account"
@@ -560,6 +604,7 @@ export function UserProfileTabs({
             action={onBan}
             fields={[{ name: 'reason', label: 'Ban reason' }]}
             confirmText="Ban User"
+            hiddenValues={{ user_id: userId }}
             requireStepUp={requireStepUp}
             nuclear
           />
@@ -570,6 +615,7 @@ export function UserProfileTabs({
             action={onFreeze}
             fields={[{ name: 'reason', label: 'Freeze reason' }]}
             confirmText="Freeze"
+            hiddenValues={{ user_id: userId }}
             requireStepUp={requireStepUp}
             nuclear
           />
@@ -583,13 +629,13 @@ export function UserProfileTabs({
               { name: 'reason',       label: 'Reason / notes' },
             ]}
             confirmText="Apply Override"
+            hiddenValues={{ user_id: userId }}
           />
         </div>
       </Card>
 
       {/* ── Tabs ─────────────────────────────────────────────────────────── */}
       <Card className="overflow-hidden">
-        {/* Tab nav */}
         <div className="flex border-b border-gray-200 overflow-x-auto">
           {TABS.map((tab) => (
             <button
@@ -607,14 +653,13 @@ export function UserProfileTabs({
           ))}
         </div>
 
-        {/* Tab body */}
         <div className="p-6">
-          {active === 'Overview'       && <OverviewTab   p={profile} />}
-          {active === 'Activity'       && <ActivityTab   orders={orders} disputes={disputes} />}
-          {active === 'Financials'     && <FinancialsTab wallet={wallet} withdrawals={withdrawals} />}
-          {active === 'Flags & History'&& <FlagsTab      securityLogs={securityLogs} trustEvents={trustEvents} />}
-          {active === 'Security'       && <SecurityTab   devices={devices} auditLogs={auditLogs} />}
-          {active === 'Admin Notes'    && <AdminNotesTab notes={adminNotes} />}
+          {active === 'Overview'        && <OverviewTab   p={profile} />}
+          {active === 'Activity'        && <ActivityTab   orders={orders} disputes={disputes} />}
+          {active === 'Financials'      && <FinancialsTab wallet={wallet} withdrawals={withdrawals} />}
+          {active === 'Flags & History' && <FlagsTab      securityLogs={securityLogs} trustEvents={trustEvents} />}
+          {active === 'Security'        && <SecurityTab   devices={devices} auditLogs={auditLogs} />}
+          {active === 'Admin Notes'     && <AdminNotesTab notes={adminNotes} />}
         </div>
       </Card>
     </div>

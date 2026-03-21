@@ -1,8 +1,9 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { StaffClient } from './StaffClient';
+import type { Json } from '@/types/database.types';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Constants (exported so StaffClient can import without circular deps) ─────
 
 export const ROLE_TYPES = ['moderator', 'financial_analyst', 'community_manager'] as const;
 export type RoleType = (typeof ROLE_TYPES)[number];
@@ -15,7 +16,6 @@ export const DEFAULT_CAPS: Record<RoleType, number> = {
 
 export const CAP_KEY = (role: RoleType) => `staff_cap_${role}`;
 
-// Extended type: staff_roles row with joined profile
 export type StaffWithProfile = {
   id:          string;
   user_id:     string;
@@ -61,7 +61,6 @@ async function activateStaffSystem() {
     { onConflict: 'key' }
   );
 
-  // Seed default caps (ignoreDuplicates so re-activation doesn't overwrite tuned values)
   await supabase.from('platform_config').upsert(
     ROLE_TYPES.map((role) => ({
       key:          CAP_KEY(role),
@@ -82,35 +81,73 @@ async function activateStaffSystem() {
   revalidatePath('/f9-control/staff');
 }
 
+/**
+ * FIX #2 — The form submits `user_email_lookup` (an email address).
+ * The previous version read `fd.get('user_id')` which was always empty,
+ * causing a FK violation or silent no-op on the upsert.
+ *
+ * This version:
+ *   1. Reads the email from the form field named `user_email_lookup`.
+ *   2. Resolves it to a UUID via profiles.email lookup.
+ *   3. Returns a user-readable error if the email isn't found.
+ *   4. Only then upserts into staff_roles with the correct UUID.
+ */
 async function appointStaff(fd: FormData) {
   'use server';
-  const userId   = fd.get('user_id')   as string;
+  const email    = (fd.get('user_email_lookup') as string ?? '').trim().toLowerCase();
   const roleType = fd.get('role_type') as RoleType;
-  if (!ROLE_TYPES.includes(roleType)) throw new Error('Invalid role');
+
+  if (!email)                       throw new Error('Email is required.');
+  if (!ROLE_TYPES.includes(roleType)) throw new Error('Invalid role.');
 
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  // Resolve email → profile UUID
+  const { data: profile, error: lookupError } = await supabase
+    .from('profiles')
+    .select('id, full_name, account_status')
+    .eq('email', email)
+    .single();
+
+  if (lookupError || !profile) {
+    throw new Error(`No F9 user found with email "${email}". The user must have an existing account.`);
+  }
+
+  if (profile.account_status === 'banned') {
+    throw new Error('Cannot appoint a banned account.');
+  }
+
+  // Upsert staff role — reactivates if a dormant record exists
+  const { error: upsertError } = await supabase
     .from('staff_roles')
     .upsert(
-      { user_id: userId, role_type: roleType, is_active: true, permissions: {} },
+      {
+        user_id:     profile.id,
+        role_type:   roleType,
+        is_active:   true,
+        permissions: {} as Json,
+      },
       { onConflict: 'user_id' }
     );
 
+  if (upsertError) throw new Error(`Failed to create staff role: ${upsertError.message}`);
+
+  // F9 invite notification
   await supabase.from('notifications').insert({
-    user_id: userId,
+    user_id: profile.id,
     type:    'staff_invite',
     title:   'You have been appointed to the F9 team',
     message: `You have been appointed as a ${roleType.replace(/_/g, ' ')} on F9. Your staff console access is now active.`,
   });
 
+  // Audit trail with 48h reversal window
   await supabase.from('admin_action_logs').insert({
     admin_id:         admin.id,
-    target_user_id:   userId,
+    target_user_id:   profile.id,
     action_type:      'appoint_staff',
-    reason:           `Appointed as ${roleType.replace(/_/g, ' ')}`,
+    reason:           `Appointed ${profile.full_name} as ${roleType.replace(/_/g, ' ')}`,
     reversible_until: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
   });
 
@@ -168,18 +205,25 @@ async function updateStaffCap(fd: FormData) {
 
 async function grantElevatedPermission(fd: FormData) {
   'use server';
-  const staffRoleId   = fd.get('staff_role_id')   as string;
-  const userId        = fd.get('user_id')          as string;
-  const permissionKey = fd.get('permission_key')   as string;
+  const staffRoleId   = fd.get('staff_role_id')  as string;
+  const userId        = fd.get('user_id')         as string;
+  const permissionKey = fd.get('permission_key')  as string;
 
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  const { data: current } = await supabase.from('staff_roles').select('permissions').eq('id', staffRoleId).single();
-  const perms = { ...(typeof current?.permissions === 'object' && current.permissions ? current.permissions as Record<string, unknown> : {}), [permissionKey]: true };
+  const { data: current } = await supabase
+    .from('staff_roles').select('permissions').eq('id', staffRoleId).single();
+
+  const perms: Json = {
+    ...(typeof current?.permissions === 'object' && current.permissions !== null
+      ? current.permissions as Record<string, Json | undefined> : {}),
+    [permissionKey]: true,
+  };
 
   await supabase.from('staff_roles').update({ permissions: perms }).eq('id', staffRoleId);
+
   await supabase.from('admin_action_logs').insert({
     admin_id: admin.id, target_user_id: userId,
     action_type: 'grant_elevated_permission',
@@ -191,19 +235,29 @@ async function grantElevatedPermission(fd: FormData) {
 
 async function revokeElevatedPermission(fd: FormData) {
   'use server';
-  const staffRoleId   = fd.get('staff_role_id')   as string;
-  const userId        = fd.get('user_id')          as string;
-  const permissionKey = fd.get('permission_key')   as string;
+  const staffRoleId   = fd.get('staff_role_id')  as string;
+  const userId        = fd.get('user_id')         as string;
+  const permissionKey = fd.get('permission_key')  as string;
 
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  const { data: current } = await supabase.from('staff_roles').select('permissions').eq('id', staffRoleId).single();
-  const perms = { ...(typeof current?.permissions === 'object' && current.permissions ? current.permissions as Record<string, unknown> : {}) };
-  delete perms[permissionKey];
+  const { data: current } = await supabase
+    .from('staff_roles').select('permissions').eq('id', staffRoleId).single();
 
-  await supabase.from('staff_roles').update({ permissions: perms }).eq('id', staffRoleId);
+  const perms: Json = { ...(typeof current?.permissions === 'object' && current.permissions !== null
+    ? current.permissions as Record<string, Json | undefined> : {}) };
+  (perms as Record<string, Json | undefined>)[permissionKey] = undefined;
+  // Remove the key cleanly — undefined values serialize to omitted in JSON
+  const cleanPerms: Record<string, Json> = Object.fromEntries(
+    Object.entries(perms as Record<string, Json | undefined>)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => [k, v as Json])
+  );
+
+  await supabase.from('staff_roles').update({ permissions: cleanPerms as Json }).eq('id', staffRoleId);
+
   await supabase.from('admin_action_logs').insert({
     admin_id: admin.id, target_user_id: userId,
     action_type: 'revoke_elevated_permission',
@@ -213,7 +267,6 @@ async function revokeElevatedPermission(fd: FormData) {
   revalidatePath('/f9-control/staff');
 }
 
-/** Calls the existing reverse_admin_action RPC (schema-verified). */
 async function reverseStaffAction(fd: FormData) {
   'use server';
   const logId = fd.get('log_id') as string;
@@ -243,7 +296,6 @@ export default async function StaffPage() {
 
   const isActive = activationConfig?.enabled === true;
 
-  // ── Dormant ───────────────────────────────────────────────────────────────
   if (!isActive) {
     return (
       <div className="space-y-6">
@@ -253,16 +305,10 @@ export default async function StaffPage() {
     );
   }
 
-  // ── Active — fetch all data ───────────────────────────────────────────────
   const { data: staffRoles } = await supabase
     .from('staff_roles')
     .select(`
-      id,
-      user_id,
-      role_type,
-      permissions,
-      is_active,
-      created_at,
+      id, user_id, role_type, permissions, is_active, created_at,
       user_id_profile:user_id(full_name, email, profile_image_url, trust_score)
     `)
     .order('created_at', { ascending: false }) as { data: StaffWithProfile[] | null };
@@ -320,8 +366,6 @@ export default async function StaffPage() {
   );
 }
 
-// ─── Dormant state (server-rendered — no 'use client' needed) ─────────────────
-
 function DormantState({ onActivate }: { onActivate: () => Promise<void> }) {
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-4">
@@ -334,7 +378,6 @@ function DormantState({ onActivate }: { onActivate: () => Promise<void> }) {
             <path d="M16 3.13a4 4 0 0 1 0 7.75" />
           </svg>
         </div>
-
         <div>
           <h2 className="text-xl font-bold text-gray-900 mb-2">
             Staff management is currently inactive.
@@ -345,7 +388,6 @@ function DormantState({ onActivate }: { onActivate: () => Promise<void> }) {
             and seeds the default role caps.
           </p>
         </div>
-
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-left text-xs text-amber-800 space-y-1.5">
           <p className="font-semibold">Before activating, be aware:</p>
           <ul className="space-y-0.5 list-disc list-inside">
@@ -355,7 +397,6 @@ function DormantState({ onActivate }: { onActivate: () => Promise<void> }) {
             <li>You can revoke any staff member instantly at any time</li>
           </ul>
         </div>
-
         <form action={onActivate}>
           <button
             type="submit"
