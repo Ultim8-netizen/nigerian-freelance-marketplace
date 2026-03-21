@@ -1,6 +1,9 @@
 // src/app/api/marketplace/products/route.ts
 // PRODUCTION-READY: Marketplace products with full security
 // UPDATED: Trust Gate check added to POST handler before product insertion.
+// FIX: evaluateContentTriggers now invoked after trust gate.
+//      - allowed=false → 400, listing rejected, user notified.
+//      - autoHold=true → inserted with is_active:false, flagged for admin review.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -9,36 +12,37 @@ import { sanitizeText, sanitizeHtml, sanitizeUrl } from '@/lib/security/sanitize
 import { containsSqlInjection } from '@/lib/security/sql-injection-check';
 import { logger } from '@/lib/logger';
 import { evaluateTrustGate } from '@/lib/trust/feature-gates';
+import { evaluateContentTriggers } from '@/lib/trust/automation';
 import { z } from 'zod';
 
 const productSchema = z.object({
-  title: z.string().min(10).max(200),
-  description: z.string().min(20).max(2000),
-  price: z.number().min(100).max(10000000),
-  category: z.string(),
-  images: z.array(z.string()).min(1).max(8),
-  condition: z.enum(['new', 'like_new', 'used']),
+  title:            z.string().min(10).max(200),
+  description:      z.string().min(20).max(2000),
+  price:            z.number().min(100).max(10000000),
+  category:         z.string(),
+  images:           z.array(z.string()).min(1).max(8),
+  condition:        z.enum(['new', 'like_new', 'used']),
   delivery_options: z.array(z.string()).min(1),
 });
 
-// GET - Browse products
+// ─── GET — Browse products ────────────────────────────────────────────────────
+
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    
-    const category = sanitizeText(searchParams.get('category') || '');
-    const search = sanitizeText(searchParams.get('search') || '');
-    const minPrice = searchParams.get('min_price');
-    const maxPrice = searchParams.get('max_price');
-    const condition = searchParams.get('condition');
-    const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
-    const perPage = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
 
-    // SQL injection check
+    const category  = sanitizeText(searchParams.get('category') || '');
+    const search    = sanitizeText(searchParams.get('search')   || '');
+    const minPrice  = searchParams.get('min_price');
+    const maxPrice  = searchParams.get('max_price');
+    const condition = searchParams.get('condition');
+    const page      = Math.max(1, parseInt(searchParams.get('page')     || '1'));
+    const perPage   = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
+
     if (search && containsSqlInjection(search)) {
-      logger.warn('SQL injection attempt in product search', { 
-        search, 
-        ip: request.headers.get('x-forwarded-for') 
+      logger.warn('SQL injection attempt in product search', {
+        search,
+        ip: request.headers.get('x-forwarded-for'),
       });
       return NextResponse.json(
         { success: false, error: 'Invalid search query' },
@@ -46,12 +50,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Rate limiting for reads
     const { error } = await applyMiddleware(request, {
-      auth: 'optional',
+      auth:      'optional',
       rateLimit: 'api',
     });
-
     if (error) return error;
 
     const supabase = await createClient();
@@ -61,46 +63,44 @@ export async function GET(request: NextRequest) {
       .select(`
         *,
         seller:profiles!products_seller_id_fkey(
-          id, full_name, profile_image_url, 
+          id, full_name, profile_image_url,
           freelancer_rating, identity_verified
         )
       `, { count: 'exact' })
       .eq('is_active', true);
-    
-    // Filters
+
     if (category) query = query.eq('category', category);
-    if (search) query = query.ilike('title', `%${search}%`);
+    if (search)   query = query.ilike('title', `%${search}%`);
     if (minPrice) query = query.gte('price', parseFloat(minPrice));
     if (maxPrice) query = query.lte('price', parseFloat(maxPrice));
     if (condition) query = query.eq('condition', condition);
-    
-    // Pagination
+
     const from = (page - 1) * perPage;
-    const to = from + perPage - 1;
+    const to   = from + perPage - 1;
 
     const { data, error: queryError, count } = await query
       .order('created_at', { ascending: false })
       .range(from, to);
-    
+
     if (queryError) {
       logger.error('Products fetch error', queryError);
       throw queryError;
     }
 
     logger.info('Products query executed', {
-      filters: { category, search },
-      resultCount: data?.length || 0
+      filters:     { category, search },
+      resultCount: data?.length || 0,
     });
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       data,
       pagination: {
         page,
-        per_page: perPage,
-        total: count || 0,
+        per_page:    perPage,
+        total:       count || 0,
         total_pages: Math.ceil((count || 0) / perPage),
-      }
+      },
     });
   } catch (error) {
     logger.error('Products GET error', error as Error);
@@ -111,17 +111,17 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - Create product
+// ─── POST — Create product ────────────────────────────────────────────────────
+
 export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
-      auth: 'required',
+      auth:      'required',
       rateLimit: 'createService',
     });
 
     if (error) return error;
 
-    // Type guard: ensure user is defined after auth check
     if (!user) {
       return NextResponse.json(
         { success: false, error: 'Authentication required' },
@@ -130,67 +130,130 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    
+
     const sanitizedBody = {
       ...body,
-      title: sanitizeText(body.title || ''),
-      description: sanitizeHtml(body.description || ''),
-      category: sanitizeText(body.category || ''),
-      images: body.images?.map((url: string) => sanitizeUrl(url)).filter(Boolean) || [],
+      title:            sanitizeText(body.title       || ''),
+      description:      sanitizeHtml(body.description || ''),
+      category:         sanitizeText(body.category    || ''),
+      images:           body.images?.map((url: string) => sanitizeUrl(url)).filter(Boolean) || [],
       delivery_options: body.delivery_options?.map((opt: string) => sanitizeText(opt)) || [],
     };
 
     const validated = productSchema.parse(sanitizedBody);
 
-    // ADDED: Evaluate the Trust Gate against the validated price before any database
-    // work. If the user's trust level does not permit listing a product at this price,
-    // return a structured 403 immediately — the client uses restrictionType to render
-    // the ContestButton rather than a generic error message.
+    // ── Gate 1: Trust score / listing price cap ───────────────────────────
     const gate = await evaluateTrustGate(user.id, 'post_listing', validated.price);
 
     if (!gate.allowed) {
       logger.warn('Trust Gate blocked product listing', {
-        userId: user.id,
+        userId:          user.id,
         restrictionType: gate.restrictionType,
-        price: validated.price,
+        price:           validated.price,
       });
       return NextResponse.json(
         {
-          success: false,
-          error: gate.reason,
+          success:         false,
+          error:           gate.reason,
           restrictionType: gate.restrictionType,
-          capAmount: gate.capAmount,
+          capAmount:       gate.capAmount,
         },
         { status: 403 }
       );
     }
 
+    // ── Gate 2: Content triggers — prohibited keywords & high-value new accounts
+    //
+    // FIX: evaluateContentTriggers was dead code; it is now called here.
+    // Three outcomes:
+    //   allowed=false  → reject immediately, notify user, return 400.
+    //   autoHold=true  → insert with is_active:false so it is invisible to
+    //                    buyers; the security_log written inside automation.ts
+    //                    surfaces it in the admin Flags page for review.
+    //   otherwise      → insert normally with is_active:true.
+    const contentCheck = await evaluateContentTriggers(user.id, {
+      title:       validated.title,
+      description: validated.description,
+      amount:      validated.price,
+    });
+
+    if (!contentCheck.allowed) {
+      logger.warn('Content trigger rejected product listing', {
+        userId: user.id,
+        reason: contentCheck.reason,
+      });
+
+      // Notify the seller so they know why their listing was rejected
+      const supabaseNotify = await createClient();
+      await supabaseNotify.from('notifications').insert({
+        user_id: user.id,
+        type:    'listing_rejected',
+        title:   'Listing Rejected',
+        message: contentCheck.reason ??
+          'Your listing was rejected because it violates platform policies.',
+      });
+
+      return NextResponse.json(
+        { success: false, error: contentCheck.reason },
+        { status: 400 }
+      );
+    }
+
+    // autoHold — listing is created but held for admin review
+    const isActive = !contentCheck.autoHold;
+
     const supabase = await createClient();
 
     const { data, error: createError } = await supabase
       .from('products')
-      .insert({ 
-        seller_id: user.id, 
+      .insert({
+        seller_id:        user.id,
         ...validated,
-        is_active: true,
-        views_count: 0,
-        sales_count: 0,
+        // autoHold: is_active=false makes the listing invisible to buyers until
+        // admin approves it from the Flags & Tickets page.
+        is_active:        isActive,
+        views_count:      0,
+        sales_count:      0,
       })
       .select()
       .single();
-    
+
     if (createError) {
       logger.error('Product creation failed', createError, { userId: user.id });
       throw createError;
     }
 
-    logger.info('Product created', { productId: data.id, userId: user.id });
+    // Notify the seller when their listing is held for review
+    if (contentCheck.autoHold) {
+      await supabase.from('notifications').insert({
+        user_id: user.id,
+        type:    'listing_held',
+        title:   'Listing Pending Review',
+        message:
+          'Your listing has been submitted but is pending admin review because it exceeds ₦100,000 and your account is less than 7 days old. It will be published once approved.',
+        link:    `/marketplace/products/${data.id}`,
+      });
 
-    return NextResponse.json({ 
-      success: true, 
-      data,
-      message: 'Product created successfully'
-    }, { status: 201 });
+      logger.info('Product held for admin review (high-value new account)', {
+        productId: data.id,
+        userId:    user.id,
+        price:     validated.price,
+      });
+    } else {
+      logger.info('Product created', { productId: data.id, userId: user.id });
+    }
+
+    return NextResponse.json(
+      {
+        success:   true,
+        data,
+        message:   contentCheck.autoHold
+          ? 'Product submitted and pending admin review.'
+          : 'Product created successfully',
+        autoHold:  contentCheck.autoHold ?? false,
+      },
+      { status: 201 }
+    );
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(

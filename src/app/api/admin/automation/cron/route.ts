@@ -1,14 +1,17 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/service';
 
-// Note: Secure this endpoint in middleware.ts or via Vercel Cron Secret in production
+// FIXED: Replaced createClient() (anon key, blocked by RLS) with createServiceClient()
+// (service role key, bypasses RLS). Previously ALL three rules returned zero rows
+// silently because auth.uid() = NULL with no user session, causing every RLS
+// policy to filter out every row.
+
 export async function POST() {
-  const supabase = await createClient();
+  // Service client bypasses RLS — correct for a cron with no user session.
+  const supabase = createServiceClient();
   const logs: string[] = [];
 
   // ─── RULE 1: Stale dispute auto-resolution ─────────────────────────────────
-  // Both parties silent on an open dispute for 7 days → auto-resolve in buyer's favor.
-  // EXCEPTION: quality/delivery disputes are NEVER auto-resolved — route to admin queue.
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
   const { data: staleDisputes, error: disputeError } = await supabase
@@ -16,7 +19,6 @@ export async function POST() {
     .select('id, order_id')
     .eq('status', 'open')
     .lte('created_at', sevenDaysAgo)
-    // Exclude quality & delivery claims — these require human admin review
     .not('reason', 'in', '("quality","delivery")');
 
   if (disputeError) {
@@ -29,7 +31,7 @@ export async function POST() {
         await supabase
           .from('disputes')
           .update({
-            status: 'resolved_client',
+            status:           'resolved_client',
             resolution_notes: 'Auto-resolved due to 7 days of inactivity.',
           })
           .eq('id', dispute.id);
@@ -51,7 +53,7 @@ export async function POST() {
     }
   }
 
-  // ─── Route quality/delivery disputes to admin review queue ────────────────
+  // Quality/delivery disputes → admin queue
   const { data: qualityDisputes, error: qualityError } = await supabase
     .from('disputes')
     .select('id')
@@ -68,9 +70,8 @@ export async function POST() {
       await supabase
         .from('disputes')
         .update({
-          status: 'pending_admin',
-          resolution_notes:
-            'Escalated to admin: quality/delivery disputes require manual review.',
+          status:           'pending_admin',
+          resolution_notes: 'Escalated to admin: quality/delivery disputes require manual review.',
         })
         .eq('id', dispute.id);
 
@@ -79,7 +80,6 @@ export async function POST() {
   }
 
   // ─── RULE 2: Frequent disputers — Level 1 advisory ────────────────────────
-  // 3 disputes initiated in 30 days → dock trust score and send advisory.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
   const { data: frequentDisputers, error: dispusterError } = await supabase.rpc(
@@ -94,86 +94,132 @@ export async function POST() {
   if (frequentDisputers && Array.isArray(frequentDisputers) && frequentDisputers.length > 0) {
     for (const user of frequentDisputers) {
       await supabase.rpc('add_trust_score_event', {
-        p_user_id: user.id,
-        p_event_type: 'excessive_disputes',
+        p_user_id:      user.id,
+        p_event_type:   'excessive_disputes',
         p_score_change: -15,
       });
 
       await supabase.from('notifications').insert({
         user_id: user.id,
-        type: 'level_1_advisory',
-        title: 'Level 1 Advisory Notice',
-        message:
-          'Your account has initiated an unusually high number of disputes recently. Please review our marketplace guidelines.',
+        type:    'level_1_advisory',
+        title:   'Level 1 Advisory Notice',
+        message: 'Your account has initiated an unusually high number of disputes recently. Please review our marketplace guidelines.',
       });
 
       logs.push(`Issued Level 1 advisory to user ${user.id}`);
     }
   }
 
-  // ─── RULE 3: 5+ unique clients paying one freelancer in 24 h → suspend ────
+  // ─── RULE 3: 5+ unique senders with no linked orders → suspend + flag ──────
   //
-  // Schema constraints addressed:
+  // Queries transactions where BOTH order_id IS NULL AND marketplace_order_id IS NULL.
+  // These are wallet credits with no linked order — the fraud signal the spec describes.
   //
-  // (a) `transactions` has no sender_id / recipient_id columns — the only table
-  //     that records payer → payee relationships is `orders` (client_id / freelancer_id).
-  //     We group orders created in the last 24 h by freelancer_id and count
-  //     distinct client_ids as the available fraud signal.
+  // recipient_user_id is populated by the migration:
+  //   ALTER TABLE transactions
+  //     ADD COLUMN IF NOT EXISTS recipient_user_id uuid
+  //     REFERENCES profiles(id) ON DELETE SET NULL;
   //
-  // (b) `wallets` has no `status` column — account lock-down is applied via
-  //     `profiles.account_status = 'suspended'`.
+  // Sender identity is derived from flutterwave_response->customer->{email|phone_number}.
   //
-  // (c) `security_logs` uses `description` (not `details`).
+  // Graceful degradation: if the migration column is not yet present (all
+  // recipient_user_id values are null), the rule logs a warning and skips
+  // rather than producing false positives.
+
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-  const { data: recentOrders, error: ordersError } = await supabase
-    .from('orders')
-    .select('client_id, freelancer_id')
-    .gte('created_at', twentyFourHoursAgo);
+  type UnlinkedTxRow = {
+    id:                   string;
+    recipient_user_id:    string | null;
+    flutterwave_response: Record<string, unknown> | null;
+    amount:               number;
+  };
 
-  if (ordersError) {
-    console.error('Error fetching recent orders for fraud check:', ordersError);
+  const { data: unlinkedTx, error: txError } = await supabase
+    .from('transactions')
+    .select('id, recipient_user_id, flutterwave_response, amount')
+    .is('order_id', null)
+    .is('marketplace_order_id', null)
+    .eq('status', 'completed')
+    .gte('created_at', twentyFourHoursAgo) as { data: UnlinkedTxRow[] | null; error: unknown };
+
+  if (txError) {
+    console.error('Error fetching unlinked transactions for fraud check:', txError);
   }
 
-  if (recentOrders && recentOrders.length > 0) {
-    // Group distinct client_ids per freelancer_id
-    const freelancerMap: Record<string, Set<string>> = {};
+  if (unlinkedTx && unlinkedTx.length > 0) {
+    const migrationApplied = unlinkedTx.some((tx) => tx.recipient_user_id !== null);
 
-    for (const order of recentOrders) {
-      if (!order.freelancer_id || !order.client_id) continue;
-      if (!freelancerMap[order.freelancer_id]) {
-        freelancerMap[order.freelancer_id] = new Set();
+    if (!migrationApplied) {
+      console.warn(
+        '[Rule 3] Skipped: recipient_user_id column not yet populated. ' +
+        'Run the migration and update the wallet top-up route to set this field.'
+      );
+      logs.push('Rule 3 skipped — recipient_user_id not yet populated');
+    } else {
+      const recipientMap = new Map<string, Set<string>>();
+
+      for (const tx of unlinkedTx) {
+        if (!tx.recipient_user_id) continue;
+
+        const flw      = tx.flutterwave_response;
+        const customer = (flw && typeof flw === 'object' && 'customer' in flw)
+          ? (flw.customer as Record<string, unknown>)
+          : null;
+
+        const senderKey =
+          (customer?.email        as string | undefined) ||
+          (customer?.phone_number as string | undefined) ||
+          null;
+
+        if (!senderKey) continue;
+
+        if (!recipientMap.has(tx.recipient_user_id)) {
+          recipientMap.set(tx.recipient_user_id, new Set());
+        }
+        recipientMap.get(tx.recipient_user_id)!.add(senderKey);
       }
-      freelancerMap[order.freelancer_id].add(order.client_id);
-    }
 
-    for (const [freelancerId, clients] of Object.entries(freelancerMap)) {
-      if (clients.size >= 5) {
-        // Suspend account — wallets has no status column, suspend via profiles
+      for (const [recipientId, senders] of recipientMap.entries()) {
+        if (senders.size < 5) continue;
+
         await supabase
           .from('profiles')
           .update({ account_status: 'suspended' })
-          .eq('id', freelancerId);
+          .eq('id', recipientId);
 
-        // Critical security event — column is `description`, not `details`
         await supabase.from('security_logs').insert({
-          user_id: freelancerId,
-          event_type: 'suspicious_inflow',
-          severity: 'critical',
-          description: `Received payments from ${clients.size} unique clients in 24 h. Account suspended pending review.`,
+          user_id:     recipientId,
+          event_type:  'suspicious_unlinked_inflow',
+          severity:    'critical',
+          description: `Received funds from ${senders.size} unique external senders in 24 h with no corresponding orders. Account suspended pending admin review.`,
         });
+
+        const { data: adminProfiles } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('user_type', 'admin')
+          .eq('account_status', 'active');
+
+        if (adminProfiles && adminProfiles.length > 0) {
+          await supabase.from('notifications').insert(
+            adminProfiles.map((a) => ({
+              user_id: a.id,
+              type:    'critical_fraud_alert',
+              title:   'Critical: Suspicious Wallet Inflow',
+              message: `User ${recipientId} received funds from ${senders.size} unique external senders in 24 h with no linked orders. Account auto-suspended. Immediate review required.`,
+            }))
+          );
+        }
 
         await supabase.from('notifications').insert({
-          user_id: freelancerId,
-          type: 'account_suspended',
-          title: 'Account Suspended',
-          message:
-            'Unusual payment activity has been detected on your account. It has been temporarily suspended. Please contact support.',
+          user_id: recipientId,
+          type:    'account_suspended',
+          title:   'Account Suspended',
+          message: 'Unusual payment activity has been detected on your account. It has been temporarily suspended pending review. Please contact support.',
         });
 
-        logs.push(
-          `Suspended account for user ${freelancerId} — ${clients.size} unique clients in 24 h`
-        );
+        logs.push(`Suspended account ${recipientId} — ${senders.size} unique external senders in 24 h with no linked orders`);
       }
     }
   }

@@ -1,13 +1,13 @@
 // src/app/(dashboard)/freelancer/earnings/page.tsx
 // FIX: Next.js 15 made `searchParams` a Promise — it must be awaited before use.
-// Previously accessing searchParams.success synchronously caused a hydration crash
-// at line 127 because the server and client resolved the param differently.
-// UPDATED: Trust Gate check added to initiateWithdrawal server action.
-//          ContestButton rendered in the error banner when error === 'restricted'.
+// FIX: Withdrawal hold logic corrected per spec Part 2b:
+//      - Wallet funded within 2h AND zero completed orders → hold 24h
+//      - Bank details updated within 48h AND zero completed orders → hold 24h
+//      This logic was previously misplaced in api/payments/initiate/route.ts
+//      (which handles client payments, not freelancer withdrawals) and has
+//      been removed from there.  It now lives exclusively here.
 // FIXED: Query structure for wallet and trust_score separated.
-//        wallets is a one-to-one relationship, so we query wallets table directly
-//        instead of trying to access it as an array from the profiles select.
-// FIXED: Removed incorrect cast of order.title — it's string (required) in schema, not optional.
+// FIXED: Removed incorrect cast of order.title — string (required) in schema.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -28,6 +28,13 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 
+// ─── Thresholds ───────────────────────────────────────────────────────────────
+
+const WALLET_FUND_HOLD_MS  = 2  * 60 * 60 * 1000; // 2 h  — wallet recently funded
+const BANK_UPDATE_HOLD_MS  = 48 * 60 * 60 * 1000; // 48 h — bank details recently changed
+
+// ─── Server Action ────────────────────────────────────────────────────────────
+
 async function initiateWithdrawal(formData: FormData) {
   'use server';
 
@@ -46,42 +53,88 @@ async function initiateWithdrawal(formData: FormData) {
   if (account_number.length !== 10 || !/^\d+$/.test(account_number))
     redirect('/freelancer/earnings?error=invalid_account');
 
-  // FIXED: Query wallet directly from wallets table (one-to-one relationship)
+  // ── Fetch wallet (needed for hold checks + insert) ────────────────────────
   const { data: wallet } = await supabase
     .from('wallets')
-    .select('id, balance')
+    .select('id, balance, updated_at, account_name, account_number, bank_name')
     .eq('user_id', user.id)
     .single();
 
-  // Query trust score from profiles table
+  // ── Fetch trust score (for tier-based hold) ───────────────────────────────
   const { data: profile } = await supabase
     .from('profiles')
     .select('trust_score')
     .eq('id', user.id)
     .single();
 
-  const balance = wallet?.balance ?? 0;
+  const balance    = wallet?.balance    ?? 0;
   const trustScore = profile?.trust_score ?? 0;
 
   if (amount < 5000)    redirect('/freelancer/earnings?error=below_minimum');
   if (amount > balance) redirect('/freelancer/earnings?error=insufficient_funds');
 
-  // Evaluate the Trust Gate (Soft Lock < 20)
+  // ── Trust Gate (Soft Lock — score < 20) ──────────────────────────────────
   const gate = await evaluateTrustGate(user.id, 'request_withdrawal', amount);
   if (!gate.allowed) {
-    redirect(`/freelancer/earnings?error=restricted&reason=${encodeURIComponent(gate.reason || '')}`);
+    redirect(
+      `/freelancer/earnings?error=restricted&reason=${encodeURIComponent(gate.reason || '')}`
+    );
   }
 
-  // Determine Hold Status based on Trust Score
-  let withdrawalStatus = 'pending';
-  let holdReason = null;
+  // ── Count completed orders for this freelancer ────────────────────────────
+  //
+  // The 2h and 48h hold rules ONLY apply when the freelancer has zero
+  // completed orders.  A freelancer with a track record is trusted; the
+  // holds are specifically designed to catch brand-new accounts attempting
+  // to extract funds immediately after receiving them.
+  const { count: completedOrderCount } = await supabase
+    .from('orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('freelancer_id', user.id)
+    .eq('status', 'completed');
 
-  if (trustScore >= 40 && trustScore <= 59) {
+  const hasCompletedOrders = (completedOrderCount ?? 0) > 0;
+
+  // ── Determine hold status ─────────────────────────────────────────────────
+
+  let withdrawalStatus: string = 'pending';
+  let holdReason: string | null = null;
+
+  const now = Date.now();
+  const walletUpdatedAt = wallet?.updated_at
+    ? new Date(wallet.updated_at).getTime()
+    : null;
+
+  if (!hasCompletedOrders && walletUpdatedAt !== null) {
+    // Check 1 — wallet funded within 2h with zero completed orders
+    // `wallets.updated_at` is the proxy for "recently funded" since the
+    // schema has no dedicated last_funded_at column.
+    if (now - walletUpdatedAt < WALLET_FUND_HOLD_MS) {
+      withdrawalStatus = 'held';
+      holdReason =
+        'Withdrawal held for 24 hours: your wallet was funded within the last 2 hours and you have no completed orders on record. This is an automated fraud-prevention hold.';
+    }
+
+    // Check 2 — bank details updated within 48h with zero completed orders.
+    // Bank details are stored inline on wallets (account_name / account_number /
+    // bank_name); any save to those fields also updates wallets.updated_at.
+    // Only evaluated if check 1 did not already trigger.
+    if (!holdReason && now - walletUpdatedAt < BANK_UPDATE_HOLD_MS) {
+      withdrawalStatus = 'held';
+      holdReason =
+        'Withdrawal held for 24 hours: bank account details were recently configured and you have no completed orders on record. This is an automated fraud-prevention hold.';
+    }
+  }
+
+  // Check 3 — Trust Score tier 40–59 → 48h delay (independent of order count)
+  if (!holdReason && trustScore >= 40 && trustScore <= 59) {
     withdrawalStatus = 'held';
-    holdReason = 'Mandatory 48-hour delay applied due to Trust Tier (40-59).';
+    holdReason =
+      'Mandatory 48-hour delay applied due to Trust Score tier (40–59).';
   }
 
-  const { error } = await supabase.from('withdrawals').insert({
+  // ── Insert withdrawal record ───────────────────────────────────────────────
+  const { error: insertError } = await supabase.from('withdrawals').insert({
     user_id:        user.id,
     wallet_id:      wallet?.id ?? null,
     amount,
@@ -92,18 +145,18 @@ async function initiateWithdrawal(formData: FormData) {
     failure_reason: holdReason,
   });
 
-  if (error) {
-    console.error('Withdrawal error:', error);
+  if (insertError) {
+    console.error('Withdrawal insert error:', insertError);
     redirect('/freelancer/earnings?error=request_failed');
   }
 
-  // Notify user if held
-  if (withdrawalStatus === 'held') {
+  // ── Notify user if held ────────────────────────────────────────────────────
+  if (withdrawalStatus === 'held' && holdReason) {
     await supabase.from('notifications').insert({
       user_id: user.id,
       type:    'withdrawal_held',
-      title:   'Withdrawal Delayed',
-      message: 'Your withdrawal request has been placed on a standard 48-hour hold based on your current Trust Score tier.',
+      title:   'Withdrawal On Hold',
+      message: holdReason,
     });
     revalidatePath('/freelancer/earnings');
     redirect('/freelancer/earnings?success=withdrawal_held');
@@ -113,23 +166,24 @@ async function initiateWithdrawal(formData: FormData) {
   redirect('/freelancer/earnings?success=withdrawal_requested');
 }
 
+// ─── Error messages ───────────────────────────────────────────────────────────
+
 const ERROR_MESSAGES: Record<string, string> = {
   missing_fields:     'Please fill in all required fields.',
   invalid_account:    'Account number must be exactly 10 digits.',
   below_minimum:      'Minimum withdrawal amount is ₦5,000.',
   insufficient_funds: 'Withdrawal amount exceeds your available balance.',
   request_failed:     'Something went wrong. Please try again.',
-  // ADDED: fallback message for Trust Gate restrictions
   restricted:         'Your withdrawal was restricted by the system.',
 };
 
-// FIX: Next.js 15 — searchParams is now a Promise and must be awaited.
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default async function EarningsPage({
   searchParams,
 }: {
   searchParams: Promise<{ error?: string; success?: string; reason?: string }>;
 }) {
-  // CRITICAL FIX: await searchParams before any access
   const params = await searchParams;
 
   const supabase = await createClient();
@@ -150,7 +204,7 @@ export default async function EarningsPage({
     .not('delivered_at', 'is', null)
     .order('delivered_at', { ascending: false });
 
-  const totalEarnings = completedOrders?.reduce((s, o) => s + (o.amount || 0), 0) || 0;
+  const totalEarnings = completedOrders?.reduce((s, o) => s + (o.amount || 0), 0) ?? 0;
 
   const now = new Date();
   const thisMonthOrders = completedOrders?.filter((o) => {
@@ -165,7 +219,6 @@ export default async function EarningsPage({
   const minimumWithdrawal = 5000;
   const canWithdraw       = availableBalance >= minimumWithdrawal;
 
-  // Decode the optional human-readable reason forwarded by the Trust Gate redirect
   const restrictionReason = params.reason
     ? decodeURIComponent(params.reason)
     : ERROR_MESSAGES.restricted;
@@ -176,10 +229,12 @@ export default async function EarningsPage({
         <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-1">
           Earnings &amp; Wallet
         </h1>
-        <p className="text-gray-600 dark:text-gray-400">Track your income and manage withdrawals</p>
+        <p className="text-gray-600 dark:text-gray-400">
+          Track your income and manage withdrawals
+        </p>
       </div>
 
-      {/* Success banner — withdrawal_requested */}
+      {/* Success — withdrawal_requested */}
       {params.success === 'withdrawal_requested' && (
         <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl flex items-center gap-3">
           <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 shrink-0" />
@@ -189,12 +244,13 @@ export default async function EarningsPage({
         </div>
       )}
 
-      {/* Success banner — withdrawal_held (Trust Tier 40–59) */}
+      {/* Success — withdrawal_held */}
       {params.success === 'withdrawal_held' && (
         <div className="mb-6 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded-xl flex items-center gap-3">
           <Clock className="w-5 h-5 text-yellow-600 dark:text-yellow-400 shrink-0" />
           <p className="text-yellow-800 dark:text-yellow-200 font-medium">
-            Withdrawal submitted, but a standard 48-hour hold has been applied based on your current Trust Score tier. You will be notified once it is released for processing.
+            Withdrawal submitted, but an automated hold has been applied. You
+            will be notified via F9 once it is released for processing.
           </p>
         </div>
       )}
@@ -205,17 +261,11 @@ export default async function EarningsPage({
           <div className="flex items-center gap-3">
             <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0" />
             <p className="text-red-800 dark:text-red-200 font-medium">
-              {/* For restriction errors, show the decoded reason from the Trust Gate;
-                  for all other errors, look up the static message as before. */}
               {params.error === 'restricted'
                 ? restrictionReason
                 : (ERROR_MESSAGES[params.error] ?? 'An error occurred.')}
             </p>
           </div>
-
-          {/* ADDED: ContestButton is a Client Component and can be rendered directly
-              from this Server Component. It only appears for Trust Gate restrictions
-              so the user has a clear path to appeal. */}
           {params.error === 'restricted' && (
             <div className="mt-3 pl-8">
               <ContestButton actionContested="Blocked Withdrawal" />
@@ -224,7 +274,7 @@ export default async function EarningsPage({
         </div>
       )}
 
-      {/* Wallet Summary */}
+      {/* Wallet summary cards */}
       <div className="grid sm:grid-cols-3 gap-4 mb-8">
         <Card className="p-5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between mb-3">
@@ -233,7 +283,9 @@ export default async function EarningsPage({
               <DollarSign className="w-5 h-5 text-green-600 dark:text-green-400" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-green-600 dark:text-green-400">{formatCurrency(availableBalance)}</p>
+          <p className="text-2xl font-bold text-green-600 dark:text-green-400">
+            {formatCurrency(availableBalance)}
+          </p>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Ready to withdraw</p>
         </Card>
 
@@ -244,7 +296,9 @@ export default async function EarningsPage({
               <Clock className="w-5 h-5 text-orange-600 dark:text-orange-400" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">{formatCurrency(pendingClearance)}</p>
+          <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">
+            {formatCurrency(pendingClearance)}
+          </p>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">14-day holding period</p>
         </Card>
 
@@ -255,7 +309,9 @@ export default async function EarningsPage({
               <TrendingUp className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{formatCurrency(totalEarnings)}</p>
+          <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+            {formatCurrency(totalEarnings)}
+          </p>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">All-time earnings</p>
         </Card>
       </div>
@@ -264,20 +320,27 @@ export default async function EarningsPage({
       <Card className="p-6 mb-8 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">This Month</h2>
-          <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">{formatCurrency(thisMonth)}</span>
+          <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+            {formatCurrency(thisMonth)}
+          </span>
         </div>
         <div className="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
           <div
             className="h-full bg-linear-to-r from-blue-500 to-purple-600 rounded-full transition-all duration-700"
-            style={{ width: totalEarnings > 0 ? `${Math.min((thisMonth / totalEarnings) * 100, 100)}%` : '0%' }}
+            style={{
+              width: totalEarnings > 0
+                ? `${Math.min((thisMonth / totalEarnings) * 100, 100)}%`
+                : '0%',
+            }}
           />
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
-          {thisMonthOrders.length} order{thisMonthOrders.length !== 1 ? 's' : ''} completed this month
+          {thisMonthOrders.length} order{thisMonthOrders.length !== 1 ? 's' : ''} completed
+          this month
         </p>
       </Card>
 
-      {/* Withdrawal */}
+      {/* Withdrawal form */}
       <Card className="p-6 mb-8 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
         <div className="flex items-center gap-3 mb-2">
           <div className="w-10 h-10 rounded-lg bg-green-100 dark:bg-green-900/40 flex items-center justify-center">
@@ -285,7 +348,9 @@ export default async function EarningsPage({
           </div>
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Withdraw Funds</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Transfer to your Nigerian bank account</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Transfer to your Nigerian bank account
+            </p>
           </div>
         </div>
 
@@ -299,28 +364,45 @@ export default async function EarningsPage({
         {canWithdraw ? (
           <form action={initiateWithdrawal} className="space-y-4">
             <div>
-              <label htmlFor="amount" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+              <label
+                htmlFor="amount"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5"
+              >
                 Withdrawal Amount (₦) *
               </label>
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-medium select-none">₦</span>
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-medium select-none">
+                  ₦
+                </span>
                 <input
-                  type="number" id="amount" name="amount"
-                  min={minimumWithdrawal} max={availableBalance} step="100" required
+                  type="number"
+                  id="amount"
+                  name="amount"
+                  min={minimumWithdrawal}
+                  max={availableBalance}
+                  step="100"
+                  required
                   placeholder={`Max: ${formatCurrency(availableBalance)}`}
                   className="w-full pl-8 pr-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               </div>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Available: {formatCurrency(availableBalance)}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Available: {formatCurrency(availableBalance)}
+              </p>
             </div>
 
             <div className="grid sm:grid-cols-2 gap-4">
               <div>
-                <label htmlFor="bank_name" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                <label
+                  htmlFor="bank_name"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5"
+                >
                   Bank Name *
                 </label>
                 <select
-                  id="bank_name" name="bank_name" required
+                  id="bank_name"
+                  name="bank_name"
+                  required
                   className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 >
                   <option value="">Select bank...</option>
@@ -342,12 +424,19 @@ export default async function EarningsPage({
               </div>
 
               <div>
-                <label htmlFor="account_number" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                <label
+                  htmlFor="account_number"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5"
+                >
                   Account Number *
                 </label>
                 <input
-                  type="text" id="account_number" name="account_number"
-                  maxLength={10} pattern="\d{10}" required
+                  type="text"
+                  id="account_number"
+                  name="account_number"
+                  maxLength={10}
+                  pattern="\d{10}"
+                  required
                   placeholder="10-digit number"
                   className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
@@ -355,24 +444,35 @@ export default async function EarningsPage({
             </div>
 
             <div>
-              <label htmlFor="account_name" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+              <label
+                htmlFor="account_name"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5"
+              >
                 Account Name *
               </label>
               <input
-                type="text" id="account_name" name="account_name" required
+                type="text"
+                id="account_name"
+                name="account_name"
+                required
                 placeholder="As it appears on your bank account"
                 className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
               />
             </div>
 
-            <Button type="submit" className="w-full gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold py-3">
+            <Button
+              type="submit"
+              className="w-full gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold py-3"
+            >
               <Building2 className="w-4 h-4" />
               Request Withdrawal
             </Button>
           </form>
         ) : (
           <div className="text-center py-6">
-            <p className="text-gray-700 dark:text-gray-300 font-medium mb-1">Minimum balance not reached yet</p>
+            <p className="text-gray-700 dark:text-gray-300 font-medium mb-1">
+              Minimum balance not reached yet
+            </p>
             <p className="text-sm text-gray-500 dark:text-gray-400">
               You need{' '}
               <span className="font-semibold text-gray-800 dark:text-gray-200">
@@ -383,7 +483,12 @@ export default async function EarningsPage({
             <div className="mt-4 w-full bg-gray-100 dark:bg-gray-700 rounded-full h-2">
               <div
                 className="h-full bg-green-500 rounded-full transition-all"
-                style={{ width: `${Math.min((availableBalance / minimumWithdrawal) * 100, 100)}%` }}
+                style={{
+                  width: `${Math.min(
+                    (availableBalance / minimumWithdrawal) * 100,
+                    100
+                  )}%`,
+                }}
               />
             </div>
             <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
@@ -393,9 +498,11 @@ export default async function EarningsPage({
         )}
       </Card>
 
-      {/* Earnings History */}
+      {/* Earnings history */}
       <Card className="p-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Earnings History</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+          Earnings History
+        </h2>
         {completedOrders && completedOrders.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -409,14 +516,20 @@ export default async function EarningsPage({
               </thead>
               <tbody>
                 {completedOrders.slice(0, 15).map((order, i) => (
-                  <tr key={i} className="border-b border-gray-100 dark:border-gray-700 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                  <tr
+                    key={i}
+                    className="border-b border-gray-100 dark:border-gray-700 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                  >
                     <td className="py-3 text-gray-600 dark:text-gray-400">
                       {order.delivered_at
-                        ? new Date(order.delivered_at).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' })
+                        ? new Date(order.delivered_at).toLocaleDateString('en-NG', {
+                            day:   'numeric',
+                            month: 'short',
+                            year:  'numeric',
+                          })
                         : 'N/A'}
                     </td>
                     <td className="py-3 text-gray-800 dark:text-gray-200 max-w-[180px] truncate">
-                      {/* FIXED: Removed incorrect cast — orders.title is string (required) not optional */}
                       {order.title}
                     </td>
                     <td className="py-3 font-semibold text-gray-900 dark:text-white">
@@ -435,7 +548,9 @@ export default async function EarningsPage({
           </div>
         ) : (
           <div className="text-center py-8">
-            <p className="text-gray-600 dark:text-gray-400 font-medium">No completed orders yet</p>
+            <p className="text-gray-600 dark:text-gray-400 font-medium">
+              No completed orders yet
+            </p>
             <p className="text-sm text-gray-500 dark:text-gray-500 mt-1">
               Your earnings will appear here once orders are completed.
             </p>

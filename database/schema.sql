@@ -5237,3 +5237,18 @@ BEGIN
   RETURN jsonb_build_object('success', true, 'order_id', p_order_id, 'status', 'confirmed');
 END;
 $$;
+
+
+ALTER TABLE public.transactions
+  ADD COLUMN IF NOT EXISTS recipient_user_id uuid
+  REFERENCES public.profiles(id)
+  ON DELETE SET NULL;
+ 
+-- Optional: index for the cron query performance
+-- (filters on order_id IS NULL AND marketplace_order_id IS NULL AND recipient_user_id IS NOT NULL)
+CREATE INDEX IF NOT EXISTS idx_transactions_recipient_unlinked
+  ON public.transactions (recipient_user_id)
+  WHERE order_id IS NULL AND marketplace_order_id IS NULL;
+
+
+  
