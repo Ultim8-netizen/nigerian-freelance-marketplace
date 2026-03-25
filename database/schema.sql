@@ -5258,3 +5258,45 @@ COMMENT ON COLUMN public.profiles.posting_suspended_until IS
   'When set and in the future, the user cannot create new service or product listings. '
   'Cleared automatically once the timestamp passes. Set to NOW()+72h after 3 consecutive '
   '1-star marketplace reviews. Does NOT affect account login or existing listings.';
+
+  -- Migration: seed automation threshold rows into platform_config
+-- Apply this before deploying the updated cron and earnings page.
+-- ON CONFLICT DO NOTHING is safe to re-run — existing customised values
+-- are never overwritten.
+
+INSERT INTO public.platform_config (key, value, enabled, description) VALUES
+
+  -- Cron: dispute auto-resolution
+  -- How many days of inactivity before an open dispute is automatically
+  -- resolved in the buyer's favour and escrow is refunded.
+  ('dispute_auto_resolve_days',        7,   true,
+   'Days of dispute inactivity before auto-resolution in buyer favour.'),
+
+  -- Cron: frequent disputer window
+  -- Rolling window (days) used to count how many disputes a user has raised.
+  -- Users who hit 3+ disputes within this window receive a Level 1 advisory
+  -- and a -15 trust score event.
+  ('frequent_disputer_window_days',    30,  true,
+   'Rolling window (days) for counting a user''s dispute count. 3+ = Level 1 advisory.'),
+
+  -- Cron: unlinked transaction fraud check
+  -- Lookback window (hours) when scanning for wallet credits that have no
+  -- linked order_id or marketplace_order_id. 5+ unique external senders
+  -- within this window triggers auto-suspension.
+  ('unlinked_tx_window_hours',         24,  true,
+   'Lookback window (hours) for unlinked transaction fraud check. 5+ unique senders = suspend.'),
+
+  -- Earnings: wallet-funding hold
+  -- If a freelancer''s wallet was funded within this many hours AND they
+  -- have zero completed orders, their withdrawal is held for 24 hours.
+  ('wallet_fund_hold_hours',           2,   true,
+   'Hours after wallet funding that triggers a 24h withdrawal hold for accounts with no completed orders.'),
+
+  -- Earnings: bank-details-change hold
+  -- If bank details were configured/changed within this many hours AND the
+  -- freelancer has zero completed orders, the withdrawal is held for 24 hours.
+  ('bank_update_hold_hours',           48,  true,
+   'Hours after bank details update that triggers a 24h withdrawal hold for accounts with no completed orders.')
+
+ON CONFLICT (key) DO NOTHING;
+

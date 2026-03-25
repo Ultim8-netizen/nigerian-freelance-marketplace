@@ -1,18 +1,30 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
+import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
 
 // FIXED: Replaced createClient() (anon key, blocked by RLS) with createServiceClient()
 // (service role key, bypasses RLS). Previously ALL three rules returned zero rows
 // silently because auth.uid() = NULL with no user session, causing every RLS
 // policy to filter out every row.
+// UPDATED: Hardcoded time thresholds replaced with platform_config reads.
+//          Keys: dispute_auto_resolve_days, frequent_disputer_window_days,
+//          unlinked_tx_window_hours. Defaults preserved as fallbacks.
 
 export async function POST() {
   // Service client bypasses RLS — correct for a cron with no user session.
   const supabase = createServiceClient();
   const logs: string[] = [];
 
+  // ── Fetch all configurable thresholds in one query ────────────────────────
+  const config = await getPlatformConfigs(supabase, [
+    CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS,
+    CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS,
+    CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS,
+  ]);
+
   // ─── RULE 1: Stale dispute auto-resolution ─────────────────────────────────
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const disputeWindowMs = config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS] * 24 * 60 * 60 * 1000;
+  const sevenDaysAgo    = new Date(Date.now() - disputeWindowMs).toISOString();
 
   const { data: staleDisputes, error: disputeError } = await supabase
     .from('disputes')
@@ -32,7 +44,7 @@ export async function POST() {
           .from('disputes')
           .update({
             status:           'resolved_client',
-            resolution_notes: 'Auto-resolved due to 7 days of inactivity.',
+            resolution_notes: `Auto-resolved due to ${config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]} days of inactivity.`,
           })
           .eq('id', dispute.id);
 
@@ -43,7 +55,7 @@ export async function POST() {
 
         await supabase
           .from('orders')
-          .update({ status: 'refunded' })
+          .update({ status: 'cancelled' })
           .eq('id', dispute.order_id);
 
         logs.push(`Auto-resolved dispute ${dispute.id}`);
@@ -70,7 +82,7 @@ export async function POST() {
       await supabase
         .from('disputes')
         .update({
-          status:           'pending_admin',
+          status:           'under_review',
           resolution_notes: 'Escalated to admin: quality/delivery disputes require manual review.',
         })
         .eq('id', dispute.id);
@@ -80,7 +92,8 @@ export async function POST() {
   }
 
   // ─── RULE 2: Frequent disputers — Level 1 advisory ────────────────────────
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const disputer_window_ms = config[CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS] * 24 * 60 * 60 * 1000;
+  const thirtyDaysAgo      = new Date(Date.now() - disputer_window_ms).toISOString();
 
   const { data: frequentDisputers, error: dispusterError } = await supabase.rpc(
     'find_frequent_disputers',
@@ -126,7 +139,8 @@ export async function POST() {
   // recipient_user_id values are null), the rule logs a warning and skips
   // rather than producing false positives.
 
-  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const unlinked_window_ms  = config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS] * 60 * 60 * 1000;
+  const twentyFourHoursAgo  = new Date(Date.now() - unlinked_window_ms).toISOString();
 
   type UnlinkedTxRow = {
     id:                   string;
@@ -192,7 +206,7 @@ export async function POST() {
           user_id:     recipientId,
           event_type:  'suspicious_unlinked_inflow',
           severity:    'critical',
-          description: `Received funds from ${senders.size} unique external senders in 24 h with no corresponding orders. Account suspended pending admin review.`,
+          description: `Received funds from ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no corresponding orders. Account suspended pending admin review.`,
         });
 
         const { data: adminProfiles } = await supabase
@@ -207,7 +221,7 @@ export async function POST() {
               user_id: a.id,
               type:    'critical_fraud_alert',
               title:   'Critical: Suspicious Wallet Inflow',
-              message: `User ${recipientId} received funds from ${senders.size} unique external senders in 24 h with no linked orders. Account auto-suspended. Immediate review required.`,
+              message: `User ${recipientId} received funds from ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no linked orders. Account auto-suspended. Immediate review required.`,
             }))
           );
         }
@@ -219,7 +233,7 @@ export async function POST() {
           message: 'Unusual payment activity has been detected on your account. It has been temporarily suspended pending review. Please contact support.',
         });
 
-        logs.push(`Suspended account ${recipientId} — ${senders.size} unique external senders in 24 h with no linked orders`);
+        logs.push(`Suspended account ${recipientId} — ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no linked orders`);
       }
     }
   }

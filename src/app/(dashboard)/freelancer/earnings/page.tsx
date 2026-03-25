@@ -1,22 +1,29 @@
 // src/app/(dashboard)/freelancer/earnings/page.tsx
 // FIX: Next.js 15 made `searchParams` a Promise — it must be awaited before use.
 // FIX: Withdrawal hold logic corrected per spec Part 2b:
-//      - Wallet funded within 2h AND zero completed orders → hold 24h
-//      - Bank details updated within 48h AND zero completed orders → hold 24h
+//      - Wallet funded within N hours AND zero completed orders → hold 24h
+//      - Bank details updated within N hours AND zero completed orders → hold 24h
 //      This logic was previously misplaced in api/payments/initiate/route.ts
 //      (which handles client payments, not freelancer withdrawals) and has
 //      been removed from there.  It now lives exclusively here.
 // FIXED: Query structure for wallet and trust_score separated.
 // FIXED: Removed incorrect cast of order.title — string (required) in schema.
+// UPDATED: Hold thresholds (wallet_fund_hold_hours, bank_update_hold_hours)
+//          now read from platform_config via createAdminClient() — RLS on
+//          platform_config is admin-only so the regular user client cannot
+//          read it. Hardcoded constants removed; defaults preserved as fallback
+//          inside getPlatformConfigs if the config rows are absent.
 
-import { createClient } from '@/lib/supabase/server';
-import { redirect } from 'next/navigation';
-import { revalidatePath } from 'next/cache';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { formatCurrency } from '@/lib/utils';
+import { createClient }      from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { redirect }          from 'next/navigation';
+import { revalidatePath }    from 'next/cache';
+import { Card }              from '@/components/ui/card';
+import { Button }            from '@/components/ui/button';
+import { formatCurrency }    from '@/lib/utils';
 import { evaluateTrustGate } from '@/lib/trust/feature-gates';
-import { ContestButton } from '@/components/admin/ContestButton';
+import { ContestButton }     from '@/components/admin/ContestButton';
+import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
 import {
   DollarSign,
   TrendingUp,
@@ -27,11 +34,6 @@ import {
   Clock,
   ShieldCheck,
 } from 'lucide-react';
-
-// ─── Thresholds ───────────────────────────────────────────────────────────────
-
-const WALLET_FUND_HOLD_MS  = 2  * 60 * 60 * 1000; // 2 h  — wallet recently funded
-const BANK_UPDATE_HOLD_MS  = 48 * 60 * 60 * 1000; // 48 h — bank details recently changed
 
 // ─── Server Action ────────────────────────────────────────────────────────────
 
@@ -53,6 +55,20 @@ async function initiateWithdrawal(formData: FormData) {
   if (account_number.length !== 10 || !/^\d+$/.test(account_number))
     redirect('/freelancer/earnings?error=invalid_account');
 
+  // ── Fetch configurable thresholds from platform_config ────────────────────
+  // createAdminClient() (service role) is required because platform_config has
+  // admin-only RLS — the authenticated freelancer session cannot read it.
+  // getPlatformConfigs falls back to hardcoded defaults on any fetch error,
+  // so a cold-start or transient DB failure never breaks withdrawals.
+  const adminClient = createAdminClient();
+  const config = await getPlatformConfigs(adminClient, [
+    CONFIG_KEYS.WALLET_FUND_HOLD_HOURS,
+    CONFIG_KEYS.BANK_UPDATE_HOLD_HOURS,
+  ]);
+
+  const WALLET_FUND_HOLD_MS = config[CONFIG_KEYS.WALLET_FUND_HOLD_HOURS] * 60 * 60 * 1000;
+  const BANK_UPDATE_HOLD_MS = config[CONFIG_KEYS.BANK_UPDATE_HOLD_HOURS] * 60 * 60 * 1000;
+
   // ── Fetch wallet (needed for hold checks + insert) ────────────────────────
   const { data: wallet } = await supabase
     .from('wallets')
@@ -67,7 +83,7 @@ async function initiateWithdrawal(formData: FormData) {
     .eq('id', user.id)
     .single();
 
-  const balance    = wallet?.balance    ?? 0;
+  const balance    = wallet?.balance     ?? 0;
   const trustScore = profile?.trust_score ?? 0;
 
   if (amount < 5000)    redirect('/freelancer/earnings?error=below_minimum');
@@ -83,10 +99,9 @@ async function initiateWithdrawal(formData: FormData) {
 
   // ── Count completed orders for this freelancer ────────────────────────────
   //
-  // The 2h and 48h hold rules ONLY apply when the freelancer has zero
-  // completed orders.  A freelancer with a track record is trusted; the
-  // holds are specifically designed to catch brand-new accounts attempting
-  // to extract funds immediately after receiving them.
+  // The hold rules ONLY apply when the freelancer has zero completed orders.
+  // A freelancer with a track record is trusted; the holds are specifically
+  // designed to catch brand-new accounts attempting to extract funds immediately.
   const { count: completedOrderCount } = await supabase
     .from('orders')
     .select('id', { count: 'exact', head: true })
@@ -100,29 +115,28 @@ async function initiateWithdrawal(formData: FormData) {
   let withdrawalStatus: string = 'pending';
   let holdReason: string | null = null;
 
-  const now = Date.now();
+  const now             = Date.now();
   const walletUpdatedAt = wallet?.updated_at
     ? new Date(wallet.updated_at).getTime()
     : null;
 
   if (!hasCompletedOrders && walletUpdatedAt !== null) {
-    // Check 1 — wallet funded within 2h with zero completed orders
-    // `wallets.updated_at` is the proxy for "recently funded" since the
-    // schema has no dedicated last_funded_at column.
+    // Check 1 — wallet funded within configured window with zero completed orders.
+    // wallets.updated_at is the proxy for "recently funded" since the schema
+    // has no dedicated last_funded_at column.
     if (now - walletUpdatedAt < WALLET_FUND_HOLD_MS) {
       withdrawalStatus = 'held';
       holdReason =
-        'Withdrawal held for 24 hours: your wallet was funded within the last 2 hours and you have no completed orders on record. This is an automated fraud-prevention hold.';
+        `Withdrawal held for 24 hours: your wallet was funded within the last ${config[CONFIG_KEYS.WALLET_FUND_HOLD_HOURS]} hour(s) and you have no completed orders on record. This is an automated fraud-prevention hold.`;
     }
 
-    // Check 2 — bank details updated within 48h with zero completed orders.
-    // Bank details are stored inline on wallets (account_name / account_number /
-    // bank_name); any save to those fields also updates wallets.updated_at.
-    // Only evaluated if check 1 did not already trigger.
+    // Check 2 — bank details updated within configured window with zero completed orders.
+    // Bank details are stored inline on wallets; any save to those fields also
+    // updates wallets.updated_at. Only evaluated if check 1 did not trigger.
     if (!holdReason && now - walletUpdatedAt < BANK_UPDATE_HOLD_MS) {
       withdrawalStatus = 'held';
       holdReason =
-        'Withdrawal held for 24 hours: bank account details were recently configured and you have no completed orders on record. This is an automated fraud-prevention hold.';
+        `Withdrawal held for 24 hours: bank account details were recently configured within the last ${config[CONFIG_KEYS.BANK_UPDATE_HOLD_HOURS]} hour(s) and you have no completed orders on record. This is an automated fraud-prevention hold.`;
     }
   }
 
@@ -299,7 +313,7 @@ export default async function EarningsPage({
           <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">
             {formatCurrency(pendingClearance)}
           </p>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">14-day holding period</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">7-day holding period</p>
         </Card>
 
         <Card className="p-5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
