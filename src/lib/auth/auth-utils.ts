@@ -381,7 +381,7 @@ export class AuthService {
       .single();
 
     if (error) throw error;
-    return data;
+    return data as Profile;
   }
 
   /**
@@ -435,12 +435,40 @@ export class AuthService {
   }
 
   /**
-   * Request password reset email
-   * 
-   * @param email - User email address
-   * @throws Error if password reset email fails to send
+   * Request password reset email.
+   *
+   * SECURITY: Admin accounts are excluded from the standard password reset flow
+   * per spec Part 4 — "No standard password reset — out-of-band reset only."
+   *
+   * If the submitted email belongs to an admin, this method returns silently
+   * WITHOUT dispatching a reset email. We do NOT throw or return a distinct
+   * error because doing so would let an attacker enumerate which email address
+   * belongs to the admin account by observing the different response behaviour.
+   *
+   * From the caller's perspective the call always "succeeds" — the user sees the
+   * standard "check your inbox" message regardless of whether an email was sent.
+   *
+   * @param email - Email address to send the reset link to
+   * @throws Error only if the Supabase call itself fails (network error, etc.)
    */
   static async resetPassword(email: string) {
+    // Look up the profile by email to check user_type before dispatching.
+    // We select only user_type — the minimum required to make the decision.
+    // If the profile row doesn't exist (unknown email), we fall through and
+    // let Supabase handle it normally (it will silently no-op for unknown emails).
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('user_type')
+      .eq('email', email.trim().toLowerCase())
+      .maybeSingle();
+
+    if (profile?.user_type === 'admin') {
+      // Silent return — no reset email dispatched, no error surfaced.
+      // The caller receives a resolved promise, identical to a successful dispatch.
+      return;
+    }
+
+    // Non-admin (or unrecognised email) — proceed with standard flow.
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/reset-password`,
     });

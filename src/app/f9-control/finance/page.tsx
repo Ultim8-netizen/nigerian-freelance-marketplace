@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
+import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
 import FinanceClient from "./FinanceClient";
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
@@ -84,7 +85,6 @@ async function releaseEscrow(fd: FormData) {
       .single();
 
     if (order?.freelancer_id) {
-      // Use the safe 3-param RPC
       await supabase.rpc('release_escrow_to_wallet', {
         p_order_id:      escrow.order_id,
         p_freelancer_id: order.freelancer_id,
@@ -151,24 +151,66 @@ async function cancelEscrow(fd: FormData) {
   revalidatePath('/f9-control/finance');
 }
 
-/** Update a transaction's status manually. */
+/**
+ * Update a transaction's status manually.
+ *
+ * Requires a non-empty `reason` from FormData — enforced here and expected
+ * to be collected by FinanceClient before submitting (text input on the modal).
+ *
+ * When `new_status` is 'refunded':
+ *   1. Fetch the transaction row to obtain flutterwave_tx_ref.
+ *   2. Call FlutterwaveServerService.refundTransaction — this is a PLACEHOLDER
+ *      and will be replaced by the Monnify refund call during the gateway migration.
+ *   3. Only update the DB row after the gateway call resolves successfully, so a
+ *      failed gateway call leaves the transaction status unchanged.
+ *
+ * TODO [MONNIFY MIGRATION]: Replace FlutterwaveServerService.refundTransaction
+ *   with the equivalent Monnify call once the gateway switch is complete.
+ */
 async function updateTransactionStatus(fd: FormData) {
   'use server';
-  const txId     = fd.get('transaction_id') as string;
-  const newStatus = fd.get('new_status') as string;
+  const txId      = fd.get('transaction_id') as string;
+  const newStatus = fd.get('new_status')      as string;
+  const reason    = (fd.get('reason') as string | null)?.trim();
+
+  if (!reason) throw new Error('A reason is required for transaction status overrides.');
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  if (newStatus === 'refunded') {
+    // Resolve the Flutterwave reference so the gateway knows which payment to refund.
+    const { data: tx, error: txFetchError } = await supabase
+      .from('transactions')
+      .select('flutterwave_tx_ref')
+      .eq('id', txId)
+      .single();
+
+    if (txFetchError) throw new Error(`Failed to fetch transaction: ${txFetchError.message}`);
+
+    if (tx?.flutterwave_tx_ref) {
+      // TODO [MONNIFY MIGRATION]: Replace this call.
+      // Throws on gateway error — DB update intentionally skipped in that case.
+      await FlutterwaveServerService.refundTransaction(tx.flutterwave_tx_ref, reason);
+    }
+    // If flutterwave_tx_ref is null the transaction was never paid via the gateway
+    // (e.g. manually created test record) — skip the gateway call and fall through
+    // to the DB status update below.
+  }
+
+  const { error: updateError } = await supabase
     .from('transactions')
     .update({ status: newStatus })
     .eq('id', txId);
 
+  if (updateError) throw new Error(`Status update failed: ${updateError.message}`);
+
   await supabase.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'update_transaction_status',
-    reason:      `Transaction ${txId} status set to '${newStatus}'`,
+    // Reason is prepended in square brackets so it's easily scannable in audit logs.
+    reason:      `[${reason}] Transaction ${txId} status set to '${newStatus}'`,
   });
 
   revalidatePath('/f9-control/finance');
@@ -177,7 +219,7 @@ async function updateTransactionStatus(fd: FormData) {
 /** Toggle the platform-wide withdrawal gate via platform_config. */
 async function toggleWithdrawalGate(fd: FormData) {
   'use server';
-  const enabled = fd.get('enabled') === 'true';
+  const enabled  = fd.get('enabled') === 'true';
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
@@ -185,13 +227,16 @@ async function toggleWithdrawalGate(fd: FormData) {
   // Upsert — create the row if it doesn't exist yet
   await supabase
     .from('platform_config')
-    .upsert({
-      key:         'withdrawals_paused',
-      enabled:     !enabled, // toggle: current value is `enabled`, new value is opposite
-      description: 'When ON, all withdrawal processing is paused platform-wide.',
-      value:       null,
-      string_value: null,
-    }, { onConflict: 'key' });
+    .upsert(
+      {
+        key:          'withdrawals_paused',
+        enabled:      !enabled, // toggle: current value is `enabled`, new value is opposite
+        description:  'When ON, all withdrawal processing is paused platform-wide.',
+        value:        null,
+        string_value: null,
+      },
+      { onConflict: 'key' },
+    );
 
   await supabase.from('admin_action_logs').insert({
     admin_id:    admin.id,
