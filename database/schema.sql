@@ -5300,3 +5300,91 @@ INSERT INTO public.platform_config (key, value, enabled, description) VALUES
 
 ON CONFLICT (key) DO NOTHING;
 
+ALTER TABLE public.notifications
+  ADD COLUMN IF NOT EXISTS scheduled_at   TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_method TEXT NOT NULL DEFAULT 'both';
+
+CREATE INDEX IF NOT EXISTS idx_notifications_scheduled_at
+  ON public.notifications (scheduled_at)
+  WHERE scheduled_at IS NOT NULL;
+
+
+  -- ─────────────────────────────────────────────────────────────────────────────
+-- Migration: Add suspended_until to profiles + lift_expired_suspensions()
+-- Purpose : Support timed suspensions, enforce moderator 30-day cap,
+--           and auto-lift suspensions when the deadline passes.
+-- Safe    : All operations are additive or REPLACE — no data is destroyed.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- ── 1. Column ─────────────────────────────────────────────────────────────────
+
+ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMPTZ DEFAULT NULL;
+
+COMMENT ON COLUMN public.profiles.suspended_until IS
+  'Null = indefinite suspension (admin only). Populated by suspendUser server action. '
+  'Moderators are capped at 30 days server-side. Cleared automatically by the '
+  'lift_expired_suspensions() cron function when now() > suspended_until.';
+
+-- ── 2. Partial index — makes the cron lift query fast ─────────────────────────
+--
+-- Only indexes rows that are suspended with a finite deadline.
+-- At steady state this index will be tiny (only currently-suspended timed users).
+
+CREATE INDEX IF NOT EXISTS idx_profiles_suspended_until
+  ON public.profiles (suspended_until)
+  WHERE suspended_until IS NOT NULL;
+
+-- ── 3. lift_expired_suspensions() — SECURITY DEFINER ─────────────────────────
+--
+-- Called by the POST /api/admin/automation/cron route as Rule 0.
+-- Can also be invoked manually from the Supabase SQL editor:
+--   SELECT * FROM lift_expired_suspensions();
+--
+-- Returns a table of lifted user_ids so the cron can log them individually.
+--
+-- Why SECURITY DEFINER?
+--   profiles has RLS enabled. The cron calls this via the service-role client
+--   (which already bypasses RLS), but keeping it SECURITY DEFINER makes it
+--   safe to call from restricted contexts too (e.g. pg_cron, edge functions).
+--
+-- What it does:
+--   1. Finds all profiles with account_status='suspended' AND
+--      suspended_until IS NOT NULL AND suspended_until <= now().
+--   2. Sets account_status='active', clears suspended_until and
+--      suspension_reason so the profile is clean for the next admin action.
+--   3. Returns the lifted user_ids. Notifications and audit logs are written
+--      by the cron caller in TypeScript so they can be batched efficiently.
+
+CREATE OR REPLACE FUNCTION public.lift_expired_suspensions()
+RETURNS TABLE (lifted_user_id uuid)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+BEGIN
+  RETURN QUERY
+  UPDATE public.profiles
+  SET
+    account_status    = 'active',
+    suspended_until   = NULL,
+    suspension_reason = NULL,
+    updated_at        = now()
+  WHERE
+    account_status  = 'suspended'
+    AND suspended_until IS NOT NULL
+    AND suspended_until <= now()
+  RETURNING id;
+END;
+$func$;
+
+COMMENT ON FUNCTION public.lift_expired_suspensions() IS
+  'Clears expired timed suspensions. Called by the automation cron (Rule 0). '
+  'Can also be run manually: SELECT * FROM lift_expired_suspensions();';
+
+-- ── 4. Revoke public execute — only service role / postgres should call this ──
+
+REVOKE EXECUTE ON FUNCTION public.lift_expired_suspensions() FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION public.lift_expired_suspensions() TO service_role;
+
+

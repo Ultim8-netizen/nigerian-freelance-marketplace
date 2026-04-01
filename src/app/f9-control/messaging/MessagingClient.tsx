@@ -2,13 +2,26 @@
 
 import { useState, useTransition } from 'react';
 import { Card } from '@/components/ui/card';
-import { Loader2, CheckCircle, Send, Inbox, Clock, FileText, Radio } from 'lucide-react';
+import { Loader2, CheckCircle, Send, Inbox, Clock, FileText, Radio, CalendarClock } from 'lucide-react';
 import type { Tables } from '@/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type InboxRow = Pick<Tables<'notifications'>, 'id' | 'type' | 'title' | 'message' | 'is_read' | 'created_at'>;
-type SentRow  = Pick<Tables<'admin_action_logs'>, 'id' | 'action_type' | 'reason' | 'created_at' | 'target_user_id'>;
+// Extends generated type to include pending migration columns (scheduled_at, delivery_method).
+// Update after running: ALTER TABLE notifications ADD COLUMN scheduled_at TIMESTAMPTZ;
+//                       ALTER TABLE notifications ADD COLUMN delivery_method TEXT NOT NULL DEFAULT 'both';
+type InboxRow = Pick<
+  Tables<'notifications'>,
+  'id' | 'type' | 'title' | 'message' | 'is_read' | 'created_at'
+> & {
+  scheduled_at?:   string | null;
+  delivery_method?: string | null;
+};
+
+type SentRow = Pick<
+  Tables<'admin_action_logs'>,
+  'id' | 'action_type' | 'reason' | 'created_at' | 'target_user_id'
+>;
 
 interface MessagingClientProps {
   inbox:           InboxRow[];
@@ -17,7 +30,7 @@ interface MessagingClientProps {
   onSendBroadcast: (fd: FormData) => Promise<void>;
 }
 
-// ─── Notification type options (must exist in notifications.type) ─────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const NOTIF_TYPES = [
   'admin_warning',
@@ -28,14 +41,19 @@ const NOTIF_TYPES = [
 ];
 
 const AUDIENCES = [
-  { value: 'all',        label: 'All active users' },
-  { value: 'freelancer', label: 'Freelancers only' },
-  { value: 'client',     label: 'Clients only' },
-  { value: 'both',       label: 'Dual-role users' },
+  { value: 'all',        label: 'All active users'  },
+  { value: 'freelancer', label: 'Freelancers only'  },
+  { value: 'client',     label: 'Clients only'      },
+  { value: 'both',       label: 'Dual-role users'   },
+];
+
+const DELIVERY_METHODS = [
+  { value: 'both',   label: 'In-App + Inbox'  },
+  { value: 'in_app', label: 'In-App only'     },
+  { value: 'inbox',  label: 'F9 Inbox only'   },
 ];
 
 // ─── Templates ───────────────────────────────────────────────────────────────
-// Hardcoded — no template table in schema. Clicking a template populates the form.
 
 const TEMPLATES = [
   {
@@ -43,36 +61,47 @@ const TEMPLATES = [
     label: 'Scheduled Maintenance',
     type: 'platform_notice',
     title: 'Scheduled Platform Maintenance',
-    message: 'F9 will undergo scheduled maintenance on [DATE] from [TIME] to [TIME] WAT. Services may be temporarily unavailable. We apologise for any inconvenience.',
+    message:
+      'F9 will undergo scheduled maintenance on [DATE] from [TIME] to [TIME] WAT. Services may be temporarily unavailable. We apologise for any inconvenience.',
   },
   {
     id: 'policy_update',
     label: 'Policy Update',
     type: 'platform_notice',
     title: 'Important Policy Update',
-    message: 'We have updated our Terms of Service and Marketplace Guidelines effective [DATE]. Please review the changes at [LINK].',
+    message:
+      'We have updated our Terms of Service and Marketplace Guidelines effective [DATE]. Please review the changes at [LINK].',
   },
   {
     id: 'trust_reminder',
     label: 'Trust Score Reminder',
     type: 'level_1_advisory',
     title: 'Action Required: Trust Score',
-    message: 'Your trust score has fallen below the threshold required for certain platform features. Please review the guidelines and complete any pending verification steps.',
+    message:
+      'Your trust score has fallen below the threshold required for certain platform features. Please review the guidelines and complete any pending verification steps.',
   },
   {
     id: 'promo',
     label: 'Promotional Broadcast',
     type: 'general_announcement',
     title: 'Exciting News from F9',
-    message: 'We are thrilled to announce [ANNOUNCEMENT]. Log in now to take advantage of this update.',
+    message:
+      'We are thrilled to announce [ANNOUNCEMENT]. Log in now to take advantage of this update.',
   },
-];
+] as const;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function dt(s: string | null) {
+function dt(s: string | null | undefined) {
   if (!s) return 'N/A';
-  return new Date(s).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+  return new Date(s).toLocaleString('en-NG', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+/** Returns a datetime-local string floored to the current minute, used as the `min` attribute. */
+function nowLocal() {
+  const d = new Date();
+  d.setSeconds(0, 0);
+  return d.toISOString().slice(0, 16);
 }
 
 type FeedbackState = 'idle' | 'pending' | 'ok' | 'error';
@@ -88,19 +117,23 @@ function ComposeTab({
   onSendBroadcast: (fd: FormData) => Promise<void>;
   seed: { type: string; title: string; message: string } | null;
 }) {
-  const [mode, setMode]       = useState<'direct' | 'broadcast'>('direct');
-  const [feedback, setFeedback] = useState<FeedbackState>('idle');
-  const [isPending, start]    = useTransition();
+  const [mode,           setMode]           = useState<'direct' | 'broadcast'>('direct');
+  const [feedback,       setFeedback]       = useState<FeedbackState>('idle');
+  const [isPending,      start]             = useTransition();
 
   // Form fields — kept in state so templates can populate them
-  const [type,    setType]    = useState(seed?.type    ?? NOTIF_TYPES[0]);
-  const [title,   setTitle]   = useState(seed?.title   ?? '');
-  const [message, setMessage] = useState(seed?.message ?? '');
-  const [link,    setLink]    = useState('');
-  const [recipient, setRecipient] = useState('');
-  const [audience,  setAudience]  = useState('all');
+  const [type,           setType]           = useState(seed?.type    ?? NOTIF_TYPES[0]);
+  const [title,          setTitle]          = useState(seed?.title   ?? '');
+  const [message,        setMessage]        = useState(seed?.message ?? '');
+  const [link,           setLink]           = useState('');
+  const [recipient,      setRecipient]      = useState('');
+  const [audience,       setAudience]       = useState('all');
+  const [deliveryMethod, setDeliveryMethod] = useState('both');
+  // Empty string = send immediately; ISO-local string = schedule for later
+  const [scheduledAt,    setScheduledAt]    = useState('');
 
-  // Re-populate when a template seed is provided from the parent
+  const isScheduled = scheduledAt.trim().length > 0;
+
   const applyTemplate = (t: typeof TEMPLATES[number]) => {
     setType(t.type);
     setTitle(t.title);
@@ -116,7 +149,12 @@ function ComposeTab({
       try {
         await action(fd);
         setFeedback('ok');
-        setTitle(''); setMessage(''); setLink(''); setRecipient('');
+        setTitle('');
+        setMessage('');
+        setLink('');
+        setRecipient('');
+        setScheduledAt('');
+        setDeliveryMethod('both');
         setTimeout(() => setFeedback('idle'), 3000);
       } catch (err) {
         console.error(err);
@@ -183,6 +221,21 @@ function ComposeTab({
           </div>
         )}
 
+        {/* Delivery method */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Delivery Method</label>
+          <select
+            name="delivery_method"
+            value={deliveryMethod}
+            onChange={(e) => setDeliveryMethod(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          >
+            {DELIVERY_METHODS.map((d) => (
+              <option key={d.value} value={d.value}>{d.label}</option>
+            ))}
+          </select>
+        </div>
+
         {/* Type */}
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Notification Type</label>
@@ -239,6 +292,30 @@ function ComposeTab({
           />
         </div>
 
+        {/* Scheduled delivery */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">
+            <span className="flex items-center gap-1.5">
+              <CalendarClock size={12} />
+              Schedule Delivery (optional — leave blank to send immediately)
+            </span>
+          </label>
+          <input
+            name="scheduled_at"
+            type="datetime-local"
+            value={scheduledAt}
+            onChange={(e) => setScheduledAt(e.target.value)}
+            min={nowLocal()}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          />
+          {isScheduled && (
+            <p className="text-xs text-blue-600 mt-1 font-medium">
+              ⏰ Will be queued and delivered at{' '}
+              {new Date(scheduledAt).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' })} WAT
+            </p>
+          )}
+        </div>
+
         <div className="flex items-center gap-3 pt-1">
           <button
             type="submit"
@@ -247,17 +324,24 @@ function ComposeTab({
           >
             {isPending
               ? <Loader2 size={14} className="animate-spin" />
-              : <Send size={14} />}
-            {mode === 'direct' ? 'Send Message' : 'Broadcast Now'}
+              : isScheduled
+                ? <CalendarClock size={14} />
+                : <Send size={14} />}
+            {mode === 'direct'
+              ? (isScheduled ? 'Schedule Message' : 'Send Message')
+              : (isScheduled ? 'Schedule Broadcast' : 'Broadcast Now')}
           </button>
 
           {feedback === 'ok' && (
             <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
-              <CheckCircle size={12} /> Sent successfully
+              <CheckCircle size={12} />
+              {isScheduled ? 'Scheduled successfully' : 'Sent successfully'}
             </span>
           )}
           {feedback === 'error' && (
-            <span className="text-xs text-red-600 font-medium">Failed — check recipient and try again</span>
+            <span className="text-xs text-red-600 font-medium">
+              Failed — check recipient and try again
+            </span>
           )}
         </div>
       </form>
@@ -287,7 +371,9 @@ function ComposeTab({
 function InboxTab({ inbox }: { inbox: InboxRow[] }) {
   return (
     <div>
-      <p className="text-xs text-gray-500 mb-4">Notifications received by your admin account.</p>
+      <p className="text-xs text-gray-500 mb-4">
+        Notifications received by your admin account. Scheduled messages appear here once their delivery time has passed.
+      </p>
       {inbox.length === 0 ? (
         <p className="text-sm text-gray-400 italic">Inbox is empty.</p>
       ) : (
@@ -303,12 +389,26 @@ function InboxTab({ inbox }: { inbox: InboxRow[] }) {
                 <div className="min-w-0">
                   <p className="font-semibold text-gray-900">{n.title}</p>
                   <p className="text-gray-600 mt-0.5">{n.message}</p>
+                  {n.delivery_method && (
+                    <p className="text-xs text-gray-400 mt-1">
+                      via{' '}
+                      <span className="font-mono bg-gray-100 px-1 py-0.5 rounded">
+                        {n.delivery_method}
+                      </span>
+                    </p>
+                  )}
                 </div>
-                <div className="text-right shrink-0">
-                  <span className="text-xs font-mono bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">
+                <div className="text-right shrink-0 space-y-1">
+                  <span className="block text-xs font-mono bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">
                     {n.type.replace(/_/g, ' ')}
                   </span>
-                  <p className="text-xs text-gray-400 mt-1">{dt(n.created_at)}</p>
+                  <p className="text-xs text-gray-400">{dt(n.created_at)}</p>
+                  {n.scheduled_at && (
+                    <p className="text-xs text-blue-500 flex items-center gap-1 justify-end">
+                      <CalendarClock size={10} />
+                      {dt(n.scheduled_at)}
+                    </p>
+                  )}
                 </div>
               </div>
             </li>
@@ -325,7 +425,9 @@ function BroadcastHistoryTab({ sentLog }: { sentLog: SentRow[] }) {
   return (
     <div>
       <p className="text-xs text-gray-500 mb-4">
-        All direct messages and broadcasts sent by admin accounts, from <code className="bg-gray-100 px-1 rounded">admin_action_logs</code>.
+        All direct messages and broadcasts sent by admin accounts, from{' '}
+        <code className="bg-gray-100 px-1 rounded">admin_action_logs</code>.
+        Scheduled entries appear here at submission time; delivery fires at the scheduled time.
       </p>
       {sentLog.length === 0 ? (
         <p className="text-sm text-gray-400 italic">No sent messages.</p>
@@ -335,7 +437,9 @@ function BroadcastHistoryTab({ sentLog }: { sentLog: SentRow[] }) {
             <thead className="bg-gray-50">
               <tr>
                 {['Type', 'Details', 'Recipient', 'Sent At'].map((h) => (
-                  <th key={h} className="px-4 py-2 text-xs font-medium text-gray-500 border-b">{h}</th>
+                  <th key={h} className="px-4 py-2 text-xs font-medium text-gray-500 border-b">
+                    {h}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -343,17 +447,21 @@ function BroadcastHistoryTab({ sentLog }: { sentLog: SentRow[] }) {
               {sentLog.map((log) => (
                 <tr key={log.id} className="hover:bg-gray-50">
                   <td className="px-4 py-2">
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                      log.action_type === 'broadcast'
-                        ? 'bg-purple-100 text-purple-700'
-                        : 'bg-blue-100 text-blue-700'
-                    }`}>
+                    <span
+                      className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                        log.action_type === 'broadcast'
+                          ? 'bg-purple-100 text-purple-700'
+                          : 'bg-blue-100 text-blue-700'
+                      }`}
+                    >
                       {log.action_type === 'broadcast' ? 'Broadcast' : 'Direct'}
                     </span>
                   </td>
                   <td className="px-4 py-2 text-gray-700 max-w-xs truncate">{log.reason ?? '—'}</td>
                   <td className="px-4 py-2 text-xs text-gray-500 font-mono">
-                    {log.target_user_id ? log.target_user_id.slice(0, 8) + '…' : 'All / Filtered'}
+                    {log.target_user_id
+                      ? log.target_user_id.slice(0, 8) + '…'
+                      : 'All / Filtered'}
                   </td>
                   <td className="px-4 py-2 text-xs text-gray-400">{dt(log.created_at)}</td>
                 </tr>
@@ -368,7 +476,7 @@ function BroadcastHistoryTab({ sentLog }: { sentLog: SentRow[] }) {
 
 // ─── Templates Tab ───────────────────────────────────────────────────────────
 
-function TemplatesTab({ onUse }: { onUse: (t: typeof TEMPLATES[number]) => void }) {
+function TemplatesTab({ onUse }: { onUse: (t: (typeof TEMPLATES)[number]) => void }) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-gray-500">
@@ -399,10 +507,10 @@ function TemplatesTab({ onUse }: { onUse: (t: typeof TEMPLATES[number]) => void 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'compose',   label: 'Compose',           icon: Send      },
-  { id: 'inbox',     label: 'Inbox',             icon: Inbox     },
-  { id: 'history',   label: 'Broadcast History', icon: Clock     },
-  { id: 'templates', label: 'Templates',         icon: FileText  },
+  { id: 'compose',   label: 'Compose',           icon: Send     },
+  { id: 'inbox',     label: 'Inbox',             icon: Inbox    },
+  { id: 'history',   label: 'Broadcast History', icon: Clock    },
+  { id: 'templates', label: 'Templates',         icon: FileText },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -414,11 +522,9 @@ export function MessagingClient({
   onSendBroadcast,
 }: MessagingClientProps) {
   const [active, setActive] = useState<TabId>('compose');
-  // When "Use Template" is clicked on the Templates tab, we switch to Compose
-  // and seed the form fields
-  const [templateSeed, setTemplateSeed] = useState<typeof TEMPLATES[number] | null>(null);
+  const [templateSeed, setTemplateSeed] = useState<(typeof TEMPLATES)[number] | null>(null);
 
-  const handleUseTemplate = (t: typeof TEMPLATES[number]) => {
+  const handleUseTemplate = (t: (typeof TEMPLATES)[number]) => {
     setTemplateSeed(t);
     setActive('compose');
   };

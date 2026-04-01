@@ -780,33 +780,39 @@ export type Database = {
       notifications: {
         Row: {
           created_at: string | null
+          delivery_method: string
           id: string
           is_read: boolean | null
           link: string | null
           message: string
           read_at: string | null
+          scheduled_at: string | null
           title: string
           type: string
           user_id: string | null
         }
         Insert: {
           created_at?: string | null
+          delivery_method?: string
           id?: string
           is_read?: boolean | null
           link?: string | null
           message: string
           read_at?: string | null
+          scheduled_at?: string | null
           title: string
           type: string
           user_id?: string | null
         }
         Update: {
           created_at?: string | null
+          delivery_method?: string
           id?: string
           is_read?: boolean | null
           link?: string | null
           message?: string
           read_at?: string | null
+          scheduled_at?: string | null
           title?: string
           type?: string
           user_id?: string | null
@@ -1239,6 +1245,7 @@ export type Database = {
           posting_suspended_until: string | null
           profile_image_url: string | null
           student_verified: boolean | null
+          suspended_until: string | null
           suspension_reason: string | null
           theme_preference: string | null
           total_jobs_completed: number | null
@@ -1270,6 +1277,7 @@ export type Database = {
           posting_suspended_until?: string | null
           profile_image_url?: string | null
           student_verified?: boolean | null
+          suspended_until?: string | null
           suspension_reason?: string | null
           theme_preference?: string | null
           total_jobs_completed?: number | null
@@ -1301,6 +1309,7 @@ export type Database = {
           posting_suspended_until?: string | null
           profile_image_url?: string | null
           student_verified?: boolean | null
+          suspended_until?: string | null
           suspension_reason?: string | null
           theme_preference?: string | null
           total_jobs_completed?: number | null
@@ -2152,6 +2161,12 @@ export type Database = {
       increment_service_views: {
         Args: { p_service_id: string }
         Returns: undefined
+      }
+      lift_expired_suspensions: {
+        Args: never
+        Returns: {
+          lifted_user_id: string
+        }[]
       }
       process_marketplace_payment: {
         Args: {

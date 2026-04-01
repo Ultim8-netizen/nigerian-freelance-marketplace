@@ -52,28 +52,38 @@ function formatNGN(v: number) {
   }).format(v);
 }
 
-function dt(s: string | null) {
+function dt(s: string | null | undefined) {
   if (!s) return 'N/A';
   return new Date(s).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 // ─── ActionPanel ──────────────────────────────────────────────────────────────
 
+interface FieldConfig {
+  name:         string;
+  label:        string;
+  type?:        string;
+  min?:         number;
+  max?:         number;
+  /**
+   * Pre-filled value shown in the input. The user can edit it before
+   * submitting. Use for sensible defaults (e.g. duration_days = 7).
+   */
+  defaultValue?: string | number;
+  /** Hint text rendered beneath the input to guide the admin. */
+  hint?:        string;
+}
+
 interface ActionPanelProps {
   label:        string;
   icon:         React.ReactNode;
   colour:       string;
   action:       (fd: FormData) => Promise<void>;
-  /** Visible input fields the admin fills in (e.g. reason). */
-  fields?:      { name: string; label: string; type?: string; min?: number; max?: number }[];
+  fields?:      FieldConfig[];
   confirmText:  string;
   /**
-   * FIX #1 — Hidden values that are injected as <input type="hidden"> into
-   * every form submission.  This is how user_id (and any other server-side
-   * identifiers) reach the Server Action without being visible in the UI.
-   *
-   * Every panel that calls a server action reading fd.get('user_id') MUST
-   * receive { user_id: profile.id } here.
+   * Hidden values injected as <input type="hidden"> so server actions can
+   * read identifiers (e.g. user_id) that should not be visible in the UI.
    */
   hiddenValues?: Record<string, string>;
   requireStepUp?: (action: () => Promise<void>) => Promise<void>;
@@ -126,17 +136,12 @@ function ActionPanel({
 
       {open && (
         <form onSubmit={handleSubmit} className="px-4 py-3 bg-gray-50 border-t border-gray-200 space-y-3">
-          {/*
-            FIX #1 — Render every hiddenValues entry as a hidden input.
-            Server actions read fd.get('user_id'), fd.get('wallet_id'), etc.
-            Without these the FormData arrives with those keys missing and
-            the Supabase .eq('id', '') filter silently matches zero rows.
-          */}
+          {/* Hidden identifiers — server actions read these via fd.get() */}
           {Object.entries(hiddenValues).map(([name, value]) => (
             <input key={name} type="hidden" name={name} value={value} />
           ))}
 
-          {/* Visible fields (reason, score_change, etc.) */}
+          {/* Visible fields */}
           {fields.map((f) => (
             <div key={f.name}>
               <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
@@ -145,9 +150,13 @@ function ActionPanel({
                 type={f.type ?? 'text'}
                 min={f.min}
                 max={f.max}
+                defaultValue={f.defaultValue}
                 required
                 className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
+              {f.hint && (
+                <p className="mt-1 text-xs text-gray-400">{f.hint}</p>
+              )}
             </div>
           ))}
 
@@ -182,16 +191,22 @@ function ActionPanel({
   );
 }
 
-// ─── Tab sections (unchanged) ─────────────────────────────────────────────────
+// ─── Tab sections ─────────────────────────────────────────────────────────────
 
 function OverviewTab({ p }: { p: Tables<'profiles'> }) {
-  const fields: [string, string | number | boolean | null][] = [
+  // suspended_until was added in migration_suspended_until.sql.
+  // Cast through unknown until database.types.ts is regenerated.
+  const suspendedUntil = (p as unknown as Record<string, unknown>).suspended_until as string | null | undefined;
+
+  const fields: [string, string | number | boolean | null | undefined][] = [
     ['Email',             p.email],
     ['Phone',             p.phone_number ?? '—'],
     ['Role',              p.user_type],
     ['Location',          p.location ?? '—'],
     ['University',        p.university ?? '—'],
     ['Account status',    p.account_status],
+    ['Suspended until',   suspendedUntil ? dt(suspendedUntil) : p.account_status === 'suspended' ? 'Indefinite' : '—'],
+    ['Suspension reason', p.suspension_reason ?? '—'],
     ['Onboarding done',   p.onboarding_completed ? 'Yes' : 'No'],
     ['Email verified',    p.email_verified ? 'Yes' : 'No'],
     ['Phone verified',    p.phone_verified ? 'Yes' : 'No'],
@@ -205,7 +220,6 @@ function OverviewTab({ p }: { p: Tables<'profiles'> }) {
     ['Jobs posted',       p.total_jobs_posted    ?? 0],
     ['Member since',      dt(p.created_at)],
     ['Last updated',      dt(p.updated_at)],
-    ['Suspension reason', p.suspension_reason ?? '—'],
   ];
 
   return (
@@ -213,7 +227,13 @@ function OverviewTab({ p }: { p: Tables<'profiles'> }) {
       {fields.map(([label, value]) => (
         <div key={label} className="flex justify-between py-2 border-b border-gray-100 text-sm">
           <span className="text-gray-500">{label}</span>
-          <span className="font-medium text-gray-900 text-right">{String(value)}</span>
+          <span className={`font-medium text-right ${
+            label === 'Suspended until' && value !== '—'
+              ? 'text-orange-600'
+              : 'text-gray-900'
+          }`}>
+            {String(value ?? '—')}
+          </span>
         </div>
       ))}
       {p.bio && (
@@ -532,8 +552,6 @@ export function UserProfileTabs({
   const [active, setActive] = useState<Tab>('Overview');
   const { requireStepUp, StepUpModal } = useStepUpAuth();
 
-  // FIX #1 — The user_id for this profile, passed as hiddenValues to every
-  // ActionPanel so the server action can read fd.get('user_id') correctly.
   const userId = profile.id;
 
   return (
@@ -593,7 +611,17 @@ export function UserProfileTabs({
             icon={<ShieldOff size={15} />}
             colour="bg-orange-50 hover:bg-orange-100 text-orange-800"
             action={onSuspend}
-            fields={[{ name: 'reason', label: 'Suspension reason' }]}
+            fields={[
+              {
+                name:         'duration_days',
+                label:        'Duration (days)',
+                type:         'number',
+                min:          1,
+                defaultValue: 7,
+                hint:         'Moderators are capped at 30 days server-side. Set 0 for indefinite (admin only).',
+              },
+              { name: 'reason', label: 'Suspension reason' },
+            ]}
             confirmText="Suspend"
             hiddenValues={{ user_id: userId }}
           />

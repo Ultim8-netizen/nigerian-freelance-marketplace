@@ -5,12 +5,56 @@ import { UserProfileTabs } from './UserProfileTabs';
 import Link from 'next/link';
 import { ChevronLeft } from 'lucide-react';
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const MODERATOR_MAX_SUSPENSION_DAYS = 30;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the acting user is a full admin.
+ * Moderators (staff_roles entries) are NOT admins.
+ */
+async function isActingUserAdmin(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  actorId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from('profiles')
+    .select('user_type')
+    .eq('id', actorId)
+    .single();
+  return data?.user_type === 'admin';
+}
+
+/**
+ * Computes the suspended_until timestamp.
+ *
+ * Rules:
+ *  - Admin, durationDays === 0  → null (indefinite)
+ *  - Admin, durationDays > 0   → now + durationDays (uncapped)
+ *  - Moderator, any value       → now + min(durationDays || MAX, MAX)
+ *
+ * Returns { suspendedUntil, effectiveDays } so callers can log what was applied.
+ */
+function computeSuspension(
+  durationDays: number,
+  isAdmin: boolean,
+): { suspendedUntil: string | null; effectiveDays: number | null } {
+  if (isAdmin && durationDays === 0) {
+    // Explicit indefinite — admin privilege only
+    return { suspendedUntil: null, effectiveDays: null };
+  }
+
+  const raw = durationDays > 0 ? durationDays : MODERATOR_MAX_SUSPENSION_DAYS;
+  const effectiveDays = isAdmin ? raw : Math.min(raw, MODERATOR_MAX_SUSPENSION_DAYS);
+  const until = new Date();
+  until.setDate(until.getDate() + effectiveDays);
+
+  return { suspendedUntil: until.toISOString(), effectiveDays };
+}
+
 // ─── Server Actions ───────────────────────────────────────────────────────────
-//
-// Each action is defined at module scope with 'use server' so it can be passed
-// as a prop to the Client Component. The target userId is closed over from
-// the page's `params` — we re-read it from a hidden FormData field so the
-// closure stays serialisable to the client boundary.
 
 async function warnUser(fd: FormData) {
   'use server';
@@ -39,30 +83,46 @@ async function warnUser(fd: FormData) {
 
 async function suspendUser(fd: FormData) {
   'use server';
-  const userId = fd.get('user_id') as string;
-  const reason = fd.get('reason') as string;
+  const userId      = fd.get('user_id') as string;
+  const reason      = fd.get('reason') as string;
+  // duration_days === 0 means "indefinite" — only admins may do this.
+  // The <ActionPanel> should default to 7, making 0 an explicit admin choice.
+  const durationDays = Number(fd.get('duration_days') ?? 7);
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
 
-  // profiles.account_status + profiles.suspension_reason — both columns verified
+  const isAdmin = await isActingUserAdmin(supabase, admin.id);
+  const { suspendedUntil, effectiveDays } = computeSuspension(durationDays, isAdmin);
+
+  // If a moderator tried to submit 0 (indefinite), effectiveDays will be MAX.
+  // Build a clear audit note so we can see if a cap was applied.
+  const wasCapApplied = !isAdmin && durationDays !== effectiveDays;
+  const durationNote = effectiveDays === null
+    ? 'indefinite'
+    : `${effectiveDays} day${effectiveDays !== 1 ? 's' : ''}${wasCapApplied ? ` (capped from ${durationDays}d — moderator limit)` : ''}`;
+
   await supabase.from('profiles').update({
-    account_status:   'suspended',
+    account_status:    'suspended',
     suspension_reason: reason,
+    suspended_until:   suspendedUntil,  // null = indefinite (admin only)
   }).eq('id', userId);
 
   await supabase.from('notifications').insert({
     user_id: userId,
     type: 'account_suspended',
     title: 'Account Suspended',
-    message: reason,
+    message: effectiveDays === null
+      ? `Your account has been suspended indefinitely. Reason: ${reason}`
+      : `Your account has been suspended for ${effectiveDays} day${effectiveDays !== 1 ? 's' : ''}. Reason: ${reason}`,
   });
 
   await supabase.from('admin_action_logs').insert({
     admin_id:       admin.id,
     target_user_id: userId,
     action_type:    'suspend',
-    reason,
+    reason:         `${reason} [Duration: ${durationNote}]`,
   });
 
   revalidatePath(`/f9-control/users/${userId}`);
@@ -77,8 +137,9 @@ async function banUser(fd: FormData) {
   if (!admin) return;
 
   await supabase.from('profiles').update({
-    account_status:   'banned',
+    account_status:    'banned',
     suspension_reason: reason,
+    suspended_until:   null, // bans are always permanent — clear any prior timed suspension
   }).eq('id', userId);
 
   await supabase.from('notifications').insert({
@@ -109,14 +170,15 @@ async function freezeWallet(fd: FormData) {
   if (!admin) return;
 
   await supabase.from('profiles').update({
-    account_status:   'suspended',
+    account_status:    'suspended',
     suspension_reason: `Wallet frozen: ${reason}`,
+    suspended_until:   null, // wallet freezes held until manually reviewed
   }).eq('id', userId);
 
   await supabase.from('security_logs').insert({
-    user_id:    userId,
-    event_type: 'wallet_frozen_by_admin',
-    severity:   'critical',
+    user_id:     userId,
+    event_type:  'wallet_frozen_by_admin',
+    severity:    'critical',
     description: reason,
   });
 
@@ -150,10 +212,10 @@ async function overrideTrustScore(fd: FormData) {
 
   // add_trust_score_event RPC — 6 params verified against Functions schema
   await supabase.rpc('add_trust_score_event', {
-    p_user_id:     userId,
-    p_event_type:  'admin_override',
+    p_user_id:      userId,
+    p_event_type:   'admin_override',
     p_score_change: scoreChange,
-    p_notes:       reason,
+    p_notes:        reason,
   });
 
   await supabase.from('admin_action_logs').insert({
@@ -165,12 +227,6 @@ async function overrideTrustScore(fd: FormData) {
 
   revalidatePath(`/f9-control/users/${userId}`);
 }
-
-// ─── Bound action wrappers ────────────────────────────────────────────────────
-//
-// Server actions passed as props must be plain async functions. We bind the
-// userId into FormData at the client level via a hidden <input name="user_id">.
-// The actions above all read `fd.get('user_id')` so no wrapper factory is needed.
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -192,8 +248,6 @@ export default async function AdminUserProfilePage({
   if (!profile) notFound();
 
   // ── Activity ───────────────────────────────────────────────────────────────
-  // Orders where the user appears on either side (client or freelancer).
-  // `orders` columns: client_id, freelancer_id — verified.
   const { data: orders } = await supabase
     .from('orders')
     .select('*')
@@ -201,8 +255,6 @@ export default async function AdminUserProfilePage({
     .order('created_at', { ascending: false })
     .limit(20);
 
-  // Disputes where the user raised or is subject of.
-  // `disputes` columns: raised_by, against — verified.
   const { data: disputes } = await supabase
     .from('disputes')
     .select('*')
@@ -217,7 +269,6 @@ export default async function AdminUserProfilePage({
     .eq('user_id', id)
     .single();
 
-  // `withdrawals` columns: user_id — verified.
   const { data: withdrawals } = await supabase
     .from('withdrawals')
     .select('*')
@@ -255,7 +306,6 @@ export default async function AdminUserProfilePage({
     .limit(30);
 
   // ── Admin Notes ────────────────────────────────────────────────────────────
-  // `admin_action_logs` column: target_user_id — verified.
   const { data: adminNotes } = await supabase
     .from('admin_action_logs')
     .select('*')

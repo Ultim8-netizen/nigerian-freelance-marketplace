@@ -17,10 +17,6 @@ type SecurityLogWithUser = Omit<Tables<'security_logs'>, 'user_id'> & {
 };
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
-//
-// FIX #8 — Every button previously had no server action.
-// dismissTicket, reverseTicket, dismissFlag, and suspendFlaggedUser
-// are now real Server Actions bound to the buttons via FlagsActionBar.
 
 /** Mark a contest ticket as dismissed — the automated action stands. */
 async function dismissTicket(fd: FormData) {
@@ -46,18 +42,14 @@ async function dismissTicket(fd: FormData) {
 
 /**
  * Reverse the contested automated action.
- * Uses the existing `reverse_admin_action` RPC pattern — but for contest
- * tickets the reversal is simpler: we just mark the ticket resolved and
- * let the admin manually undo the specific automated action (e.g. lift
- * a wallet hold) from the user profile view.
- *
- * The ticket is marked 'reversed' so it disappears from the pending queue
- * and appears in the resolved history.
+ * Marks the ticket 'reversed' so it disappears from the pending queue.
+ * The admin manually undoes the specific action (e.g. lift a wallet hold)
+ * from the user profile view if needed.
  */
 async function reverseTicket(fd: FormData) {
   'use server';
-  const ticketId    = fd.get('ticket_id')    as string;
-  const targetUserId = fd.get('user_id')     as string;
+  const ticketId     = fd.get('ticket_id') as string;
+  const targetUserId = fd.get('user_id')   as string;
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
@@ -67,7 +59,6 @@ async function reverseTicket(fd: FormData) {
     .update({ status: 'reversed', reviewed_by: admin.id })
     .eq('id', ticketId);
 
-  // Notify the user that their contest was successful
   if (targetUserId) {
     await supabase.from('notifications').insert({
       user_id: targetUserId,
@@ -90,14 +81,13 @@ async function reverseTicket(fd: FormData) {
 /** Dismiss a security flag — no action taken against the user. */
 async function dismissFlag(fd: FormData) {
   'use server';
-  const flagId      = fd.get('flag_id') as string;
+  const flagId       = fd.get('flag_id') as string;
   const targetUserId = fd.get('user_id') as string;
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  // security_logs has no status column — we write a note to admin_action_logs
-  // to mark the flag as reviewed, which is sufficient for the audit trail.
+  // security_logs has no status column — audit log is sufficient for reviewed state.
   await supabase.from('admin_action_logs').insert({
     admin_id:       admin.id,
     target_user_id: targetUserId || null,
@@ -108,7 +98,18 @@ async function dismissFlag(fd: FormData) {
   revalidatePath('/f9-control/flags');
 }
 
-/** Suspend the user associated with a security flag. */
+/**
+ * Suspend the user associated with a critical security flag.
+ *
+ * These suspensions are ALWAYS indefinite (suspended_until = null) because:
+ *   1. They are triggered by critical security events (fraud, suspicious inflow,
+ *      account compromise) where a time limit would be inappropriate.
+ *   2. Only full admins can issue indefinite suspensions — and this action
+ *      is only reachable from the admin-only Flags & Tickets page.
+ *   3. Explicitly setting suspended_until = null prevents a prior timed
+ *      suspension timestamp from surviving on the row and causing the cron's
+ *      lift_expired_suspensions() to incorrectly reactivate this account.
+ */
 async function suspendFlaggedUser(fd: FormData) {
   'use server';
   const userId = fd.get('user_id') as string;
@@ -123,6 +124,10 @@ async function suspendFlaggedUser(fd: FormData) {
     .update({
       account_status:    'suspended',
       suspension_reason: 'Suspended by admin following a critical security flag.',
+      // Explicitly null — this suspension is indefinite and must NOT be auto-lifted
+      // by the lift_expired_suspensions() cron. If a prior timed suspension left a
+      // suspended_until timestamp on this row, this write clears it.
+      suspended_until:   null,
     })
     .eq('id', userId);
 
@@ -137,7 +142,7 @@ async function suspendFlaggedUser(fd: FormData) {
     admin_id:       admin.id,
     target_user_id: userId,
     action_type:    'suspend',
-    reason:         'Suspended following critical security flag review',
+    reason:         'Suspended following critical security flag review [indefinite]',
   });
 
   revalidatePath('/f9-control/flags');
@@ -205,7 +210,6 @@ export default async function AdminFlagsPage() {
                     </p>
                   </div>
 
-                  {/* FIX #8 — buttons now have real server actions */}
                   <FlagsActionBar
                     type="ticket"
                     ticketId={ticket.id}
@@ -261,7 +265,6 @@ export default async function AdminFlagsPage() {
                     </p>
                   </div>
 
-                  {/* FIX #8 — buttons now have real server actions */}
                   <FlagsActionBar
                     type="flag"
                     flagId={flag.id}

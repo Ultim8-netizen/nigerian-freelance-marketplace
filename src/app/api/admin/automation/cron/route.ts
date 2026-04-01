@@ -9,6 +9,8 @@ import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
 // UPDATED: Hardcoded time thresholds replaced with platform_config reads.
 //          Keys: dispute_auto_resolve_days, frequent_disputer_window_days,
 //          unlinked_tx_window_hours. Defaults preserved as fallbacks.
+// RULE 0 ADDED: Auto-lifts expired timed suspensions via lift_expired_suspensions()
+//               RPC before any fraud/dispute rules run.
 
 export async function POST() {
   // Service client bypasses RLS — correct for a cron with no user session.
@@ -21,6 +23,59 @@ export async function POST() {
     CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS,
     CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS,
   ]);
+
+  // ─── RULE 0: Lift expired timed suspensions ────────────────────────────────
+  //
+  // Runs first so a user whose suspension expires today is active again before
+  // any fraud rules evaluate their account status.
+  //
+  // lift_expired_suspensions() is a SECURITY DEFINER function that:
+  //   - Matches: account_status='suspended' AND suspended_until <= now()
+  //   - Clears:  account_status→'active', suspended_until→NULL,
+  //              suspension_reason→NULL
+  //   - Returns: the UUIDs of every profile it updated
+  //
+  // We then send a notification to each lifted user and write a security_log
+  // entry so the admin can see it on the Digest and the user profile view.
+
+  const { data: liftedRows, error: liftError } = await supabase
+    .rpc('lift_expired_suspensions') as {
+      data: { lifted_user_id: string }[] | null;
+      error: unknown;
+    };
+
+  if (liftError) {
+    console.error('[Rule 0] Error lifting expired suspensions:', liftError);
+  }
+
+  if (liftedRows && liftedRows.length > 0) {
+    const liftedIds = liftedRows.map((r) => r.lifted_user_id);
+
+    // Batch-insert one notification per lifted user
+    await supabase.from('notifications').insert(
+      liftedIds.map((userId) => ({
+        user_id: userId,
+        type:    'account_reactivated',
+        title:   'Account Suspension Lifted',
+        message: 'Your suspension period has ended and your account is now active again. Please review our community guidelines to avoid future restrictions.',
+      }))
+    );
+
+    // One security_log per lifted user — visible in the admin user profile view
+    // and on the Daily Digest overnight auto-actions panel.
+    await supabase.from('security_logs').insert(
+      liftedIds.map((userId) => ({
+        user_id:     userId,
+        event_type:  'suspension_auto_lifted',
+        severity:    'info',
+        description: 'Timed suspension expired. Account automatically restored to active by cron.',
+      }))
+    );
+
+    for (const userId of liftedIds) {
+      logs.push(`Lifted suspension for user ${userId} — timed suspension expired`);
+    }
+  }
 
   // ─── RULE 1: Stale dispute auto-resolution ─────────────────────────────────
   const disputeWindowMs = config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS] * 24 * 60 * 60 * 1000;
