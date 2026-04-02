@@ -5460,4 +5460,156 @@ CREATE TRIGGER guard_admin_account_status
 
 
 
-  
+  -- migration_platform_config_consecutive_rating_suspension.sql
+-- Adds two new admin-configurable thresholds for the consecutive low-rating
+-- posting suspension rule implemented in api/marketplace/reviews/route.ts.
+--
+-- consecutive_low_rating_threshold:
+--   Number of consecutive 1-star marketplace reviews required to trigger
+--   a posting suspension on the seller. Default: 3.
+--
+-- posting_suspension_hours:
+--   Duration of the posting suspension in hours. Default: 72.
+--
+-- ON CONFLICT DO NOTHING: safe to re-run; existing values are not overwritten.
+
+INSERT INTO platform_config (key, value, enabled, description)
+VALUES
+  (
+    'consecutive_low_rating_threshold',
+    3,
+    true,
+    'Number of consecutive 1-star marketplace reviews required to trigger a posting suspension on the seller.'
+  ),
+  (
+    'posting_suspension_hours',
+    72,
+    true,
+    'Duration in hours of the posting suspension applied after consecutive 1-star reviews.'
+  )
+ON CONFLICT (key) DO NOTHING;
+
+
+-- migration_platform_config_high_value_listing_hold.sql
+-- Adds two new admin-configurable thresholds for the high-value new account
+-- listing hold rule implemented in src/lib/trust/automation.ts.
+--
+-- high_value_listing_threshold:
+--   Listing price (in Naira) above which a new-account hold is triggered.
+--   Default: 100000 (₦100,000).
+--
+-- new_account_hold_days:
+--   Account age window (in days) within which high-value listings are held
+--   for admin review. Default: 7.
+--
+-- ON CONFLICT DO NOTHING: safe to re-run; existing values are not overwritten.
+
+INSERT INTO platform_config (key, value, enabled, description)
+VALUES
+  (
+    'high_value_listing_threshold',
+    100000,
+    true,
+    'Listing price in Naira above which a new-account hold is applied pending admin review.'
+  ),
+  (
+    'new_account_hold_days',
+    7,
+    true,
+    'Account age in days within which listings above the high-value threshold are held for admin review.'
+  )
+ON CONFLICT (key) DO NOTHING;
+
+
+
+
+-- migration_disputes_last_activity_at.sql
+--
+-- Adds disputes.last_activity_at — the authoritative timestamp for "when was
+-- this dispute last active", used by the cron inactivity auto-resolve rule.
+--
+-- Problem this solves:
+--   The cron was filtering on disputes.created_at to find "7-day silent"
+--   disputes, but created_at is immutable after INSERT. A dispute with active
+--   back-and-forth between both parties would be force-closed after 7 days
+--   regardless of ongoing communication — directly violating the spec which
+--   requires N days of SILENCE from both parties.
+--
+-- What resets last_activity_at:
+--   1. trg_dispute_last_activity        — any UPDATE to the disputes row itself
+--      (status change, evidence upload, resolution note, admin action).
+--   2. trg_dispute_activity_on_message  — any new message sent in a
+--      conversation whose order_id matches an open dispute's order_id.
+--
+-- Backfill:
+--   Existing disputes are initialised to created_at so no row is ever NULL
+--   and the cron filter works correctly from the moment the migration runs.
+
+-- ── 1. Add column ─────────────────────────────────────────────────────────────
+ALTER TABLE disputes
+  ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;
+
+-- ── 2. Backfill existing rows ─────────────────────────────────────────────────
+UPDATE disputes
+SET last_activity_at = created_at
+WHERE last_activity_at IS NULL;
+
+-- ── 3. Apply NOT NULL + default after backfill ────────────────────────────────
+ALTER TABLE disputes
+  ALTER COLUMN last_activity_at SET NOT NULL,
+  ALTER COLUMN last_activity_at SET DEFAULT NOW();
+
+-- ── 4. Trigger function: reset on any dispute row update ──────────────────────
+-- Fires BEFORE UPDATE so the new timestamp is written as part of the same
+-- transaction that changes the dispute. Covers: status changes, resolution
+-- notes, evidence additions, admin manual updates.
+
+CREATE OR REPLACE FUNCTION reset_dispute_last_activity()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.last_activity_at = NOW();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_dispute_last_activity ON disputes;
+
+CREATE TRIGGER trg_dispute_last_activity
+  BEFORE UPDATE ON disputes
+  FOR EACH ROW
+  EXECUTE FUNCTION reset_dispute_last_activity();
+
+-- ── 5. Trigger function: reset on new message in linked conversation ───────────
+-- Fires AFTER INSERT ON messages. Traverses:
+--   messages.conversation_id → conversations.order_id → disputes.order_id
+-- Only touches disputes with status = 'open' — resolved/closed disputes do
+-- not need their activity clock updated.
+-- conversation_id is NOT NULL on messages (schema constraint confirmed).
+-- conversations.order_id is nullable — the JOIN is therefore INNER so
+-- message threads with no linked order produce no dispute update.
+
+CREATE OR REPLACE FUNCTION update_dispute_activity_on_message()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE disputes d
+  SET    last_activity_at = NOW()
+  FROM   conversations c
+  WHERE  c.id         = NEW.conversation_id
+    AND  c.order_id   IS NOT NULL
+    AND  d.order_id   = c.order_id
+    AND  d.status     = 'open';
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_dispute_activity_on_message ON messages;
+
+CREATE TRIGGER trg_dispute_activity_on_message
+  AFTER INSERT ON messages
+  FOR EACH ROW
+  EXECUTE FUNCTION update_dispute_activity_on_message();

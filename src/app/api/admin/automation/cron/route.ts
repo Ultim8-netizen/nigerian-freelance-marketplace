@@ -1,16 +1,28 @@
+// src/app/api/admin/automation/cron/route.ts
+// FIX: Rule 1 dispute inactivity check previously evaluated .lte('created_at',
+//      sevenDaysAgo), which measured elapsed time since the dispute was OPENED,
+//      not since either party last communicated. Active disputes with ongoing
+//      message exchanges were being force-closed after 7 days regardless of
+//      activity — a direct spec violation.
+//
+//      Fix: filter now uses disputes.last_activity_at, a new TIMESTAMPTZ column
+//      maintained by two database triggers:
+//
+//        trg_dispute_last_activity (BEFORE UPDATE ON disputes)
+//          — resets last_activity_at = NOW() on any row update (status change,
+//            evidence upload, resolution note, admin action).
+//
+//        trg_dispute_activity_on_message (AFTER INSERT ON messages)
+//          — resets last_activity_at on any open dispute whose order_id matches
+//            the order linked to the conversation the message was sent in.
+//
+//      The migration backfills last_activity_at = created_at for all existing
+//      disputes so the column is never NULL and the filter behaves correctly
+//      for historical rows from day one.
+
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
-
-// FIXED: Replaced createClient() (anon key, blocked by RLS) with createServiceClient()
-// (service role key, bypasses RLS). Previously ALL three rules returned zero rows
-// silently because auth.uid() = NULL with no user session, causing every RLS
-// policy to filter out every row.
-// UPDATED: Hardcoded time thresholds replaced with platform_config reads.
-//          Keys: dispute_auto_resolve_days, frequent_disputer_window_days,
-//          unlinked_tx_window_hours. Defaults preserved as fallbacks.
-// RULE 0 ADDED: Auto-lifts expired timed suspensions via lift_expired_suspensions()
-//               RPC before any fraud/dispute rules run.
 
 export async function POST() {
   // Service client bypasses RLS — correct for a cron with no user session.
@@ -34,9 +46,6 @@ export async function POST() {
   //   - Clears:  account_status→'active', suspended_until→NULL,
   //              suspension_reason→NULL
   //   - Returns: the UUIDs of every profile it updated
-  //
-  // We then send a notification to each lifted user and write a security_log
-  // entry so the admin can see it on the Digest and the user profile view.
 
   const { data: liftedRows, error: liftError } = await supabase
     .rpc('lift_expired_suspensions') as {
@@ -49,9 +58,8 @@ export async function POST() {
   }
 
   if (liftedRows && liftedRows.length > 0) {
-    const liftedIds = liftedRows.map((r) => r.lifted_user_id);
+    const liftedIds = liftedIds_from(liftedRows);
 
-    // Batch-insert one notification per lifted user
     await supabase.from('notifications').insert(
       liftedIds.map((userId) => ({
         user_id: userId,
@@ -61,8 +69,6 @@ export async function POST() {
       }))
     );
 
-    // One security_log per lifted user — visible in the admin user profile view
-    // and on the Daily Digest overnight auto-actions panel.
     await supabase.from('security_logs').insert(
       liftedIds.map((userId) => ({
         user_id:     userId,
@@ -78,14 +84,27 @@ export async function POST() {
   }
 
   // ─── RULE 1: Stale dispute auto-resolution ─────────────────────────────────
+  //
+  // "Both parties silent for N days → auto-resolve in buyer's favour."
+  //
+  // The inactivity clock is disputes.last_activity_at, which is reset by:
+  //   • Any UPDATE to the dispute row (trigger: trg_dispute_last_activity)
+  //   • Any new message in the conversation linked to the dispute's order
+  //     (trigger: trg_dispute_activity_on_message)
+  //
+  // Using created_at here would close active disputes after N days regardless
+  // of whether the parties are still communicating — that is the bug this fix
+  // resolves. last_activity_at is backfilled to created_at by the migration
+  // so existing rows are never NULL.
+
   const disputeWindowMs = config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS] * 24 * 60 * 60 * 1000;
-  const sevenDaysAgo    = new Date(Date.now() - disputeWindowMs).toISOString();
+  const inactivityCutoff = new Date(Date.now() - disputeWindowMs).toISOString();
 
   const { data: staleDisputes, error: disputeError } = await supabase
     .from('disputes')
     .select('id, order_id')
     .eq('status', 'open')
-    .lte('created_at', sevenDaysAgo)
+    .lte('last_activity_at', inactivityCutoff)          // ← was: created_at
     .not('reason', 'in', '("quality","delivery")');
 
   if (disputeError) {
@@ -99,7 +118,7 @@ export async function POST() {
           .from('disputes')
           .update({
             status:           'resolved_client',
-            resolution_notes: `Auto-resolved due to ${config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]} days of inactivity.`,
+            resolution_notes: `Auto-resolved: no activity from either party for ${config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]} days.`,
           })
           .eq('id', dispute.id);
 
@@ -120,12 +139,12 @@ export async function POST() {
     }
   }
 
-  // Quality/delivery disputes → admin queue
+  // Quality/delivery disputes → admin queue (same inactivity threshold)
   const { data: qualityDisputes, error: qualityError } = await supabase
     .from('disputes')
     .select('id')
     .eq('status', 'open')
-    .lte('created_at', sevenDaysAgo)
+    .lte('last_activity_at', inactivityCutoff)          // ← was: created_at
     .in('reason', ['quality', 'delivery']);
 
   if (qualityError) {
@@ -179,23 +198,8 @@ export async function POST() {
   }
 
   // ─── RULE 3: 5+ unique senders with no linked orders → suspend + flag ──────
-  //
-  // Queries transactions where BOTH order_id IS NULL AND marketplace_order_id IS NULL.
-  // These are wallet credits with no linked order — the fraud signal the spec describes.
-  //
-  // recipient_user_id is populated by the migration:
-  //   ALTER TABLE transactions
-  //     ADD COLUMN IF NOT EXISTS recipient_user_id uuid
-  //     REFERENCES profiles(id) ON DELETE SET NULL;
-  //
-  // Sender identity is derived from flutterwave_response->customer->{email|phone_number}.
-  //
-  // Graceful degradation: if the migration column is not yet present (all
-  // recipient_user_id values are null), the rule logs a warning and skips
-  // rather than producing false positives.
-
-  const unlinked_window_ms  = config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS] * 60 * 60 * 1000;
-  const twentyFourHoursAgo  = new Date(Date.now() - unlinked_window_ms).toISOString();
+  const unlinked_window_ms = config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS] * 60 * 60 * 1000;
+  const twentyFourHoursAgo = new Date(Date.now() - unlinked_window_ms).toISOString();
 
   type UnlinkedTxRow = {
     id:                   string;
@@ -294,4 +298,10 @@ export async function POST() {
   }
 
   return NextResponse.json({ success: true, actions: logs });
+}
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+function liftedIds_from(rows: { lifted_user_id: string }[]): string[] {
+  return rows.map((r) => r.lifted_user_id);
 }

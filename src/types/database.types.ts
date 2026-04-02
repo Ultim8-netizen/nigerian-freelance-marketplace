@@ -1942,6 +1942,7 @@ export type Database = {
           account_name: string | null
           account_number: string | null
           balance: number | null
+          bank_details_updated_at: string | null
           bank_name: string | null
           created_at: string | null
           id: string
@@ -1955,6 +1956,7 @@ export type Database = {
           account_name?: string | null
           account_number?: string | null
           balance?: number | null
+          bank_details_updated_at?: string | null
           bank_name?: string | null
           created_at?: string | null
           id?: string
@@ -1968,6 +1970,7 @@ export type Database = {
           account_name?: string | null
           account_number?: string | null
           balance?: number | null
+          bank_details_updated_at?: string | null
           bank_name?: string | null
           created_at?: string | null
           id?: string

@@ -1,26 +1,35 @@
 // src/app/api/marketplace/reviews/route.ts
 // PRODUCTION-READY: Product and seller reviews with rating calculations
-// + 72-hour posting suspension after 3 consecutive 1-star reviews
+// + configurable consecutive low-rating posting suspension
+//
+// FIX: consecutive_low_rating_threshold (was hardcoded 3) and
+//      posting_suspension_hours (was hardcoded 72) are now read from
+//      platform_config via createAdminClient() in the POST handler and
+//      passed explicitly into checkAndSuspendPostingOnConsecutiveLowRatings.
+//      platform_config has admin-only RLS — createAdminClient() (service role)
+//      is required; a regular user-scoped createClient() returns no rows.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/api/middleware';
-import { checkRateLimit } from '@/lib/rate-limit-upstash';
-import { createClient } from '@/lib/supabase/server';
+import { requireAuth }               from '@/lib/api/middleware';
+import { checkRateLimit }            from '@/lib/rate-limit-upstash';
+import { createClient }              from '@/lib/supabase/server';
+import { createAdminClient }         from '@/lib/supabase/admin';
 import { sanitizeHtml, sanitizeUuid } from '@/lib/security/sanitize';
-import { logger } from '@/lib/logger';
-import { z } from 'zod';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { logger }                    from '@/lib/logger';
+import { z }                         from 'zod';
+import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
+import type { SupabaseClient }       from '@supabase/supabase-js';
 
 const createReviewSchema = z.object({
-  order_id: z.string().uuid(),
-  product_id: z.string().uuid(),
-  seller_id: z.string().uuid(),
-  rating: z.number().int().min(1).max(5),
-  review_text: z.string().min(10).max(500),
+  order_id:        z.string().uuid(),
+  product_id:      z.string().uuid(),
+  seller_id:       z.string().uuid(),
+  rating:          z.number().int().min(1).max(5),
+  review_text:     z.string().min(10).max(500),
   product_quality: z.number().int().min(1).max(5).optional(),
-  delivery_speed: z.number().int().min(1).max(5).optional(),
-  communication: z.number().int().min(1).max(5).optional(),
-  images: z.array(z.string().url()).max(5).optional(),
+  delivery_speed:  z.number().int().min(1).max(5).optional(),
+  communication:   z.number().int().min(1).max(5).optional(),
+  images:          z.array(z.string().url()).max(5).optional(),
 });
 
 // GET - Fetch reviews
@@ -85,15 +94,27 @@ export async function POST(request: NextRequest) {
 
     const sanitized = {
       ...body,
-      order_id:     sanitizeUuid(body.order_id)     || '',
-      product_id:   sanitizeUuid(body.product_id)   || '',
-      seller_id:    sanitizeUuid(body.seller_id)    || '',
-      review_text:  sanitizeHtml(body.review_text   || ''),
+      order_id:    sanitizeUuid(body.order_id)   || '',
+      product_id:  sanitizeUuid(body.product_id) || '',
+      seller_id:   sanitizeUuid(body.seller_id)  || '',
+      review_text: sanitizeHtml(body.review_text || ''),
       images: Array.isArray(body.images) ? body.images : undefined,
     };
 
     const validated = createReviewSchema.parse(sanitized);
     const supabase  = await createClient();
+
+    // ── Fetch suspension thresholds from platform_config ─────────────────────
+    // createAdminClient() (service role) is required — platform_config is
+    // admin-only RLS. Falls back to defaults (3 reviews / 72h) on any error.
+    const adminClient = createAdminClient();
+    const config = await getPlatformConfigs(adminClient, [
+      CONFIG_KEYS.CONSECUTIVE_LOW_RATING_THRESHOLD,
+      CONFIG_KEYS.POSTING_SUSPENSION_HOURS,
+    ]);
+
+    const consecutiveThreshold = config[CONFIG_KEYS.CONSECUTIVE_LOW_RATING_THRESHOLD];
+    const postingSuspensionHours = config[CONFIG_KEYS.POSTING_SUSPENSION_HOURS];
 
     // ── Order guard ──────────────────────────────────────────────────────────
     const { data: order, error: orderError } = await supabase
@@ -112,7 +133,7 @@ export async function POST(request: NextRequest) {
     if (order.buyer_id !== user.id) {
       logger.warn('Unauthorized review attempt', {
         orderId: validated.order_id,
-        userId: user.id,
+        userId:  user.id,
       });
       return NextResponse.json(
         { success: false, error: 'Only buyer can review' },
@@ -159,28 +180,30 @@ export async function POST(request: NextRequest) {
     // Notify seller of new review
     await supabase.from('notifications').insert({
       user_id: validated.seller_id,
-      type: 'new_review',
-      title: 'New Review Received',
+      type:    'new_review',
+      title:   'New Review Received',
       message: `You received a ${validated.rating}-star review`,
-      link: `/marketplace/reviews/${review.id}`,
+      link:    `/marketplace/reviews/${review.id}`,
     });
 
-    // ── 3 consecutive 1-star check → 72-hour posting suspension ─────────────
+    // ── Consecutive low-rating check → configurable posting suspension ───────
     await checkAndSuspendPostingOnConsecutiveLowRatings(
       supabase,
-      validated.seller_id
+      validated.seller_id,
+      consecutiveThreshold,
+      postingSuspensionHours,
     );
 
     logger.info('Review created', {
       reviewId: review.id,
-      userId: user.id,
-      rating: validated.rating,
+      userId:   user.id,
+      rating:   validated.rating,
     });
 
     return NextResponse.json(
       {
         success: true,
-        data: review,
+        data:    review,
         message: 'Review submitted successfully',
       },
       { status: 201 }
@@ -217,7 +240,7 @@ async function updateProductRating(supabase: SupabaseClient, productId: string) 
       await supabase
         .from('products')
         .update({
-          rating: Math.round(avgRating * 10) / 10,
+          rating:        Math.round(avgRating * 10) / 10,
           reviews_count: reviews.length,
         })
         .eq('id', productId);
@@ -241,7 +264,7 @@ async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
       await supabase
         .from('profiles')
         .update({
-          marketplace_rating: Math.round(avgRating * 10) / 10,
+          marketplace_rating:        Math.round(avgRating * 10) / 10,
           marketplace_reviews_count: reviews.length,
         })
         .eq('id', sellerId);
@@ -252,18 +275,29 @@ async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
 }
 
 /**
- * After every new review, fetch the seller's 3 most recent marketplace reviews
- * (newest first). If every one of them is 1-star, set posting_suspended_until
- * to NOW() + 72 hours. This restricts new listing creation only — it does NOT
- * suspend the account or affect login/existing listings.
+ * After every new review, fetch the seller's N most recent marketplace reviews
+ * (newest first, N = consecutiveThreshold from platform_config). If every one
+ * of them is 1-star, set posting_suspended_until to NOW() + suspensionHours.
+ * This restricts new listing creation only — it does NOT suspend the account
+ * or affect login/existing listings.
  *
  * Skips silently if:
- * - Fewer than 3 reviews exist (insufficient signal)
- * - Seller is already within an active suspension window (idempotent)
+ * - Fewer than consecutiveThreshold reviews exist (insufficient signal)
+ * - Suspension window is already active (extends to fresh window on re-trigger)
+ *
+ * @param supabase            User-scoped client (profiles + marketplace_reviews
+ *                            are accessible without service role).
+ * @param sellerId            Target seller profile ID.
+ * @param consecutiveThreshold Number of consecutive 1-star reviews required to
+ *                            trigger suspension (from platform_config).
+ * @param suspensionHours     Duration of the posting suspension in hours
+ *                            (from platform_config).
  */
 async function checkAndSuspendPostingOnConsecutiveLowRatings(
-  supabase: SupabaseClient,
-  sellerId: string
+  supabase:             SupabaseClient,
+  sellerId:             string,
+  consecutiveThreshold: number,
+  suspensionHours:      number,
 ) {
   try {
     const { data: recentReviews, error: reviewsError } = await supabase
@@ -271,7 +305,7 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       .select('rating')
       .eq('seller_id', sellerId)
       .order('created_at', { ascending: false })
-      .limit(3);
+      .limit(consecutiveThreshold);
 
     if (reviewsError) {
       logger.error(
@@ -282,13 +316,14 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       return;
     }
 
-    // Need exactly 3 reviews — don't suspend on fewer (too little signal)
-    if (!recentReviews || recentReviews.length < 3) return;
+    // Need exactly consecutiveThreshold reviews — don't suspend on fewer
+    if (!recentReviews || recentReviews.length < consecutiveThreshold) return;
 
     const allOneStar = recentReviews.every((r) => r.rating === 1);
     if (!allOneStar) return;
 
-    // Fetch current suspension state to avoid redundant writes
+    // Fetch current suspension state to determine whether this is a new
+    // suspension or a window extension (controls notification gating below)
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('posting_suspended_until')
@@ -304,14 +339,15 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       return;
     }
 
-    const now = new Date();
+    const now             = new Date();
     const existingSuspension = profile?.posting_suspended_until
       ? new Date(profile.posting_suspended_until)
       : null;
 
-    // Already within an active suspension window — extend to a fresh 72 hours
-    // from now rather than silently no-oping, so repeat offenders stay blocked.
-    const suspendedUntil = new Date(now.getTime() + 72 * 60 * 60 * 1000).toISOString();
+    // Always extend to a fresh window from now — repeat offenders stay blocked
+    const suspendedUntil = new Date(
+      now.getTime() + suspensionHours * 60 * 60 * 1000
+    ).toISOString();
 
     const { error: updateError } = await supabase
       .from('profiles')
@@ -333,17 +369,20 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       await supabase.from('notifications').insert({
         user_id: sellerId,
         type:    'posting_suspended',
-        title:   'Posting Privileges Suspended (72 Hours)',
+        title:   `Posting Privileges Suspended (${suspensionHours} Hours)`,
         message:
-          'You have received 3 consecutive 1-star reviews. Your ability to create new ' +
-          'listings has been suspended for 72 hours. Existing listings and your account ' +
-          'remain active. Contact support if you believe this is in error.',
+          `You have received ${consecutiveThreshold} consecutive 1-star reviews. ` +
+          `Your ability to create new listings has been suspended for ${suspensionHours} hours. ` +
+          'Existing listings and your account remain active. ' +
+          'Contact support if you believe this is in error.',
       });
     }
 
-    logger.warn('Seller posting suspended after 3 consecutive 1-star reviews', {
+    logger.warn('Seller posting suspended after consecutive 1-star reviews', {
       sellerId,
       suspendedUntil,
+      consecutiveThreshold,
+      suspensionHours,
       wasAlreadySuspended: !isNewSuspension,
     });
   } catch (err) {

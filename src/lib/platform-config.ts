@@ -16,11 +16,15 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // These must match the keys seeded by migration_platform_config_thresholds.sql
 
 export const CONFIG_KEYS = {
-  DISPUTE_AUTO_RESOLVE_DAYS:     'dispute_auto_resolve_days',
-  FREQUENT_DISPUTER_WINDOW_DAYS: 'frequent_disputer_window_days',
-  UNLINKED_TX_WINDOW_HOURS:      'unlinked_tx_window_hours',
-  WALLET_FUND_HOLD_HOURS:        'wallet_fund_hold_hours',
-  BANK_UPDATE_HOLD_HOURS:        'bank_update_hold_hours',
+  DISPUTE_AUTO_RESOLVE_DAYS:          'dispute_auto_resolve_days',
+  FREQUENT_DISPUTER_WINDOW_DAYS:      'frequent_disputer_window_days',
+  UNLINKED_TX_WINDOW_HOURS:           'unlinked_tx_window_hours',
+  WALLET_FUND_HOLD_HOURS:             'wallet_fund_hold_hours',
+  BANK_UPDATE_HOLD_HOURS:             'bank_update_hold_hours',
+  CONSECUTIVE_LOW_RATING_THRESHOLD:   'consecutive_low_rating_threshold',
+  POSTING_SUSPENSION_HOURS:           'posting_suspension_hours',
+  HIGH_VALUE_LISTING_THRESHOLD:       'high_value_listing_threshold',
+  NEW_ACCOUNT_HOLD_DAYS:              'new_account_hold_days',
 } as const;
 
 export type ConfigKey = typeof CONFIG_KEYS[keyof typeof CONFIG_KEYS];
@@ -31,11 +35,15 @@ export type ConfigKey = typeof CONFIG_KEYS[keyof typeof CONFIG_KEYS];
 // even before the migration runs.
 
 const DEFAULTS: Record<ConfigKey, number> = {
-  [CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]:     7,
-  [CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS]: 30,
-  [CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]:      24,
-  [CONFIG_KEYS.WALLET_FUND_HOLD_HOURS]:        2,
-  [CONFIG_KEYS.BANK_UPDATE_HOLD_HOURS]:        48,
+  [CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]:        7,
+  [CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS]:    30,
+  [CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]:         24,
+  [CONFIG_KEYS.WALLET_FUND_HOLD_HOURS]:           2,
+  [CONFIG_KEYS.BANK_UPDATE_HOLD_HOURS]:           48,
+  [CONFIG_KEYS.CONSECUTIVE_LOW_RATING_THRESHOLD]: 3,
+  [CONFIG_KEYS.POSTING_SUSPENSION_HOURS]:         72,
+  [CONFIG_KEYS.HIGH_VALUE_LISTING_THRESHOLD]:     100000,
+  [CONFIG_KEYS.NEW_ACCOUNT_HOLD_DAYS]:            7,
 };
 
 /**
@@ -72,9 +80,9 @@ export async function getPlatformConfigs(
     for (const row of data ?? []) {
       const key = row.key as ConfigKey;
       // Skip if not one of the requested keys, disabled, or value is null
-      if (!(key in result))          continue;
-      if (row.enabled === false)     continue;
-      if (row.value   === null)      continue;
+      if (!(key in result))      continue;
+      if (row.enabled === false) continue;
+      if (row.value   === null)  continue;
 
       result[key] = row.value;
     }

@@ -1,54 +1,89 @@
-import { createClient } from '@/lib/supabase/server';
+// src/lib/trust/automation.ts
+// FIX: content.amount > 100000 and daysSinceCreation <= 7 were hardcoded.
+//      Both values are now read from platform_config via createAdminClient()
+//      (service role) which is required for admin-only RLS on platform_config.
+// FIX: prohibited_keywords config was also fetched with createClient() — a
+//      user-scoped client that silently returns no rows on admin-only RLS tables.
+//      All platform_config reads in this module now use the adminClient so the
+//      keyword filter actually executes.
+
+import { createAdminClient }                    from '@/lib/supabase/admin';
+import { getPlatformConfigs, CONFIG_KEYS }       from '@/lib/platform-config';
 
 export async function evaluateContentTriggers(
-  userId: string,
+  userId:  string,
   content: { title: string; description: string; amount?: number }
 ): Promise<{ allowed: boolean; reason?: string; autoHold?: boolean }> {
-  const supabase = await createClient();
+  // createAdminClient() (service role) is required for all platform_config reads
+  // in this function — platform_config has admin-only RLS and silently returns
+  // zero rows when accessed with a regular user-scoped createClient().
+  const adminClient = createAdminClient();
 
-  // 1. Fetch Prohibited Keywords from Config
-  const { data: config } = await supabase
+  // ── Fetch numeric thresholds in a single query ────────────────────────────
+  const config = await getPlatformConfigs(adminClient, [
+    CONFIG_KEYS.HIGH_VALUE_LISTING_THRESHOLD,
+    CONFIG_KEYS.NEW_ACCOUNT_HOLD_DAYS,
+  ]);
+
+  const highValueThreshold = config[CONFIG_KEYS.HIGH_VALUE_LISTING_THRESHOLD];
+  const newAccountHoldDays = config[CONFIG_KEYS.NEW_ACCOUNT_HOLD_DAYS];
+
+  // ── 1. Prohibited keywords ────────────────────────────────────────────────
+  // string_value is a text column on platform_config used for non-numeric
+  // config; it lives outside the numeric getPlatformConfigs helper so it is
+  // fetched with a direct select using the same adminClient.
+  const { data: keywordsConfig } = await adminClient
     .from('platform_config')
     .select('string_value, enabled')
     .eq('key', 'prohibited_keywords')
     .single();
 
-  if (config?.enabled && config.string_value) {
-    const keywords = config.string_value.split(',').map(k => k.trim().toLowerCase());
+  if (keywordsConfig?.enabled && keywordsConfig.string_value) {
+    const keywords = keywordsConfig.string_value
+      .split(',')
+      .map((k: string) => k.trim().toLowerCase());
     const fullText = `${content.title} ${content.description}`.toLowerCase();
-    
-    const containsProhibited = keywords.some(keyword => fullText.includes(keyword));
-    
+
+    const containsProhibited = keywords.some((keyword: string) =>
+      fullText.includes(keyword)
+    );
+
     if (containsProhibited) {
-      // Log critical flag
-      await supabase.from('security_logs').insert({
-        user_id: userId,
-        event_type: 'prohibited_keyword',
+      await adminClient.from('security_logs').insert({
+        user_id:     userId,
+        event_type:  'prohibited_keyword',
         description: 'Attempted to post listing with prohibited keywords',
-        severity: 'high'
+        severity:    'high',
       });
-      return { allowed: false, reason: 'Listing contains prohibited keywords and violates safety policies.' };
+      return {
+        allowed: false,
+        reason:  'Listing contains prohibited keywords and violates safety policies.',
+      };
     }
   }
 
-  // 2. High Value Hold for New Accounts (> ₦100,000 within first 7 days)
-  if (content.amount && content.amount > 100000) {
-    const { data: profile } = await supabase
+  // ── 2. High-value listing hold for new accounts ───────────────────────────
+  // Threshold and window are read from platform_config above; hardcoded values
+  // (100000 / 7) are never referenced — only the defaults in DEFAULTS serve as
+  // cold-start fallbacks if the config rows are absent or disabled.
+  if (content.amount && content.amount > highValueThreshold) {
+    const { data: profile } = await adminClient
       .from('profiles')
       .select('created_at')
       .eq('id', userId)
       .single();
 
-    // FIXED: Added null check for profile.created_at before passing to new Date()
     if (profile && profile.created_at) {
-      const daysSinceCreation = (Date.now() - new Date(profile.created_at).getTime()) / (1000 * 60 * 60 * 24);
-      if (daysSinceCreation <= 7) {
-        // Create an automated flag for admin review
-        await supabase.from('security_logs').insert({
-          user_id: userId,
-          event_type: 'high_value_new_account',
+      const daysSinceCreation =
+        (Date.now() - new Date(profile.created_at).getTime()) /
+        (1000 * 60 * 60 * 24);
+
+      if (daysSinceCreation <= newAccountHoldDays) {
+        await adminClient.from('security_logs').insert({
+          user_id:     userId,
+          event_type:  'high_value_new_account',
           description: `New account attempting to post listing of ₦${content.amount}`,
-          severity: 'medium'
+          severity:    'medium',
         });
         return { allowed: true, autoHold: true };
       }
