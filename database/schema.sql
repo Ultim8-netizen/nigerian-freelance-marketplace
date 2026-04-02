@@ -5388,3 +5388,76 @@ REVOKE EXECUTE ON FUNCTION public.lift_expired_suspensions() FROM PUBLIC;
 GRANT  EXECUTE ON FUNCTION public.lift_expired_suspensions() TO service_role;
 
 
+-- ============================================================================
+-- F9 — Admin Unblockable Status
+-- Prevents suspension, banning, freezing, or trust score manipulation on
+-- any profile where user_type = 'admin'.
+-- Also adds the missing admin UPDATE policy on profiles (without which the
+-- suspend/ban/freeze server actions silently failed for all targets via RLS).
+-- ============================================================================
+
+-- ── 1. Admin UPDATE policy (was missing — actions silently failed) ───────────
+-- Allows the authenticated admin to update any profile row.
+-- The guard trigger below (step 2) enforces the "unblockable" constraint
+-- so we don't need to bake it into RLS WITH CHECK.
+DO $do$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename  = 'profiles'
+      AND policyname = 'Admin can update user profiles'
+  ) THEN
+    EXECUTE $pol$
+      CREATE POLICY "Admin can update user profiles"
+      ON public.profiles
+      FOR UPDATE
+      USING (
+        EXISTS (
+          SELECT 1 FROM public.profiles p
+          WHERE p.id = auth.uid()
+            AND p.user_type = 'admin'
+        )
+      )
+    $pol$;
+  END IF;
+END;
+$do$;
+
+
+-- ── 2. Trigger function: block status changes on admin profiles ──────────────
+CREATE OR REPLACE FUNCTION public.guard_admin_account_status()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+BEGIN
+  -- Target row is an admin profile — block any attempt to alter
+  -- account_status, suspension_reason, or suspended_until.
+  IF OLD.user_type = 'admin' AND (
+       NEW.account_status    IS DISTINCT FROM OLD.account_status    OR
+       NEW.suspension_reason IS DISTINCT FROM OLD.suspension_reason OR
+       NEW.suspended_until   IS DISTINCT FROM OLD.suspended_until
+  ) THEN
+    RAISE EXCEPTION
+      'F9: Admin accounts are unblockable. account_status cannot be modified on admin profiles.'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+
+-- ── 3. Attach trigger to profiles (BEFORE UPDATE, every row) ─────────────────
+DROP TRIGGER IF EXISTS guard_admin_account_status ON public.profiles;
+
+CREATE TRIGGER guard_admin_account_status
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION public.guard_admin_account_status();
+
+
+
+  

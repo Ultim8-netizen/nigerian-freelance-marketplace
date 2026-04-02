@@ -28,6 +28,23 @@ async function isActingUserAdmin(
 }
 
 /**
+ * Returns true if the target user is an admin.
+ * Admin accounts are "unblockable" — no suspension, ban, freeze, or
+ * trust-score manipulation may be applied to them.
+ */
+async function isTargetAdmin(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  targetId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from('profiles')
+    .select('user_type')
+    .eq('id', targetId)
+    .single();
+  return data?.user_type === 'admin';
+}
+
+/**
  * Computes the suspended_until timestamp.
  *
  * Rules:
@@ -64,6 +81,11 @@ async function warnUser(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
 
+  // ── Unblockable guard ────────────────────────────────────────────────────
+  // Admin accounts should not receive warnings — they are F9 platform
+  // identities, not subject to moderation actions.
+  if (await isTargetAdmin(supabase, userId)) return;
+
   await supabase.from('notifications').insert({
     user_id: userId,
     type: 'admin_warning',
@@ -92,6 +114,12 @@ async function suspendUser(fd: FormData) {
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
+
+  // ── Unblockable guard ────────────────────────────────────────────────────
+  // Admin profiles cannot be suspended. This is enforced here (early exit)
+  // and at the DB level via the `guard_admin_account_status` trigger, which
+  // raises an exception if the UPDATE is attempted through any other path.
+  if (await isTargetAdmin(supabase, userId)) return;
 
   const isAdmin = await isActingUserAdmin(supabase, admin.id);
   const { suspendedUntil, effectiveDays } = computeSuspension(durationDays, isAdmin);
@@ -136,6 +164,11 @@ async function banUser(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
 
+  // ── Unblockable guard ────────────────────────────────────────────────────
+  // Admin profiles cannot be banned. Backed by DB trigger as second line
+  // of defence (`guard_admin_account_status` on profiles BEFORE UPDATE).
+  if (await isTargetAdmin(supabase, userId)) return;
+
   await supabase.from('profiles').update({
     account_status:    'banned',
     suspension_reason: reason,
@@ -168,6 +201,11 @@ async function freezeWallet(fd: FormData) {
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
+
+  // ── Unblockable guard ────────────────────────────────────────────────────
+  // Admin profiles cannot be wallet-frozen. The F9 platform account does not
+  // have a user-facing wallet that requires freezing. Backed by DB trigger.
+  if (await isTargetAdmin(supabase, userId)) return;
 
   await supabase.from('profiles').update({
     account_status:    'suspended',
@@ -209,6 +247,12 @@ async function overrideTrustScore(fd: FormData) {
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
+
+  // ── Unblockable guard ────────────────────────────────────────────────────
+  // Admin trust scores are not user-facing and must not be manipulated
+  // via this panel. This prevents accidental or malicious score events on
+  // the platform identity account.
+  if (await isTargetAdmin(supabase, userId)) return;
 
   // add_trust_score_event RPC — 6 params verified against Functions schema
   await supabase.rpc('add_trust_score_event', {
