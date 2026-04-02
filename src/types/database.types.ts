@@ -303,6 +303,7 @@ export type Database = {
           description: string
           evidence: Json | null
           id: string
+          last_activity_at: string
           order_id: string | null
           raised_by: string
           reason: string
@@ -317,6 +318,7 @@ export type Database = {
           description: string
           evidence?: Json | null
           id?: string
+          last_activity_at?: string
           order_id?: string | null
           raised_by: string
           reason: string
@@ -331,6 +333,7 @@ export type Database = {
           description?: string
           evidence?: Json | null
           id?: string
+          last_activity_at?: string
           order_id?: string | null
           raised_by?: string
           reason?: string
