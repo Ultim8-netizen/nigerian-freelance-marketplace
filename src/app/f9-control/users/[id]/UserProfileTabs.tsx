@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { TrustBadge, type TrustLevel } from '@/components/ui/TrustBadge';
 import {
   AlertTriangle, ShieldOff, Ban, Lock, Sliders,
-  CheckCircle, Loader2, ShieldCheck,
+  CheckCircle, Loader2, ShieldCheck, MessageSquare,
 } from 'lucide-react';
 import type { Tables } from '@/types';
 import { useStepUpAuth } from '@/components/admin/StepUpAuth';
@@ -29,6 +29,8 @@ export interface UserProfileTabsProps {
   onBan:           (fd: FormData) => Promise<void>;
   onFreeze:        (fd: FormData) => Promise<void>;
   onOverrideTrust: (fd: FormData) => Promise<void>;
+  /** Appends a freeform private note to admin_action_logs. Never visible to the target user. */
+  onAddNote:       (fd: FormData) => Promise<void>;
 }
 
 // ─── Tab config ───────────────────────────────────────────────────────────────
@@ -65,12 +67,7 @@ interface FieldConfig {
   type?:        string;
   min?:         number;
   max?:         number;
-  /**
-   * Pre-filled value shown in the input. The user can edit it before
-   * submitting. Use for sensible defaults (e.g. duration_days = 7).
-   */
   defaultValue?: string | number;
-  /** Hint text rendered beneath the input to guide the admin. */
   hint?:        string;
 }
 
@@ -81,10 +78,6 @@ interface ActionPanelProps {
   action:       (fd: FormData) => Promise<void>;
   fields?:      FieldConfig[];
   confirmText:  string;
-  /**
-   * Hidden values injected as <input type="hidden"> so server actions can
-   * read identifiers (e.g. user_id) that should not be visible in the UI.
-   */
   hiddenValues?: Record<string, string>;
   requireStepUp?: (action: () => Promise<void>) => Promise<void>;
   nuclear?: boolean;
@@ -119,7 +112,6 @@ function ActionPanel({
 
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">
-      {/* Toggle button */}
       <button
         type="button"
         onClick={() => { setOpen((o) => !o); setFeedback(null); }}
@@ -136,12 +128,10 @@ function ActionPanel({
 
       {open && (
         <form onSubmit={handleSubmit} className="px-4 py-3 bg-gray-50 border-t border-gray-200 space-y-3">
-          {/* Hidden identifiers — server actions read these via fd.get() */}
           {Object.entries(hiddenValues).map(([name, value]) => (
             <input key={name} type="hidden" name={name} value={value} />
           ))}
 
-          {/* Visible fields */}
           {fields.map((f) => (
             <div key={f.name}>
               <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
@@ -191,11 +181,120 @@ function ActionPanel({
   );
 }
 
+// ─── NotePanel ────────────────────────────────────────────────────────────────
+
+/**
+ * Dedicated "Add Private Note" panel.
+ *
+ * Separated from ActionPanel because:
+ *  - It needs a <textarea> rather than a single-line <input>
+ *  - It uses a neutral (non-destructive) submit colour
+ *  - The privacy callout needs to be prominent and persistent
+ *
+ * The note is written directly to admin_action_logs with action_type =
+ * 'private_note'. It is never surfaced to the target user.
+ */
+interface NotePanelProps {
+  action:       (fd: FormData) => Promise<void>;
+  hiddenValues: Record<string, string>;
+}
+
+function NotePanel({ action, hiddenValues }: NotePanelProps) {
+  const [open, setOpen]         = useState(false);
+  const [feedback, setFeedback] = useState<'ok' | 'err' | null>(null);
+  const [isPending, start]      = useTransition();
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const note = (fd.get('note') as string)?.trim();
+    if (!note) return;
+    start(async () => {
+      try {
+        await action(fd);
+        setFeedback('ok');
+        // Reset the textarea by closing and reopening the panel
+        setTimeout(() => { setFeedback(null); setOpen(false); }, 1500);
+      } catch {
+        setFeedback('err');
+      }
+    });
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => { setOpen((o) => !o); setFeedback(null); }}
+        className="w-full flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors bg-gray-50 hover:bg-gray-100 text-gray-700"
+      >
+        <MessageSquare size={15} />
+        Add Private Note
+        <span className="ml-auto text-xs font-normal text-gray-400 italic">
+          never visible to user
+        </span>
+      </button>
+
+      {open && (
+        <form onSubmit={handleSubmit} className="px-4 py-3 bg-gray-50 border-t border-gray-200 space-y-3">
+          {/* Privacy callout */}
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+            This note is stored in admin_action_logs and is strictly isolated from
+            the user. It will never appear in their notifications, profile, or any
+            user-facing surface.
+          </p>
+
+          {Object.entries(hiddenValues).map(([name, value]) => (
+            <input key={name} type="hidden" name={name} value={value} />
+          ))}
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Note
+            </label>
+            <textarea
+              name="note"
+              rows={4}
+              required
+              placeholder="Add internal context, observations, or follow-up reminders…"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded resize-y focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="submit"
+              disabled={isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700 hover:bg-gray-800 disabled:opacity-60 text-white text-xs font-semibold rounded transition-colors"
+            >
+              {isPending && <Loader2 size={12} className="animate-spin" />}
+              Save Note
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-semibold rounded"
+            >
+              Cancel
+            </button>
+            {feedback === 'ok' && (
+              <span className="text-xs text-green-600 flex items-center gap-1">
+                <CheckCircle size={12} /> Note saved
+              </span>
+            )}
+            {feedback === 'err' && (
+              <span className="text-xs text-red-600">Failed — try again</span>
+            )}
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
 // ─── Tab sections ─────────────────────────────────────────────────────────────
 
 function OverviewTab({ p }: { p: Tables<'profiles'> }) {
-  // suspended_until was added in migration_suspended_until.sql.
-  // Cast through unknown until database.types.ts is regenerated.
   const suspendedUntil = (p as unknown as Record<string, unknown>).suspended_until as string | null | undefined;
 
   const fields: [string, string | number | boolean | null | undefined][] = [
@@ -461,7 +560,10 @@ function SecurityTab({
   return (
     <div className="space-y-6">
       <div>
-        <h4 className="text-sm font-semibold text-gray-700 mb-3">Registered Devices ({devices.length})</h4>
+        {/* Spec: last 5 login sessions. The parent page enforces .limit(5) on the query. */}
+        <h4 className="text-sm font-semibold text-gray-700 mb-3">
+          Recent Login Sessions — last {devices.length} of 5
+        </h4>
         {devices.length === 0 ? (
           <p className="text-sm text-gray-400 italic">No devices recorded.</p>
         ) : (
@@ -502,30 +604,82 @@ function SecurityTab({
   );
 }
 
-function AdminNotesTab({ notes }: { notes: Tables<'admin_action_logs'>[] }) {
+/**
+ * AdminNotesTab
+ *
+ * Shows all admin_action_logs entries for this user, with private_note entries
+ * visually distinguished from enforcement actions. The "Add Private Note" panel
+ * lives at the top of this tab so the admin can write and review in one place.
+ */
+function AdminNotesTab({
+  notes,
+  onAddNote,
+  userId,
+}: {
+  notes:      Tables<'admin_action_logs'>[];
+  onAddNote:  (fd: FormData) => Promise<void>;
+  userId:     string;
+}) {
+  // Separate freeform notes from enforcement actions for clarity
+  const freeformNotes   = notes.filter((n) => n.action_type === 'private_note');
+  const enforcementLogs = notes.filter((n) => n.action_type !== 'private_note');
+
   return (
-    <div>
-      <h4 className="text-sm font-semibold text-gray-700 mb-3">Admin Actions ({notes.length})</h4>
-      {notes.length === 0 ? (
-        <p className="text-sm text-gray-400 italic">No admin actions recorded for this user.</p>
-      ) : (
-        <ul className="space-y-2">
-          {notes.map((n) => (
-            <li key={n.id} className="p-3 bg-gray-50 rounded text-sm space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-xs font-semibold uppercase text-gray-800">
-                  {n.action_type.replace(/_/g, ' ')}
-                </span>
-                {n.is_reversed && (
-                  <Badge variant="outline" className="text-xs">Reversed</Badge>
-                )}
-              </div>
-              {n.reason && <p className="text-gray-600 text-xs">{n.reason}</p>}
-              <p className="text-gray-400 text-xs">{dt(n.created_at)}</p>
-            </li>
-          ))}
-        </ul>
-      )}
+    <div className="space-y-6">
+      {/* ── Add note panel ────────────────────────────────────────────────── */}
+      <NotePanel action={onAddNote} hiddenValues={{ user_id: userId }} />
+
+      {/* ── Private notes ─────────────────────────────────────────────────── */}
+      <div>
+        <h4 className="text-sm font-semibold text-gray-700 mb-3">
+          Private Notes ({freeformNotes.length})
+        </h4>
+        {freeformNotes.length === 0 ? (
+          <p className="text-sm text-gray-400 italic">No private notes yet.</p>
+        ) : (
+          <ul className="space-y-2">
+            {freeformNotes.map((n) => (
+              <li key={n.id} className="p-3 bg-amber-50 border border-amber-100 rounded text-sm space-y-1">
+                <div className="flex items-center gap-2">
+                  <MessageSquare size={12} className="text-amber-500 shrink-0" />
+                  <span className="text-xs font-semibold text-amber-700 uppercase tracking-wide">
+                    Private Note
+                  </span>
+                  <span className="ml-auto text-xs text-gray-400">{dt(n.created_at)}</span>
+                </div>
+                <p className="text-gray-700 text-sm whitespace-pre-wrap">{n.reason}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* ── Enforcement actions ───────────────────────────────────────────── */}
+      <div>
+        <h4 className="text-sm font-semibold text-gray-700 mb-3">
+          Enforcement Actions ({enforcementLogs.length})
+        </h4>
+        {enforcementLogs.length === 0 ? (
+          <p className="text-sm text-gray-400 italic">No admin actions recorded for this user.</p>
+        ) : (
+          <ul className="space-y-2">
+            {enforcementLogs.map((n) => (
+              <li key={n.id} className="p-3 bg-gray-50 rounded text-sm space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs font-semibold uppercase text-gray-800">
+                    {n.action_type.replace(/_/g, ' ')}
+                  </span>
+                  {n.is_reversed && (
+                    <Badge variant="outline" className="text-xs">Reversed</Badge>
+                  )}
+                </div>
+                {n.reason && <p className="text-gray-600 text-xs">{n.reason}</p>}
+                <p className="text-gray-400 text-xs">{dt(n.created_at)}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -548,6 +702,7 @@ export function UserProfileTabs({
   onBan,
   onFreeze,
   onOverrideTrust,
+  onAddNote,
 }: UserProfileTabsProps) {
   const [active, setActive] = useState<Tab>('Overview');
   const { requireStepUp, StepUpModal } = useStepUpAuth();
@@ -687,7 +842,13 @@ export function UserProfileTabs({
           {active === 'Financials'      && <FinancialsTab wallet={wallet} withdrawals={withdrawals} />}
           {active === 'Flags & History' && <FlagsTab      securityLogs={securityLogs} trustEvents={trustEvents} />}
           {active === 'Security'        && <SecurityTab   devices={devices} auditLogs={auditLogs} />}
-          {active === 'Admin Notes'     && <AdminNotesTab notes={adminNotes} />}
+          {active === 'Admin Notes'     && (
+            <AdminNotesTab
+              notes={adminNotes}
+              onAddNote={onAddNote}
+              userId={userId}
+            />
+          )}
         </div>
       </Card>
     </div>

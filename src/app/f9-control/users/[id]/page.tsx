@@ -82,8 +82,6 @@ async function warnUser(fd: FormData) {
   if (!admin) return;
 
   // ── Unblockable guard ────────────────────────────────────────────────────
-  // Admin accounts should not receive warnings — they are F9 platform
-  // identities, not subject to moderation actions.
   if (await isTargetAdmin(supabase, userId)) return;
 
   await supabase.from('notifications').insert({
@@ -107,8 +105,6 @@ async function suspendUser(fd: FormData) {
   'use server';
   const userId      = fd.get('user_id') as string;
   const reason      = fd.get('reason') as string;
-  // duration_days === 0 means "indefinite" — only admins may do this.
-  // The <ActionPanel> should default to 7, making 0 an explicit admin choice.
   const durationDays = Number(fd.get('duration_days') ?? 7);
 
   const supabase = await createClient();
@@ -116,16 +112,11 @@ async function suspendUser(fd: FormData) {
   if (!admin) return;
 
   // ── Unblockable guard ────────────────────────────────────────────────────
-  // Admin profiles cannot be suspended. This is enforced here (early exit)
-  // and at the DB level via the `guard_admin_account_status` trigger, which
-  // raises an exception if the UPDATE is attempted through any other path.
   if (await isTargetAdmin(supabase, userId)) return;
 
   const isAdmin = await isActingUserAdmin(supabase, admin.id);
   const { suspendedUntil, effectiveDays } = computeSuspension(durationDays, isAdmin);
 
-  // If a moderator tried to submit 0 (indefinite), effectiveDays will be MAX.
-  // Build a clear audit note so we can see if a cap was applied.
   const wasCapApplied = !isAdmin && durationDays !== effectiveDays;
   const durationNote = effectiveDays === null
     ? 'indefinite'
@@ -134,7 +125,7 @@ async function suspendUser(fd: FormData) {
   await supabase.from('profiles').update({
     account_status:    'suspended',
     suspension_reason: reason,
-    suspended_until:   suspendedUntil,  // null = indefinite (admin only)
+    suspended_until:   suspendedUntil,
   }).eq('id', userId);
 
   await supabase.from('notifications').insert({
@@ -165,14 +156,12 @@ async function banUser(fd: FormData) {
   if (!admin) return;
 
   // ── Unblockable guard ────────────────────────────────────────────────────
-  // Admin profiles cannot be banned. Backed by DB trigger as second line
-  // of defence (`guard_admin_account_status` on profiles BEFORE UPDATE).
   if (await isTargetAdmin(supabase, userId)) return;
 
   await supabase.from('profiles').update({
     account_status:    'banned',
     suspension_reason: reason,
-    suspended_until:   null, // bans are always permanent — clear any prior timed suspension
+    suspended_until:   null,
   }).eq('id', userId);
 
   await supabase.from('notifications').insert({
@@ -194,8 +183,6 @@ async function banUser(fd: FormData) {
 
 async function freezeWallet(fd: FormData) {
   'use server';
-  // wallets has no `status` column — wallet freeze is enacted via
-  // profiles.account_status = 'suspended' + a critical security_log entry.
   const userId = fd.get('user_id') as string;
   const reason = fd.get('reason') as string;
   const supabase = await createClient();
@@ -203,14 +190,12 @@ async function freezeWallet(fd: FormData) {
   if (!admin) return;
 
   // ── Unblockable guard ────────────────────────────────────────────────────
-  // Admin profiles cannot be wallet-frozen. The F9 platform account does not
-  // have a user-facing wallet that requires freezing. Backed by DB trigger.
   if (await isTargetAdmin(supabase, userId)) return;
 
   await supabase.from('profiles').update({
     account_status:    'suspended',
     suspension_reason: `Wallet frozen: ${reason}`,
-    suspended_until:   null, // wallet freezes held until manually reviewed
+    suspended_until:   null,
   }).eq('id', userId);
 
   await supabase.from('security_logs').insert({
@@ -249,12 +234,8 @@ async function overrideTrustScore(fd: FormData) {
   if (!admin) return;
 
   // ── Unblockable guard ────────────────────────────────────────────────────
-  // Admin trust scores are not user-facing and must not be manipulated
-  // via this panel. This prevents accidental or malicious score events on
-  // the platform identity account.
   if (await isTargetAdmin(supabase, userId)) return;
 
-  // add_trust_score_event RPC — 6 params verified against Functions schema
   await supabase.rpc('add_trust_score_event', {
     p_user_id:      userId,
     p_event_type:   'admin_override',
@@ -267,6 +248,40 @@ async function overrideTrustScore(fd: FormData) {
     target_user_id: userId,
     action_type:    'override_trust_score',
     reason:         `${scoreChange >= 0 ? '+' : ''}${scoreChange} — ${reason}`,
+  });
+
+  revalidatePath(`/f9-control/users/${userId}`);
+}
+
+/**
+ * Appends a freeform private note to admin_action_logs.
+ *
+ * Notes are stored with action_type = 'private_note' and are:
+ *  - Never surfaced to the target user (admin_action_logs RLS is admin-only)
+ *  - Never sent as a notification (no notification insert)
+ *  - Visible only in the Admin Notes tab of this profile view
+ *
+ * There is no unblockable guard here — admins may annotate any profile,
+ * including other admin accounts, for internal record-keeping purposes.
+ */
+async function addPrivateNote(fd: FormData) {
+  'use server';
+  const userId = fd.get('user_id') as string;
+  const note   = (fd.get('note') as string)?.trim();
+  if (!note) return;
+
+  const supabase = await createClient();
+  const { data: { user: admin } } = await supabase.auth.getUser();
+  if (!admin) return;
+
+  await supabase.from('admin_action_logs').insert({
+    admin_id:       admin.id,
+    target_user_id: userId,
+    action_type:    'private_note',
+    reason:         note,
+    // Private notes are informational — mark non-reversible so the
+    // "Reversed" badge never appears on them in the Admin Notes tab.
+    reversible_until: null,
   });
 
   revalidatePath(`/f9-control/users/${userId}`);
@@ -336,11 +351,13 @@ export default async function AdminUserProfilePage({
     .limit(30);
 
   // ── Security ───────────────────────────────────────────────────────────────
+  // Spec: show the last 5 login sessions (IP / device) only.
   const { data: devices } = await supabase
     .from('user_devices')
     .select('*')
     .eq('user_id', id)
-    .order('last_seen_at', { ascending: false });
+    .order('last_seen_at', { ascending: false })
+    .limit(5);
 
   const { data: auditLogs } = await supabase
     .from('audit_logs')
@@ -384,6 +401,7 @@ export default async function AdminUserProfilePage({
         onBan={banUser}
         onFreeze={freezeWallet}
         onOverrideTrust={overrideTrustScore}
+        onAddNote={addPrivateNote}
       />
     </div>
   );

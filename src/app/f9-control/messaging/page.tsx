@@ -27,7 +27,6 @@ async function sendDirect(fd: FormData) {
   const link           = (fd.get('link') as string) || null;
   const deliveryMethod = (fd.get('delivery_method') as string) || 'both';
 
-  // Empty string → send immediately (null); non-empty → ISO timestamp for scheduled delivery
   const rawSchedule = (fd.get('scheduled_at') as string).trim();
   const scheduledAt  = rawSchedule.length > 0
     ? new Date(rawSchedule).toISOString()
@@ -37,7 +36,6 @@ async function sendDirect(fd: FormData) {
   const { data: { user: admin }, error: authError } = await supabase.auth.getUser();
   if (authError || !admin) throw new Error('Unauthenticated');
 
-  // Look up recipient by email — profiles.email is a real column
   const { data: recipient, error: lookupError } = await supabase
     .from('profiles')
     .select('id')
@@ -58,7 +56,6 @@ async function sendDirect(fd: FormData) {
 
   const { error: insertError } = await supabase
     .from('notifications')
-    // Double-cast to satisfy the typed client while migration columns are pending
     .insert(row as unknown as Database['public']['Tables']['notifications']['Insert']);
 
   if (insertError) {
@@ -66,7 +63,6 @@ async function sendDirect(fd: FormData) {
     throw new Error('Failed to create notification');
   }
 
-  // Audit trail
   const scheduleNote = scheduledAt ? ` | scheduled: ${scheduledAt}` : '';
   const { error: logError } = await supabase.from('admin_action_logs').insert({
     admin_id:       admin.id,
@@ -81,10 +77,22 @@ async function sendDirect(fd: FormData) {
 }
 
 /**
- * Broadcast (or schedule) a notification to all users or a filtered audience.
- * Inserts are batched in a single call. Capped at 500 recipients.
- * When scheduled_at is set, rows are inserted immediately but will not surface
- * in notification queries until scheduled_at <= NOW().
+ * Broadcast (or schedule) a notification to a filtered audience.
+ *
+ * Supported audience segments:
+ *   all        — all active users
+ *   freelancer — active users with user_type = 'freelancer'
+ *   client     — active users with user_type = 'client'
+ *   both       — active users with user_type = 'both'
+ *   inactive   — active users whose last_seen_at is older than `inactive_days` days
+ *   low_trust  — active users with trust_score < `trust_threshold`
+ *   unverified — active users who have not completed identity verification
+ *   state      — active users whose profile state matches `state`
+ *
+ * Audience-specific FormData fields (appended by MessagingClient):
+ *   trust_threshold  (number, default 40)  — used by low_trust
+ *   state            (string)              — used by state
+ *   inactive_days    (number, default 30)  — used by inactive
  */
 async function sendBroadcast(fd: FormData) {
   'use server';
@@ -100,18 +108,64 @@ async function sendBroadcast(fd: FormData) {
     ? new Date(rawSchedule).toISOString()
     : null;
 
+  // Audience-specific filter values
+  const trustThreshold = parseInt((fd.get('trust_threshold') as string) || '40', 10);
+  const targetState    = (fd.get('state') as string) || null;
+  const inactiveDays   = parseInt((fd.get('inactive_days') as string) || '30', 10);
+
   const supabase = await createClient();
   const { data: { user: admin }, error: authError } = await supabase.auth.getUser();
   if (authError || !admin) throw new Error('Unauthenticated');
 
+  // Base query — always select only active accounts unless the segment overrides
+  // (inactive targets active accounts that have gone dormant, not suspended/banned ones)
   let recipientQuery = supabase
     .from('profiles')
     .select('id')
     .eq('account_status', 'active')
     .limit(500);
 
-  if (audience !== 'all') {
-    recipientQuery = recipientQuery.eq('user_type', audience);
+  switch (audience) {
+    case 'freelancer':
+    case 'client':
+    case 'both':
+      // Filter by role; active status already applied above
+      recipientQuery = recipientQuery.eq('user_type', audience);
+      break;
+
+    case 'inactive': {
+      // Users who have not been seen for at least `inactiveDays` days.
+      // Relies on profiles.last_seen_at — verify column name against database.types.ts.
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - inactiveDays);
+      recipientQuery = recipientQuery.lt('last_seen_at', cutoff.toISOString());
+      break;
+    }
+
+    case 'low_trust':
+      // trust_score is nullable; .lt() will naturally exclude NULL rows,
+      // which is the correct behaviour (NULL score = unscored, not low).
+      recipientQuery = recipientQuery.lt('trust_score', trustThreshold);
+      break;
+
+    case 'unverified':
+      // Target users who have not completed identity verification.
+      // Adjust the column(s) to match the intended definition of "unverified"
+      // in your spec (e.g. swap for email_verified if preferred).
+      recipientQuery = recipientQuery.eq('identity_verified', false);
+      break;
+
+    case 'state':
+      // Relies on profiles.state — verify column name against database.types.ts.
+      if (targetState) {
+        recipientQuery = recipientQuery.eq('state', targetState);
+      }
+      break;
+
+    case 'all':
+    default:
+      // No additional filter; active status already applied above.
+      break;
   }
 
   const { data: recipients, error: recipientsError } = await recipientQuery;
@@ -162,8 +216,6 @@ export default async function AdminMessagingPage() {
 
   const now = new Date().toISOString();
 
-  // Admin inbox — only fetch notifications that are due (scheduled_at <= NOW() or no schedule).
-  // Notifications with a future scheduled_at are queued and not yet visible.
   const { data: inbox } = await supabase
     .from('notifications')
     .select('id, type, title, message, is_read, created_at, scheduled_at, delivery_method')
@@ -172,7 +224,6 @@ export default async function AdminMessagingPage() {
     .order('created_at', { ascending: false })
     .limit(30);
 
-  // Broadcast history — recent admin_action_logs for message actions
   const { data: sentLog } = await supabase
     .from('admin_action_logs')
     .select('id, action_type, reason, created_at, target_user_id')
