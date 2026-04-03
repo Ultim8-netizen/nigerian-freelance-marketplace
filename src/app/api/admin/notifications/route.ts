@@ -5,17 +5,34 @@
 //   contest_tickets (pending) — admin RLS covers this, but going through
 //     the API route keeps the component's data-fetching uniform and avoids
 //     a second Supabase client init in the browser for this purpose.
-//   security_logs (critical/high severity) — no admin RLS policy exists;
+//   security_logs (critical events) — no admin RLS policy exists;
 //     service role is the only read path for cross-user rows.
 //
 // "Critical" window: last 24 hours. Older events are considered acknowledged
 // at the infrastructure level. This prevents the bell from permanently
 // lighting due to historical data.
+//
+// Notification bell triggers ONLY on the three specified critical event types:
+//   • wallet_freeze            — funds locked on a user account
+//   • shared_device_fingerprint — same device detected across multiple accounts
+//   • (contest tickets handled separately via contest_tickets table)
+//
+// Broad severity filters (e.g. 'critical', 'high') are intentionally avoided
+// because they would also match unrelated automation events such as
+// prohibited_keyword or high_value_new_account, which are not actionable
+// bell signals per spec.
 
 import { NextResponse }      from 'next/server';
 import { createClient }      from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { logger }            from '@/lib/logger';
+
+// The exact event_type values that qualify as bell-worthy security signals.
+// Extend this list only when the spec explicitly adds a new trigger event.
+const CRITICAL_SECURITY_EVENT_TYPES = [
+  'wallet_freeze',
+  'shared_device_fingerprint',
+] as const;
 
 export async function GET() {
   try {
@@ -42,13 +59,13 @@ export async function GET() {
     const since       = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
     const [securityResult, contestResult] = await Promise.all([
-      // Critical and high-severity security events in the last 24 hours.
-      // Both severities are included because platform automation writes
-      // actionable flags (e.g. shared_device_fingerprint) as 'high'.
+      // Only the two specified critical event types within the last 24 hours.
+      // Filtering by event_type (not severity) ensures the bell is not
+      // triggered by unrelated high/critical automation events.
       adminClient
         .from('security_logs')
         .select('id', { count: 'exact', head: true })
-        .in('severity', ['critical', 'high'])
+        .in('event_type', CRITICAL_SECURITY_EVENT_TYPES)
         .gte('created_at', since),
 
       // All pending contest tickets (no time bound — every unreviewed

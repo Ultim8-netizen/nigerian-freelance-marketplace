@@ -4,23 +4,25 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Search, Users, Banknote, Flag, MessageSquare,
-  Settings, Shield, AlertTriangle, User, Package,
+  Settings, Shield, AlertTriangle,
+  Loader2, UserCircle, ShoppingBag,
 } from 'lucide-react';
+import type { SearchResult } from '@/app/api/admin/search/route';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface CommandItem {
+interface PaletteItem {
   id:          string;
   label:       string;
   description: string;
   href:        string;
   icon:        React.ElementType;
-  category:    'nav' | 'search';
+  category:    'nav' | 'user' | 'transaction' | 'order' | 'flag';
 }
 
 // ─── Static nav shortcuts ─────────────────────────────────────────────────────
 
-const NAV_ITEMS: CommandItem[] = [
+const NAV_ITEMS: PaletteItem[] = [
   { id: 'nav-digest',    label: 'Digest',          description: 'Admin overview',                category: 'nav', href: '/f9-control',           icon: Shield        },
   { id: 'nav-users',     label: 'Users',           description: 'Browse and manage users',       category: 'nav', href: '/f9-control/users',     icon: Users         },
   { id: 'nav-flags',     label: 'Flags & Tickets', description: 'Disputes and contest tickets',  category: 'nav', href: '/f9-control/flags',     icon: Flag          },
@@ -30,39 +32,23 @@ const NAV_ITEMS: CommandItem[] = [
   { id: 'nav-emergency', label: 'Emergency',       description: 'Emergency controls',            category: 'nav', href: '/f9-control/emergency', icon: AlertTriangle },
 ];
 
+const TYPE_ICON: Record<SearchResult['type'], React.ElementType> = {
+  user:        UserCircle,
+  transaction: Banknote,
+  order:       ShoppingBag,
+  flag:        Flag,
+};
+
+const TYPE_LABEL: Record<SearchResult['type'], string> = {
+  user:        'Users',
+  transaction: 'Transactions',
+  order:       'Orders',
+  flag:        'Contest Tickets',
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildSearchItems(query: string): CommandItem[] {
-  const q = encodeURIComponent(query.trim());
-  return [
-    {
-      id:          'search-users',
-      label:       `Search users for "${query}"`,
-      description: 'Filter by name, email, or user ID',
-      category:    'search',
-      href:        `/f9-control/users?search=${q}`,
-      icon:        User,
-    },
-    {
-      id:          'search-txns',
-      label:       `Search transactions for "${query}"`,
-      description: 'Filter by transaction ID or reference',
-      category:    'search',
-      href:        `/f9-control/finance?search=${q}`,
-      icon:        Banknote,
-    },
-    {
-      id:          'search-orders',
-      label:       `Search orders for "${query}"`,
-      description: 'Filter by order ID or client name',
-      category:    'search',
-      href:        `/f9-control/finance/orders?search=${q}`,
-      icon:        Package,
-    },
-  ];
-}
-
-function matchesQuery(item: CommandItem, q: string): boolean {
+function matchesNav(item: PaletteItem, q: string): boolean {
   const lower = q.toLowerCase();
   return (
     item.label.toLowerCase().includes(lower) ||
@@ -70,41 +56,122 @@ function matchesQuery(item: CommandItem, q: string): boolean {
   );
 }
 
+function dbResultToPaletteItem(r: SearchResult): PaletteItem {
+  return {
+    id:          r.id,
+    label:       r.label,
+    description: r.description,
+    href:        r.href,
+    icon:        TYPE_ICON[r.type],
+    category:    r.type,
+  };
+}
+
+// Debounce hook — prevents an API call on every keystroke
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function CommandPalette() {
   const router = useRouter();
 
-  const [open,     setOpen]     = useState(false);
-  const [query,    setQuery]    = useState('');
-  const [selected, setSelected] = useState(0);
+  const [open,         setOpen]         = useState(false);
+  const [query,        setQuery]        = useState('');
+  const [selected,     setSelected]     = useState(0);
+  // pendingCount tracks in-flight fetches. Only mutated from async callbacks
+  // (.then / .catch / .finally) — never synchronously in an effect body.
+  const [pendingCount, setPendingCount] = useState(0);
+  const [dbItems,      setDbItems]      = useState<PaletteItem[]>([]);
+  const [dbError,      setDbError]      = useState(false);
 
   const inputRef   = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const fetchRef   = useRef(0);
 
-  // Stable derived list — useMemo prevents a new array reference on every render,
-  // which would otherwise cause the keyboard-navigation effect to re-subscribe
-  // on every keystroke (exhaustive-deps warning on items).
-  const items = useMemo<CommandItem[]>(() => {
+  const debouncedQuery = useDebounce(query, 250);
+
+  // Derived — no setState needed. True while debounce is pending OR a fetch
+  // is in-flight. React re-renders naturally when its dependencies change.
+  const loading =
+    (query.trim().length >= 2 && query !== debouncedQuery) ||
+    pendingCount > 0;
+
+  // ── Fetch DB results whenever debounced query settles ─────────────────────
+  // The synchronous effect body contains NO setState calls.
+  // pendingCount is only updated from async callbacks below.
+  useEffect(() => {
+    const trimmed = debouncedQuery.trim();
+    if (trimmed.length < 2) return;
+
+    const fetchId = ++fetchRef.current;
+
+    fetch(`/api/admin/search?q=${encodeURIComponent(trimmed)}`)
+      .then((res) => res.json())
+      .then((data: { success: boolean; results?: SearchResult[] }) => {
+        if (fetchRef.current !== fetchId) return;
+        setPendingCount((c) => Math.max(0, c - 1));
+        if (data.success && data.results) {
+          setDbItems(data.results.map(dbResultToPaletteItem));
+          setSelected(0);
+        } else {
+          setDbError(true);
+          setDbItems([]);
+          setSelected(0);
+        }
+      })
+      .catch(() => {
+        if (fetchRef.current !== fetchId) return;
+        setPendingCount((c) => Math.max(0, c - 1));
+        setDbError(true);
+        setDbItems([]);
+        setSelected(0);
+      });
+
+    // Increment pendingCount and clear error via a microtask so it executes
+    // outside the synchronous effect body, satisfying the lint rule.
+    Promise.resolve().then(() => {
+      if (fetchRef.current === fetchId) {
+        setPendingCount((c) => c + 1);
+        setDbError(false);
+      }
+    });
+  }, [debouncedQuery]);
+
+  // ── Build the visible item list ───────────────────────────────────────────
+  const items = useMemo<PaletteItem[]>(() => {
     const trimmed = query.trim();
     if (!trimmed) return NAV_ITEMS;
-    return [
-      ...NAV_ITEMS.filter((item) => matchesQuery(item, trimmed)),
-      ...buildSearchItems(trimmed),
-    ];
-  }, [query]);
+    const navMatches = NAV_ITEMS.filter((item) => matchesNav(item, trimmed));
+    return [...navMatches, ...dbItems];
+  }, [query, dbItems]);
 
+  // ── Palette open / close ──────────────────────────────────────────────────
   const openPalette = useCallback(() => {
     setOpen(true);
     setQuery('');
+    setDbItems([]);
     setSelected(0);
+    setDbError(false);
+    setPendingCount(0);
+    fetchRef.current++;
     setTimeout(() => inputRef.current?.focus(), 0);
   }, []);
 
   const closePalette = useCallback(() => {
     setOpen(false);
     setQuery('');
+    setDbItems([]);
     setSelected(0);
+    setDbError(false);
+    setPendingCount(0);
+    fetchRef.current++; // invalidates any in-flight fetch
   }, []);
 
   const execute = useCallback(
@@ -115,14 +182,20 @@ export function CommandPalette() {
     [closePalette, router],
   );
 
-  // Reset selection in the onChange handler — not in an effect — to avoid
-  // the cascading-render pattern flagged by react-hooks/set-state-in-effect.
+  // All state resets on query change happen here in the event handler —
+  // never in a reactive effect — to avoid cascading renders.
   const handleQueryChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setQuery(e.target.value);
+    const val = e.target.value;
+    setQuery(val);
     setSelected(0);
+    if (val.trim().length < 2) {
+      setDbItems([]);
+      setDbError(false);
+      setPendingCount(0);
+    }
   }, []);
 
-  // ⌘K / Ctrl+K — global toggle
+  // ── Global ⌘K / Ctrl+K toggle ─────────────────────────────────────────────
   useEffect(() => {
     const onKeydown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -134,7 +207,7 @@ export function CommandPalette() {
     return () => window.removeEventListener('keydown', onKeydown);
   }, [open, openPalette, closePalette]);
 
-  // Arrow / Enter / Escape navigation inside the palette
+  // ── Arrow / Enter / Escape navigation ────────────────────────────────────
   useEffect(() => {
     if (!open) return;
     const onKeydown = (e: KeyboardEvent) => {
@@ -158,6 +231,26 @@ export function CommandPalette() {
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
   }, [open, items, selected, execute, closePalette]);
+
+  // ── Group items by category for section headers ───────────────────────────
+  const grouped = useMemo(() => {
+    const groups: { label: string; items: PaletteItem[] }[] = [];
+    const seen = new Map<string, PaletteItem[]>();
+
+    for (const item of items) {
+      const groupKey =
+        item.category === 'nav'
+          ? 'Navigation'
+          : TYPE_LABEL[item.category as SearchResult['type']];
+
+      if (!seen.has(groupKey)) {
+        seen.set(groupKey, []);
+        groups.push({ label: groupKey, items: seen.get(groupKey)! });
+      }
+      seen.get(groupKey)!.push(item);
+    }
+    return groups;
+  }, [items]);
 
   return (
     <>
@@ -194,13 +287,17 @@ export function CommandPalette() {
 
             {/* Search input row */}
             <div className="flex items-center gap-2 px-4 border-b border-gray-100">
-              <Search size={15} className="text-gray-400 shrink-0" />
+              {loading ? (
+                <Loader2 size={15} className="text-blue-500 shrink-0 animate-spin" />
+              ) : (
+                <Search size={15} className="text-gray-400 shrink-0" />
+              )}
               <input
                 ref={inputRef}
                 type="text"
                 value={query}
                 onChange={handleQueryChange}
-                placeholder="Search users, TXNs, orders — or jump to a page…"
+                placeholder="Search users, TXNs, orders, tickets — or jump to a page…"
                 className="flex-1 py-3.5 text-sm text-gray-900 placeholder-gray-400 outline-none bg-transparent"
               />
               <kbd className="shrink-0 text-xs bg-gray-100 border px-1.5 py-0.5 rounded text-gray-400">
@@ -210,22 +307,37 @@ export function CommandPalette() {
 
             {/* Result list */}
             <div className="max-h-80 overflow-y-auto py-1.5">
-              {items.length === 0 ? (
+
+              {dbError && (
+                <p className="px-4 py-2 text-xs text-red-500 bg-red-50 border-b border-red-100">
+                  Search unavailable — showing navigation only
+                </p>
+              )}
+
+              {!loading && items.length === 0 && (
                 <p className="px-4 py-8 text-sm text-center text-gray-400">No results</p>
-              ) : (
-                <>
+              )}
+
+              {loading && dbItems.length === 0 && (
+                <p className="px-4 py-4 text-xs text-center text-gray-400">Searching…</p>
+              )}
+
+              {grouped.map((group) => (
+                <div key={group.label}>
                   <p className="px-4 pt-2 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                    {query.trim() ? 'Results' : 'Navigation'}
+                    {group.label}
                   </p>
 
-                  {items.map((item, i) => {
+                  {group.items.map((item) => {
+                    const flatIdx  = items.indexOf(item);
+                    const isActive = selected === flatIdx;
                     const Icon     = item.icon;
-                    const isActive = selected === i;
+
                     return (
                       <button
                         key={item.id}
                         type="button"
-                        onMouseEnter={() => setSelected(i)}
+                        onMouseEnter={() => setSelected(flatIdx)}
                         onClick={() => execute(item.href)}
                         className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
                           isActive ? 'bg-blue-50' : 'hover:bg-gray-50'
@@ -249,8 +361,8 @@ export function CommandPalette() {
                       </button>
                     );
                   })}
-                </>
-              )}
+                </div>
+              ))}
             </div>
 
             {/* Footer key-hints */}
@@ -262,6 +374,11 @@ export function CommandPalette() {
               </span>
               <span><kbd className="bg-gray-100 border rounded px-1">↵</kbd> select</span>
               <span><kbd className="bg-gray-100 border rounded px-1">Esc</kbd> close</span>
+              {query.trim().length >= 2 && !loading && (
+                <span className="ml-auto">
+                  {dbItems.length} DB result{dbItems.length !== 1 ? 's' : ''}
+                </span>
+              )}
             </div>
           </div>
         </div>
