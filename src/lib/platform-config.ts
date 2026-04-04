@@ -25,6 +25,12 @@ export const CONFIG_KEYS = {
   POSTING_SUSPENSION_HOURS:           'posting_suspension_hours',
   HIGH_VALUE_LISTING_THRESHOLD:       'high_value_listing_threshold',
   NEW_ACCOUNT_HOLD_DAYS:              'new_account_hold_days',
+  /**
+   * ₦ amount above which withdrawals are automatically held for manual
+   * admin review. 0 = disabled (no threshold gate).
+   * Set via the admin finance panel → Withdrawal Gate banner.
+   */
+  WITHDRAWAL_GATE_THRESHOLD:          'withdrawal_gate_threshold',
 } as const;
 
 export type ConfigKey = typeof CONFIG_KEYS[keyof typeof CONFIG_KEYS];
@@ -44,6 +50,7 @@ const DEFAULTS: Record<ConfigKey, number> = {
   [CONFIG_KEYS.POSTING_SUSPENSION_HOURS]:         72,
   [CONFIG_KEYS.HIGH_VALUE_LISTING_THRESHOLD]:     100000,
   [CONFIG_KEYS.NEW_ACCOUNT_HOLD_DAYS]:            7,
+  [CONFIG_KEYS.WITHDRAWAL_GATE_THRESHOLD]:        0,   // 0 = gate disabled
 };
 
 /**

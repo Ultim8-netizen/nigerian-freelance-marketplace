@@ -1,3 +1,6 @@
+// PLACE AT: src/app/maintenance/page.tsx
+// DELETE:   src/app/maintainance/page.tsx  (typo — was causing 404 redirect loop)
+
 import { createClient } from '@/lib/supabase/server';
 import { Shield } from 'lucide-react';
 
@@ -36,9 +39,6 @@ export default async function MaintenancePage({
 }) {
   const reason = searchParams?.reason ?? null;
 
-  // If a specific feature is disabled, use its message.
-  // Otherwise fall back to the admin-configured custom message from platform_config,
-  // then to the hardcoded default.
   let heading = DEFAULT_MESSAGE.heading;
   let body    = DEFAULT_MESSAGE.body;
 
@@ -46,16 +46,15 @@ export default async function MaintenancePage({
     heading = REASON_MESSAGES[reason].heading;
     body    = REASON_MESSAGES[reason].body;
   } else {
-    // Full maintenance mode — try to read the admin's custom message.
-    // This query runs on the server so it's safe even if the client app is
-    // blocked.  If the DB itself is down, the catch block uses the hardcoded
-    // default so the page always renders.
+    // Full maintenance mode — read the admin's custom message from
+    // platform_config[maintenance_mode].string_value (written by the emergency
+    // toggle server action). Falls back to hardcoded default if DB is down.
     try {
       const supabase = await createClient();
       const { data } = await supabase
         .from('platform_config')
         .select('string_value')
-        .eq('key', 'maintenance_message')
+        .eq('key', 'maintenance_mode')
         .single();
 
       if (data?.string_value) {

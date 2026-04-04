@@ -5,10 +5,18 @@
 // FIX #5: maintenance_mode platform_config flag is now read and enforced here.
 // FIX #6: registrations_enabled, marketplace_enabled, new_orders_enabled,
 //         new_proposals_enabled flags are now read and enforced here.
+// ADDED: Server-side 2-hour inactivity timeout for admin routes via sliding-window
+//        HttpOnly cookie (f9_admin_activity).  The check is inlined into the admin
+//        protection block so it shares the same NextResponse as the Supabase session
+//        refresh — using a separate function would drop those cookies.
 
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import type { SerializeOptions } from 'cookie';
+import {
+  ADMIN_ACTIVITY_COOKIE,
+  adminCookieOptions,
+} from '@/lib/admin/session';
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -44,6 +52,13 @@ export async function middleware(request: NextRequest) {
 
   // ============================================================================
   // SESSION REFRESH (shared client for all subsequent checks)
+  //
+  // IMPORTANT: Every early-return path that passes the admin check MUST use
+  // this shared `response` object so that Supabase session refresh cookies
+  // (written via the set/remove callbacks below) are preserved on the response.
+  // Creating a separate NextResponse inside a sub-function would silently drop
+  // those cookies — that is why the activity cookie check is inlined here rather
+  // than delegated to session-guard.ts.
   // ============================================================================
   const response = NextResponse.next({ request: { headers: request.headers } });
 
@@ -201,17 +216,43 @@ export async function middleware(request: NextRequest) {
   }
 
   // ============================================================================
-  // ADMIN ROUTE PROTECTION (SESSION + ROLE CHECK)
+  // ADMIN ROUTE PROTECTION (SESSION + ROLE CHECK + INACTIVITY TIMEOUT)
   // A DB query is intentional — role must be verified server-side on every
   // request to reflect real-time profile changes.
+  //
+  // Three-stage check for every /f9-control/** route except the login page:
+  //
+  //   Stage 1 — Supabase session present?
+  //             No  → redirect to login (not authenticated at all)
+  //
+  //   Stage 2 — profiles.user_type === 'admin'?
+  //             No  → redirect to /dashboard (authenticated but not admin)
+  //
+  //   Stage 3 — f9_admin_activity cookie present?
+  //             No  → redirect to login?reason=timeout (2-hour inactivity lapse)
+  //             Yes → refresh the cookie (sliding window) on the shared `response`
+  //
+  // Stage 3 is inlined here (not delegated to session-guard.ts) because the
+  // cookie must be written onto `response` — the same object that already holds
+  // Supabase session refresh cookies from the createServerClient callbacks above.
+  // A separate NextResponse.next() call inside a helper would silently discard
+  // those cookies.
+  //
+  // Cookie birth: POST /api/admin/session/refresh is called by the login page
+  // immediately after successful MFA verification, before router.push('/f9-control').
+  // That endpoint verifies the admin role and stamps the initial cookie.
+  // Subsequent navigations are refreshed here; idle-reading sessions are kept
+  // alive by AdminSessionGuard's periodic pings to the same endpoint.
   // ============================================================================
   const isAdminPath = pathname.startsWith('/f9-control');
 
   if (isAdminPath && pathname !== '/f9-control/login') {
+    // Stage 1: Supabase session
     if (!session) {
       return NextResponse.redirect(new URL('/f9-control/login', request.url));
     }
 
+    // Stage 2: Admin role
     const { data: profile } = await supabase
       .from('profiles')
       .select('user_type')
@@ -221,6 +262,28 @@ export async function middleware(request: NextRequest) {
     if (profile?.user_type !== 'admin') {
       return NextResponse.redirect(new URL('/dashboard', request.url));
     }
+
+    // Stage 3: Inactivity timeout via sliding-window cookie
+    const activityCookie = request.cookies.get(ADMIN_ACTIVITY_COOKIE);
+
+    if (!activityCookie?.value) {
+      // Cookie absent — either never set (should not happen after the login
+      // page fix) or expired after 2 hours of zero navigation + zero pings.
+      const loginUrl = new URL('/f9-control/login', request.url);
+      loginUrl.searchParams.set('reason', 'timeout');
+      return NextResponse.redirect(loginUrl);
+    }
+
+    // Cookie present — refresh the sliding window.
+    // Written onto `response` (the shared object) so Supabase session cookies
+    // set in the callbacks above are carried on the same response.
+    response.cookies.set(
+      ADMIN_ACTIVITY_COOKIE,
+      Date.now().toString(),
+      adminCookieOptions(),
+    );
+
+    // Falls through to `return response` at the bottom.
   }
 
   // ============================================================================

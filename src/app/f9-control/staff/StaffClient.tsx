@@ -6,8 +6,9 @@ import { Badge } from '@/components/ui/badge';
 import {
   Loader2, CheckCircle, Users, UserPlus, ScrollText,
   ShieldCheck, SlidersHorizontal, RotateCcw, XCircle,
+  Clock, AlertTriangle,
 } from 'lucide-react';
-import type { RoleType, StaffWithProfile, ActionLogRow } from './page';
+import type { RoleType, StaffWithProfile, ActionLogRow, ModeratorEligibility } from './page';
 import { ROLE_TYPES } from './page';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -17,6 +18,12 @@ interface StaffClientProps {
   actionLog:                  ActionLogRow[];
   caps:                       Record<RoleType, number>;
   activeCounts:               Record<RoleType, number>;
+  /**
+   * Pre-computed server-side eligibility for each active moderator.
+   * Keyed by staff_roles.id.
+   * Only moderators appear here — other roles have no elevated permissions.
+   */
+  moderatorEligibility:       Record<string, ModeratorEligibility>;
   onAppointStaff:             (fd: FormData) => Promise<void>;
   onRevokeStaff:              (fd: FormData) => Promise<void>;
   onUpdateStaffCap:           (fd: FormData) => Promise<void>;
@@ -50,7 +57,6 @@ const ROLE_DESCRIPTIONS: Record<RoleType, string> = {
     'Sends broadcasts and direct messages using templates. Custom messages go through a draft-and-approve queue before sending as F9.',
 };
 
-// Elevated permissions per role — moderators only per spec
 const ELEVATED_PERMISSIONS: Record<RoleType, { key: string; label: string }[]> = {
   moderator: [
     { key: 'suspensions_30d',     label: 'Suspensions up to 30 days (default: 7)'      },
@@ -75,12 +81,14 @@ function RowAction({
   action,
   hiddenFields,
   icon,
+  disabled: externalDisabled,
 }: {
-  label:        string;
-  variant?:     'default' | 'danger' | 'success' | 'warning';
-  action:       (fd: FormData) => Promise<void>;
-  hiddenFields: Record<string, string>;
-  icon?:        React.ReactNode;
+  label:         string;
+  variant?:      'default' | 'danger' | 'success' | 'warning';
+  action:        (fd: FormData) => Promise<void>;
+  hiddenFields:  Record<string, string>;
+  icon?:         React.ReactNode;
+  disabled?:     boolean;
 }) {
   const [feedback, setFeedback] = useState<RowFeedback>('idle');
   const [isPending, start]      = useTransition();
@@ -117,8 +125,8 @@ function RowAction({
     <button
       type="button"
       onClick={handleClick}
-      disabled={isPending}
-      className={`flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded transition-colors disabled:opacity-60 ${colours[variant]}`}
+      disabled={isPending || externalDisabled}
+      className={`flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${colours[variant]}`}
     >
       {isPending ? <Loader2 size={10} className="animate-spin" /> : icon}
       {label}
@@ -263,7 +271,6 @@ function AppointTab({
         logged with a 48-hour reversal window.
       </p>
 
-      {/* Capacity overview */}
       <div className="grid grid-cols-3 gap-3">
         {ROLE_TYPES.map((r) => {
           const full = activeCounts[r] >= caps[r];
@@ -285,7 +292,6 @@ function AppointTab({
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Email */}
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">User Email</label>
           <input
@@ -302,7 +308,6 @@ function AppointTab({
           </p>
         </div>
 
-        {/* Role */}
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Role</label>
           <select
@@ -317,7 +322,6 @@ function AppointTab({
           </select>
         </div>
 
-        {/* Role description */}
         <div className="p-3 bg-blue-50 rounded-lg text-xs text-blue-800 space-y-1">
           <p className="font-semibold">{ROLE_LABELS[role]}</p>
           <p>{ROLE_DESCRIPTIONS[role]}</p>
@@ -449,14 +453,62 @@ function ActionLogTab({
 
 // ─── Tab 4: Elevated Permissions ─────────────────────────────────────────────
 
+/**
+ * Inline eligibility badge shown per moderator.
+ * Two conditions are displayed independently so the admin knows exactly
+ * what is blocking the grant.
+ */
+function EligibilityStatus({ eligibility }: { eligibility: ModeratorEligibility }) {
+  const { daysAppointed, hasCleanRecord, isEligible } = eligibility;
+  const tenureMet = daysAppointed >= 30;
+
+  return (
+    <div className={`flex flex-wrap gap-2 mt-1.5 p-2 rounded-lg text-xs ${
+      isEligible ? 'bg-green-50 border border-green-200' : 'bg-amber-50 border border-amber-200'
+    }`}>
+      {/* Tenure condition */}
+      <span className={`flex items-center gap-1 font-medium ${
+        tenureMet ? 'text-green-700' : 'text-amber-700'
+      }`}>
+        <Clock size={11} />
+        {tenureMet
+          ? `${daysAppointed}d tenure ✓`
+          : `${daysAppointed} / 30 days`}
+      </span>
+
+      {/* Clean record condition */}
+      <span className={`flex items-center gap-1 font-medium ${
+        hasCleanRecord ? 'text-green-700' : 'text-red-600'
+      }`}>
+        {hasCleanRecord
+          ? <><CheckCircle size={11} /> Clean record</>
+          : <><AlertTriangle size={11} /> Reversed actions on record</>}
+      </span>
+
+      {/* Overall verdict */}
+      {!isEligible && (
+        <span className="text-amber-600 italic">
+          {!tenureMet && !hasCleanRecord
+            ? 'Both conditions unmet — grant locked'
+            : !tenureMet
+              ? `${30 - daysAppointed} day(s) until eligible`
+              : 'Clean record required — grant locked'}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function ElevatedPermissionsTab({
   staffRoles,
+  moderatorEligibility,
   onGrant,
   onRevoke,
 }: {
-  staffRoles: StaffWithProfile[];
-  onGrant:    (fd: FormData) => Promise<void>;
-  onRevoke:   (fd: FormData) => Promise<void>;
+  staffRoles:           StaffWithProfile[];
+  moderatorEligibility: Record<string, ModeratorEligibility>;
+  onGrant:              (fd: FormData) => Promise<void>;
+  onRevoke:             (fd: FormData) => Promise<void>;
 }) {
   const moderators = staffRoles.filter(
     (s) => s.is_active && s.role_type === 'moderator'
@@ -474,8 +526,8 @@ function ElevatedPermissionsTab({
   return (
     <div className="space-y-4">
       <p className="text-xs text-gray-500">
-        Granted per individual — not per role. Earned after 30 days with a clean action record.
-        Revocable instantly. Each grant and revocation is logged.
+        Granted per individual — not per role. Requires 30 days of service with a clean action
+        record (no reversed actions). Revocable instantly. Each grant and revocation is logged.
       </p>
 
       {moderators.map((s) => {
@@ -485,23 +537,37 @@ function ElevatedPermissionsTab({
             : {}
         ) as Record<string, unknown>;
 
+        // Fall back to ineligible if somehow missing from the map (defensive)
+        const eligibility: ModeratorEligibility = moderatorEligibility[s.id] ?? {
+          daysAppointed:  0,
+          hasCleanRecord: false,
+          isEligible:     false,
+        };
+
         return (
           <Card key={s.id} className="p-4">
-            <div className="flex items-start justify-between gap-4 mb-4">
+            {/* Moderator header */}
+            <div className="flex items-start justify-between gap-4 mb-1">
               <div>
                 <p className="font-semibold text-gray-900 text-sm">
                   {s.user_id_profile?.full_name ?? 'Unknown'}
                 </p>
                 <p className="text-xs text-gray-400">{s.user_id_profile?.email}</p>
               </div>
-              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${ROLE_COLOURS.moderator}`}>
+              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${ROLE_COLOURS.moderator}`}>
                 Moderator
               </span>
             </div>
 
-            <div className="space-y-2">
+            {/* Eligibility status — always visible */}
+            <EligibilityStatus eligibility={eligibility} />
+
+            {/* Permission rows */}
+            <div className="mt-3 space-y-2">
               {ELEVATED_PERMISSIONS.moderator.map((perm) => {
-                const isGranted = Boolean(perms[perm.key]);
+                const isGranted    = Boolean(perms[perm.key]);
+                const canGrant     = eligibility.isEligible;
+
                 return (
                   <div
                     key={perm.key}
@@ -511,6 +577,7 @@ function ElevatedPermissionsTab({
                       <p className="text-xs font-medium text-gray-800">{perm.label}</p>
                       <p className="text-xs text-gray-400 font-mono mt-0.5">{perm.key}</p>
                     </div>
+
                     {isGranted ? (
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="text-xs text-green-600 font-semibold">Granted</span>
@@ -519,23 +586,32 @@ function ElevatedPermissionsTab({
                           variant="danger"
                           action={onRevoke}
                           hiddenFields={{
-                            staff_role_id:   s.id,
-                            user_id:         s.user_id,
-                            permission_key:  perm.key,
+                            staff_role_id:  s.id,
+                            user_id:        s.user_id,
+                            permission_key: perm.key,
                           }}
                         />
                       </div>
                     ) : (
-                      <RowAction
-                        label="Grant"
-                        variant="success"
-                        action={onGrant}
-                        hiddenFields={{
-                          staff_role_id:  s.id,
-                          user_id:        s.user_id,
-                          permission_key: perm.key,
-                        }}
-                      />
+                      <div className="flex items-center gap-2 shrink-0">
+                        <RowAction
+                          label="Grant"
+                          variant="success"
+                          action={onGrant}
+                          disabled={!canGrant}
+                          hiddenFields={{
+                            staff_role_id:  s.id,
+                            user_id:        s.user_id,
+                            permission_key: perm.key,
+                          }}
+                        />
+                        {/* Inline reason when button is locked */}
+                        {!canGrant && (
+                          <span className="text-xs text-amber-600 italic">
+                            Not yet eligible
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 );
@@ -687,6 +763,7 @@ export function StaffClient({
   actionLog,
   caps,
   activeCounts,
+  moderatorEligibility,
   onAppointStaff,
   onRevokeStaff,
   onUpdateStaffCap,
@@ -749,6 +826,7 @@ export function StaffClient({
         {active === 'elevated' && (
           <ElevatedPermissionsTab
             staffRoles={staffRoles}
+            moderatorEligibility={moderatorEligibility}
             onGrant={onGrantElevatedPermission}
             onRevoke={onRevokeElevatedPermission}
           />

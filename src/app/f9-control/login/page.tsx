@@ -5,16 +5,26 @@
 //          IP-based rate limiting and breach email alerts.
 //          MFA challenge/verify remain client-side — they use the session
 //          cookies set by the server route during signInWithPassword.
+// ADDED:   After successful MFA verification, POST /api/admin/session/refresh
+//          is called before router.push('/f9-control').  This stamps the
+//          f9_admin_activity HttpOnly cookie that middleware checks on every
+//          subsequent admin request.  Without this call the first navigation
+//          after login would immediately redirect back here with ?reason=timeout.
+// ADDED:   ?reason=timeout search param is read on mount and shown as an error
+//          banner — surfaced when middleware redirects an expired session.
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Shield } from 'lucide-react';
 
-export default function AdminLogin() {
+// ─── Inner component (needs useSearchParams → must be inside Suspense) ────────
+
+function AdminLogin() {
   const router   = useRouter();
+  const params   = useSearchParams();
   const supabase = createClient();
 
   const [email,       setEmail]       = useState('');
@@ -25,19 +35,22 @@ export default function AdminLogin() {
   const [error,       setError]       = useState('');
   const [retryAfter,  setRetryAfter]  = useState<string | null>(null);
 
-  // FIX #9 — Both factorId AND challengeId must be stored in state.
   const [factorId,    setFactorId]    = useState('');
   const [challengeId, setChallengeId] = useState('');
 
-  // ── Step 1: credential login (proxied through server route) ──────────────
+  // ── Show timeout banner when redirected by middleware ─────────────────────
+  useEffect(() => {
+    if (params.get('reason') === 'timeout') {
+      setError('Your session expired after 2 hours of inactivity. Please log in again.');
+    }
+  }, [params]);
+
+  // ── Step 1: credential login (proxied through server route) ───────────────
   //
-  // Why server-side? The /api/admin/auth route applies IP-based rate limiting
-  // (3 attempts / 15 min) and sends an email alert on breach — neither is
-  // possible with a direct client-side signInWithPassword call.
-  //
-  // The server route calls supabase.auth.signInWithPassword via the SSR server
-  // client, which writes the session to HttpOnly cookies. Those cookies are
-  // then available to the browser Supabase client used in Step 2 below.
+  // The /api/admin/auth route applies IP-based rate limiting (3 attempts /
+  // 15 min) and sends a breach alert email — neither is possible client-side.
+  // It calls supabase.auth.signInWithPassword via the SSR server client, which
+  // writes the Supabase session to HttpOnly cookies available to Step 2 below.
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,7 +68,6 @@ export default function AdminLogin() {
       const data = await response.json();
 
       if (response.status === 429) {
-        // Rate-limited — show block message and countdown hint
         const resetAt = data.resetAt ? new Date(data.resetAt).toLocaleTimeString() : null;
         setRetryAfter(resetAt);
         setError(data.error ?? 'Too many login attempts. Please wait before trying again.');
@@ -67,9 +79,8 @@ export default function AdminLogin() {
         return;
       }
 
-      // Credentials accepted — server has set session cookies.
-      // Initiate MFA challenge using the browser Supabase client, which
-      // reads the session from the cookies just written by the server.
+      // Credentials accepted — server has set Supabase session cookies.
+      // Initiate MFA challenge using the browser client (reads those cookies).
       const { data: challengeData, error: challengeError } =
         await supabase.auth.mfa.challenge({ factorId: data.factorId });
 
@@ -88,7 +99,17 @@ export default function AdminLogin() {
     }
   };
 
-  // ── Step 2: TOTP verification (client-side, unchanged) ───────────────────
+  // ── Step 2: TOTP verification ──────────────────────────────────────────────
+  //
+  // After mfa.verify() succeeds the Supabase session is fully established.
+  // We then call /api/admin/session/refresh to stamp the f9_admin_activity
+  // HttpOnly cookie.  Middleware checks for this cookie on every /f9-control
+  // request — if it's absent (first navigation, or expired after 2h inactivity)
+  // the request is redirected back here with ?reason=timeout.
+  //
+  // Without this POST the very first router.push('/f9-control') after login
+  // would be caught by middleware's Stage 3 check and immediately redirected
+  // back to this page, even though the session is valid.
 
   const verifyMfa = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,17 +119,35 @@ export default function AdminLogin() {
     try {
       const { error: mfaError } = await supabase.auth.mfa.verify({
         factorId,
-        challengeId, // FIX #9 — real challenge ID, not factorId
+        challengeId,
         code: mfaCode,
       });
 
       if (mfaError) {
         setError('Invalid or expired MFA code. Please try again with a fresh code from your authenticator app.');
-        // Refresh challenge so next attempt doesn't fail with a stale challenge ID
+        // Refresh challenge so next attempt doesn't fail with a stale ID
         const { data: newChallenge } = await supabase.auth.mfa.challenge({ factorId });
         if (newChallenge) setChallengeId(newChallenge.id);
         return;
       }
+
+      // ── Stamp the server-side activity cookie before navigating ───────────
+      // The Supabase session cookies are now set in the browser.  The refresh
+      // endpoint re-validates the session server-side, confirms user_type=admin,
+      // and writes f9_admin_activity with maxAge=7200 (2 hours).
+      const refreshRes = await fetch('/api/admin/session/refresh', {
+        method:      'POST',
+        credentials: 'same-origin', // sends Supabase auth cookies
+      });
+
+      if (!refreshRes.ok) {
+        // This should only happen if the profile row is missing or user_type
+        // is not 'admin' — surface as an auth error rather than silently
+        // navigating to a page that will immediately redirect back here.
+        setError('Session initialisation failed. Verify that this account has admin access.');
+        return;
+      }
+      // ─────────────────────────────────────────────────────────────────────
 
       router.push('/f9-control');
     } catch {
@@ -203,5 +242,16 @@ export default function AdminLogin() {
         )}
       </div>
     </div>
+  );
+}
+
+// ─── Page export — Suspense required by Next.js App Router when a Client
+//     Component subtree calls useSearchParams() ─────────────────────────────
+
+export default function AdminLoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-950" />}>
+      <AdminLogin />
+    </Suspense>
   );
 }

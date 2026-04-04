@@ -69,6 +69,7 @@
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-hook-form": "^7.68.0",
+    "recharts": "^3.8.1",
     "redis": "^5.10.0",
     "server-only": "^0.0.1",
     "speakeasy": "^2.0.0",

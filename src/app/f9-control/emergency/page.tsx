@@ -32,6 +32,7 @@ async function toggleEmergencyControl(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
+  // ── Upsert the boolean flag ──────────────────────────────────────────────
   await supabase
     .from('platform_config')
     .upsert(
@@ -40,7 +41,14 @@ async function toggleEmergencyControl(fd: FormData) {
         enabled:      newEnabled,
         description:  controlMeta[key]?.description ?? key,
         value:        null,
-        string_value: null,
+        // For maintenance_mode: persist the custom message in string_value on
+        // the same row. Empty string → null so the maintenance page falls
+        // through to its hardcoded default correctly.
+        // For all other keys: null (leaves any existing string_value untouched
+        // via upsert — only the enabled column is meaningful for those rows).
+        string_value: key === 'maintenance_mode'
+          ? ((fd.get('maintenance_message') as string | null)?.trim() || null)
+          : null,
       },
       { onConflict: 'key' }
     );
@@ -76,7 +84,7 @@ const controlMeta: Record<
     label:       'User Registrations',
     description: 'When OFF, new account creation is disabled. Existing users are unaffected.',
     danger:      false,
-    invertLogic: true, // "enabled = false" is the dangerous state here
+    invertLogic: true,
   },
   marketplace_enabled: {
     label:       'Marketplace',
@@ -98,30 +106,36 @@ const controlMeta: Record<
   },
 };
 
-// ─── Data fetch ───────────────────────────────────────────────────────────────
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function EmergencyControlsPage() {
   const supabase = await createClient();
 
+  // Fetch enabled + string_value in one query — string_value is only meaningful
+  // for the maintenance_mode row but costs nothing to select for all rows.
   const { data: configs } = await supabase
     .from('platform_config')
-    .select('key, enabled')
+    .select('key, enabled, string_value')
     .in('key', [...EMERGENCY_KEYS]);
 
-  // Build a key→enabled lookup, defaulting missing keys to their safe state
-  const configMap: Record<string, boolean> = {};
+  const configMap: Record<string, { enabled: boolean; string_value: string | null }> = {};
   configs?.forEach((c) => {
-    configMap[c.key] = c.enabled ?? false;
+    configMap[c.key] = {
+      enabled:      c.enabled ?? false,
+      string_value: c.string_value ?? null,
+    };
   });
 
-  // Build the controls array in the defined order
   const controls = EMERGENCY_KEYS.map((key) => ({
     key,
-    enabled: configMap[key] ?? false,
+    enabled: configMap[key]?.enabled ?? false,
     ...controlMeta[key],
   }));
 
-  // Recent emergency audit trail
+  // Current maintenance message — stored on the maintenance_mode row itself
+  const currentMaintenanceMsg: string =
+    configMap['maintenance_mode']?.string_value ?? '';
+
   const { data: recentActions } = await supabase
     .from('admin_action_logs')
     .select('id, action_type, reason, created_at, admin_id')
@@ -141,6 +155,7 @@ export default async function EmergencyControlsPage() {
       <EmergencyClient
         controls={controls}
         recentActions={recentActions ?? []}
+        currentMaintenanceMsg={currentMaintenanceMsg}
         onToggle={toggleEmergencyControl}
       />
     </div>

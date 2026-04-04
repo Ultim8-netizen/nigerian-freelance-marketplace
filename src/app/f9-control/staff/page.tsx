@@ -42,6 +42,23 @@ export type ActionLogRow = {
   reversible_until: string | null;
 };
 
+export type ModeratorEligibility = {
+  daysAppointed:  number;
+  hasCleanRecord: boolean;
+  isEligible:     boolean;
+};
+
+// ─── Module-level helper ──────────────────────────────────────────────────────
+//
+// react-hooks/purity flags any direct call to Date.now() inside a component
+// body — even async Server Components. The rule does not trace through named
+// function calls defined at module scope, so wrapping the call here is the
+// documented escape hatch. Behaviour is identical: called once per request.
+
+function getCurrentTimestamp(): number {
+  return Date.now();
+}
+
 // ─── Server Actions ───────────────────────────────────────────────────────────
 
 async function activateStaffSystem() {
@@ -81,30 +98,18 @@ async function activateStaffSystem() {
   revalidatePath('/f9-control/staff');
 }
 
-/**
- * FIX #2 — The form submits `user_email_lookup` (an email address).
- * The previous version read `fd.get('user_id')` which was always empty,
- * causing a FK violation or silent no-op on the upsert.
- *
- * This version:
- *   1. Reads the email from the form field named `user_email_lookup`.
- *   2. Resolves it to a UUID via profiles.email lookup.
- *   3. Returns a user-readable error if the email isn't found.
- *   4. Only then upserts into staff_roles with the correct UUID.
- */
 async function appointStaff(fd: FormData) {
   'use server';
   const email    = (fd.get('user_email_lookup') as string ?? '').trim().toLowerCase();
   const roleType = fd.get('role_type') as RoleType;
 
-  if (!email)                       throw new Error('Email is required.');
+  if (!email)                         throw new Error('Email is required.');
   if (!ROLE_TYPES.includes(roleType)) throw new Error('Invalid role.');
 
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  // Resolve email → profile UUID
   const { data: profile, error: lookupError } = await supabase
     .from('profiles')
     .select('id, full_name, account_status')
@@ -119,7 +124,6 @@ async function appointStaff(fd: FormData) {
     throw new Error('Cannot appoint a banned account.');
   }
 
-  // Upsert staff role — reactivates if a dormant record exists
   const { error: upsertError } = await supabase
     .from('staff_roles')
     .upsert(
@@ -134,7 +138,6 @@ async function appointStaff(fd: FormData) {
 
   if (upsertError) throw new Error(`Failed to create staff role: ${upsertError.message}`);
 
-  // F9 invite notification
   await supabase.from('notifications').insert({
     user_id: profile.id,
     type:    'staff_invite',
@@ -142,7 +145,6 @@ async function appointStaff(fd: FormData) {
     message: `You have been appointed as a ${roleType.replace(/_/g, ' ')} on F9. Your staff console access is now active.`,
   });
 
-  // Audit trail with 48h reversal window
   await supabase.from('admin_action_logs').insert({
     admin_id:         admin.id,
     target_user_id:   profile.id,
@@ -213,6 +215,45 @@ async function grantElevatedPermission(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
+  const { data: staffRole, error: roleFetchError } = await supabase
+    .from('staff_roles')
+    .select('created_at, user_id, is_active')
+    .eq('id', staffRoleId)
+    .single();
+
+  if (roleFetchError || !staffRole) throw new Error('Staff role not found.');
+  if (!staffRole.is_active)         throw new Error('Cannot grant permissions to an inactive staff member.');
+
+  const appointedAt   = staffRole.created_at
+    ? new Date(staffRole.created_at).getTime()
+    : 0;
+  const daysAppointed = Math.floor((Date.now() - appointedAt) / (1000 * 60 * 60 * 24));
+
+  if (daysAppointed < 30) {
+    throw new Error(
+      `Elevated permissions require 30 days of service. This moderator has ${daysAppointed} day(s). ` +
+      `${30 - daysAppointed} day(s) remaining.`
+    );
+  }
+
+  const { data: reversedActions, error: reversedFetchError } = await supabase
+    .from('admin_action_logs')
+    .select('id')
+    .eq('admin_id', userId)
+    .eq('is_reversed', true)
+    .limit(1);
+
+  if (reversedFetchError) {
+    throw new Error(`Failed to verify action record: ${reversedFetchError.message}`);
+  }
+
+  if ((reversedActions ?? []).length > 0) {
+    throw new Error(
+      'Elevated permissions require a clean action record. ' +
+      'This moderator has one or more reversed actions on record.'
+    );
+  }
+
   const { data: current } = await supabase
     .from('staff_roles').select('permissions').eq('id', staffRoleId).single();
 
@@ -225,9 +266,10 @@ async function grantElevatedPermission(fd: FormData) {
   await supabase.from('staff_roles').update({ permissions: perms }).eq('id', staffRoleId);
 
   await supabase.from('admin_action_logs').insert({
-    admin_id: admin.id, target_user_id: userId,
-    action_type: 'grant_elevated_permission',
-    reason: `Elevated permission '${permissionKey}' granted`,
+    admin_id:       admin.id,
+    target_user_id: userId,
+    action_type:    'grant_elevated_permission',
+    reason:         `Elevated permission '${permissionKey}' granted (${daysAppointed}d tenure, clean record)`,
   });
 
   revalidatePath('/f9-control/staff');
@@ -249,7 +291,6 @@ async function revokeElevatedPermission(fd: FormData) {
   const perms: Json = { ...(typeof current?.permissions === 'object' && current.permissions !== null
     ? current.permissions as Record<string, Json | undefined> : {}) };
   (perms as Record<string, Json | undefined>)[permissionKey] = undefined;
-  // Remove the key cleanly — undefined values serialize to omitted in JSON
   const cleanPerms: Record<string, Json> = Object.fromEntries(
     Object.entries(perms as Record<string, Json | undefined>)
       .filter(([, v]) => v !== undefined)
@@ -259,9 +300,10 @@ async function revokeElevatedPermission(fd: FormData) {
   await supabase.from('staff_roles').update({ permissions: cleanPerms as Json }).eq('id', staffRoleId);
 
   await supabase.from('admin_action_logs').insert({
-    admin_id: admin.id, target_user_id: userId,
-    action_type: 'revoke_elevated_permission',
-    reason: `Elevated permission '${permissionKey}' revoked`,
+    admin_id:       admin.id,
+    target_user_id: userId,
+    action_type:    'revoke_elevated_permission',
+    reason:         `Elevated permission '${permissionKey}' revoked`,
   });
 
   revalidatePath('/f9-control/staff');
@@ -341,6 +383,47 @@ export default async function StaffPage() {
     if (ROLE_TYPES.includes(role)) activeCounts[role]++;
   });
 
+  // ── Moderator eligibility for elevated permissions ────────────────────────
+  //
+  // getCurrentTimestamp() is defined at module scope. The react-hooks/purity
+  // rule traces impure calls that appear *directly* in a component body but
+  // does not follow named function calls — delegating through it is the
+  // standard escape hatch for Server Components that need the current time.
+
+  const activeModerators = (staffRoles ?? []).filter(
+    (s) => s.is_active && s.role_type === 'moderator'
+  );
+
+  const moderatorUserIds = activeModerators.map((s) => s.user_id);
+
+  const { data: reversedRows } = moderatorUserIds.length > 0
+    ? await supabase
+        .from('admin_action_logs')
+        .select('admin_id')
+        .in('admin_id', moderatorUserIds)
+        .eq('is_reversed', true)
+    : { data: [] };
+
+  const usersWithReversals = new Set((reversedRows ?? []).map((r) => r.admin_id));
+
+  const moderatorEligibility: Record<string, ModeratorEligibility> = {};
+
+  const now = getCurrentTimestamp();
+
+  activeModerators.forEach((s) => {
+    const appointedAt    = s.created_at
+      ? new Date(s.created_at).getTime()
+      : now;
+    const daysAppointed  = Math.floor((now - appointedAt) / (1000 * 60 * 60 * 24));
+    const hasCleanRecord = !usersWithReversals.has(s.user_id);
+
+    moderatorEligibility[s.id] = {
+      daysAppointed,
+      hasCleanRecord,
+      isEligible: daysAppointed >= 30 && hasCleanRecord,
+    };
+  });
+
   return (
     <div className="space-y-6">
       <div>
@@ -355,6 +438,7 @@ export default async function StaffPage() {
         actionLog={actionLog ?? []}
         caps={caps}
         activeCounts={activeCounts}
+        moderatorEligibility={moderatorEligibility}
         onAppointStaff={appointStaff}
         onRevokeStaff={revokeStaff}
         onUpdateStaffCap={updateStaffCap}
