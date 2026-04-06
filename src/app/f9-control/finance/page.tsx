@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
+import { createAdminClient } from '@/lib/supabase/admin';
 import FinanceClient from "./FinanceClient";
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
@@ -160,16 +161,36 @@ async function cancelEscrow(fd: FormData) {
 }
 
 /**
- * Update a transaction's status manually.
+ * Update a transaction's status manually, with full internal ledger reversal.
  *
- * Requires a non-empty `reason` from FormData — collected by the inline reason
- * input in TransactionStatusSelect before the FormData is submitted.
+ * Requires a non-empty `reason` from FormData.
  *
- * When `new_status` is 'refunded':
- *   1. Fetch the transaction row to obtain flutterwave_tx_ref.
- *   2. Call FlutterwaveServerService.refundTransaction.
- *   3. Only update the DB row after the gateway call resolves, so a failed
- *      gateway call leaves the transaction status unchanged.
+ * When `new_status` is 'refunded', three reversal paths are attempted in order
+ * of applicability — exactly one will execute per transaction type:
+ *
+ *   PATH A — Gateway payment (flutterwave_tx_ref present):
+ *     Calls FlutterwaveServerService.refundTransaction to reverse the charge
+ *     at the gateway level. No internal wallet mutation is needed because the
+ *     original credit came from the gateway, not from an internal balance.
+ *
+ *   PATH B — Internal wallet_credit (recipient credited from platform funds):
+ *     The original transaction added `amount` to the recipient's wallet balance.
+ *     Reversal: decrement `wallets.balance` by `amount` for `recipient_user_id`.
+ *     Uses createAdminClient() because wallets have no admin-user RLS write path.
+ *     Guard: balance is floored at 0 — we never push a wallet negative.
+ *
+ *   PATH C — Internal wallet_debit (recipient was debited by platform):
+ *     The original transaction subtracted `amount` from the recipient's balance.
+ *     Reversal: increment `wallets.balance` by `amount` for `recipient_user_id`.
+ *
+ *   PATH D — All other transaction types (escrow_payment, platform_fee, etc.):
+ *     No automated wallet mutation is possible without knowing the full
+ *     multi-party intent. The status is still marked 'refunded' and logged
+ *     so the admin retains a clear audit trail; any balance correction for
+ *     these types must be handled manually via the escrow release controls.
+ *
+ * In all paths the transaction row is updated to `new_status` only after the
+ * side-effect succeeds, ensuring the status never advances on a failed mutation.
  *
  * TODO [MONNIFY MIGRATION]: Replace FlutterwaveServerService.refundTransaction
  *   with the equivalent Monnify call once the gateway switch is complete.
@@ -187,20 +208,94 @@ async function updateTransactionStatus(fd: FormData) {
   if (!admin) throw new Error('Unauthenticated');
 
   if (newStatus === 'refunded') {
+    // Fetch all columns needed to route reversal correctly in a single round-trip.
     const { data: tx, error: txFetchError } = await supabase
       .from('transactions')
-      .select('flutterwave_tx_ref')
+      .select('transaction_type, recipient_user_id, amount, flutterwave_tx_ref')
       .eq('id', txId)
       .single();
 
-    if (txFetchError) throw new Error(`Failed to fetch transaction: ${txFetchError.message}`);
+    if (txFetchError || !tx) {
+      throw new Error(`Failed to fetch transaction: ${txFetchError?.message ?? 'not found'}`);
+    }
 
-    if (tx?.flutterwave_tx_ref) {
+    // ── PATH A: Gateway payment reversal ─────────────────────────────────────
+    if (tx.flutterwave_tx_ref) {
       // TODO [MONNIFY MIGRATION]: Replace this call.
       await FlutterwaveServerService.refundTransaction(tx.flutterwave_tx_ref, reason);
+
+    // ── PATH B: Internal wallet_credit reversal ───────────────────────────────
+    } else if (tx.transaction_type === 'wallet_credit' && tx.recipient_user_id) {
+      // The credit added `amount` to the wallet; reversal removes it.
+      // Service role is required — wallets have no admin-session RLS write policy.
+      const adminClient = createAdminClient();
+
+      // Fetch current balance so we can floor at 0 rather than going negative.
+      const { data: wallet, error: walletFetchErr } = await adminClient
+        .from('wallets')
+        .select('balance')
+        .eq('user_id', tx.recipient_user_id)
+        .single();
+
+      if (walletFetchErr || !wallet) {
+        throw new Error(
+          `Wallet reversal failed — could not fetch wallet for user ${tx.recipient_user_id}: ` +
+          (walletFetchErr?.message ?? 'wallet not found'),
+        );
+      }
+
+      const currentBalance = wallet.balance ?? 0;
+      const newBalance     = Math.max(0, currentBalance - tx.amount);
+
+      const { error: debitErr } = await adminClient
+        .from('wallets')
+        .update({ balance: newBalance })
+        .eq('user_id', tx.recipient_user_id);
+
+      if (debitErr) {
+        throw new Error(`Wallet debit reversal failed: ${debitErr.message}`);
+      }
+
+    // ── PATH C: Internal wallet_debit reversal ────────────────────────────────
+    } else if (tx.transaction_type === 'wallet_debit' && tx.recipient_user_id) {
+      // The debit removed `amount` from the wallet; reversal restores it.
+      const adminClient = createAdminClient();
+
+      const { data: wallet, error: walletFetchErr } = await adminClient
+        .from('wallets')
+        .select('balance')
+        .eq('user_id', tx.recipient_user_id)
+        .single();
+
+      if (walletFetchErr || !wallet) {
+        throw new Error(
+          `Wallet reversal failed — could not fetch wallet for user ${tx.recipient_user_id}: ` +
+          (walletFetchErr?.message ?? 'wallet not found'),
+        );
+      }
+
+      const currentBalance = wallet.balance ?? 0;
+      const newBalance     = currentBalance + tx.amount;
+
+      const { error: creditErr } = await adminClient
+        .from('wallets')
+        .update({ balance: newBalance })
+        .eq('user_id', tx.recipient_user_id);
+
+      if (creditErr) {
+        throw new Error(`Wallet credit reversal failed: ${creditErr.message}`);
+      }
+
+    // ── PATH D: Non-automatable types (escrow_payment, platform_fee, etc.) ────
+    } else {
+      // Status is still set to 'refunded' below so the admin has a clear audit
+      // trail. Any balance correction for these types should be performed via
+      // the escrow release/freeze controls above.
+      // No automated wallet mutation — manual intervention required if applicable.
     }
   }
 
+  // Advance the transaction status — reached only after the side-effect succeeds.
   const { error: updateError } = await supabase
     .from('transactions')
     .update({ status: newStatus })
