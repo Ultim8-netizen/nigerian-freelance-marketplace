@@ -13,8 +13,8 @@
 // lighting due to historical data.
 //
 // Notification bell triggers ONLY on the three specified critical event types:
-//   • wallet_freeze            — funds locked on a user account
-//   • shared_device_fingerprint — same device detected across multiple accounts
+//   • wallet_frozen_by_admin     — funds locked on a user account (written by EmergencyClient.tsx)
+//   • shared_ip_on_registration  — same device detected across multiple accounts (written by register/route.ts)
 //   • (contest tickets handled separately via contest_tickets table)
 //
 // Broad severity filters (e.g. 'critical', 'high') are intentionally avoided
@@ -28,10 +28,13 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { logger }            from '@/lib/logger';
 
 // The exact event_type values that qualify as bell-worthy security signals.
+// These must match the literal strings written by the system:
+//   - 'wallet_frozen_by_admin'    → EmergencyClient.tsx
+//   - 'shared_ip_on_registration' → register/route.ts
 // Extend this list only when the spec explicitly adds a new trigger event.
 const CRITICAL_SECURITY_EVENT_TYPES = [
-  'wallet_freeze',
-  'shared_device_fingerprint',
+  'wallet_frozen_by_admin',
+  'shared_ip_on_registration',
 ] as const;
 
 export async function GET() {

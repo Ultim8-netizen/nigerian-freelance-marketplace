@@ -5617,3 +5617,71 @@ CREATE TRIGGER trg_dispute_activity_on_message
 
   ALTER TABLE withdrawals
   ADD COLUMN IF NOT EXISTS hold_release_at TIMESTAMPTZ;
+
+
+  -- migrations/20260406_add_wallet_frozen.sql
+-- Adds targeted wallet-freeze capability used by cron Rule 3 (suspicious
+-- unlinked inflow detection). Freezing the wallet is the spec-correct action;
+-- it leaves account_status untouched so the user can still log in and read
+-- their suspension notice, but cannot withdraw or transact.
+--
+-- After running this migration, regenerate TypeScript types:
+--   npx supabase gen types typescript --project-id <id> > src/types/database.types.ts
+
+ALTER TABLE wallets
+  ADD COLUMN IF NOT EXISTS is_frozen   boolean                  NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS frozen_at   timestamp with time zone          DEFAULT NULL;
+
+-- Index so the admin finance panel can cheaply query frozen wallets.
+CREATE INDEX IF NOT EXISTS wallets_is_frozen_idx ON wallets (is_frozen)
+  WHERE is_frozen = true;
+
+COMMENT ON COLUMN wallets.is_frozen  IS 'True when the wallet has been frozen by automated fraud detection or admin action. Withdrawals and outbound transfers must be blocked while this flag is set.';
+COMMENT ON COLUMN wallets.frozen_at  IS 'Timestamp when is_frozen was last set to true. NULL when wallet is not frozen.';
+
+
+-- migrations/20260406_add_notification_dispatched_at.sql
+--
+-- Adds an idempotency sentinel to the notifications table used by cron Rule 5
+-- (scheduled broadcast dispatch).
+--
+-- WHY THIS COLUMN IS NEEDED:
+--   Scheduled notifications are inserted into the notifications table immediately
+--   at authoring time with a future scheduled_at value. The in-app bell already
+--   filters by scheduled_at <= now(), so in-app delivery (delivery_method='in_app')
+--   is self-executing — no cron work needed.
+--
+--   F9 inbox delivery (delivery_method='inbox' or 'both') requires an actual row
+--   insertion into conversations + messages via sendF9SystemMessage(). That cannot
+--   happen at scheduling time; it must happen when scheduled_at arrives.
+--
+--   dispatched_at = NULL → not yet fired by the cron (eligible for dispatch)
+--   dispatched_at = <ts> → already fired; cron must never fire again (idempotent)
+--
+-- SAFE BACKFILL:
+--   All existing rows have scheduled_at IS NULL (they were sent immediately) or
+--   were already delivered manually. Setting dispatched_at = now() for all
+--   pre-existing rows with scheduled_at IS NOT NULL prevents the first cron run
+--   after migration from re-firing old messages.
+--
+-- After running this migration, regenerate TypeScript types:
+--   npx supabase gen types typescript --project-id <id> > src/types/database.types.ts
+
+ALTER TABLE public.notifications
+  ADD COLUMN IF NOT EXISTS dispatched_at timestamp with time zone DEFAULT NULL;
+
+COMMENT ON COLUMN public.notifications.dispatched_at IS
+  'Set by the cron Rule 5 after the F9 inbox message has been delivered for a '
+  'scheduled notification. NULL = not yet dispatched. Used as an idempotency '
+  'sentinel to prevent double-firing.';
+
+-- Safe backfill: mark all already-past scheduled rows as dispatched so the
+-- first cron run after migration does not replay them.
+UPDATE public.notifications
+SET    dispatched_at = now()
+WHERE  scheduled_at IS NOT NULL
+  AND  scheduled_at <= now()
+  AND  dispatched_at IS NULL;
+
+
+  

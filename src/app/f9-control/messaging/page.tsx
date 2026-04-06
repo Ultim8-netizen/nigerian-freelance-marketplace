@@ -1,3 +1,4 @@
+// src/app/f9-control/messaging/page.tsx
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { MessagingClient } from './MessagingClient';
@@ -84,10 +85,15 @@ async function sendDirect(fd: FormData) {
  *   freelancer — active users with user_type = 'freelancer'
  *   client     — active users with user_type = 'client'
  *   both       — active users with user_type = 'both'
- *   inactive   — active users whose last_seen_at is older than `inactive_days` days
+ *   inactive   — active users whose most-recent user_devices.last_seen_at is
+ *                older than `inactive_days` days
+ *                (profiles has no last_seen_at; the authoritative column is
+ *                 user_devices.last_seen_at — schema-verified)
  *   low_trust  — active users with trust_score < `trust_threshold`
  *   unverified — active users who have not completed identity verification
- *   state      — active users whose profile state matches `state`
+ *   state      — active users whose user_locations.state matches `state`
+ *                (profiles has no state column; geography lives in the
+ *                 user_locations table — schema-verified)
  *
  * Audience-specific FormData fields (appended by MessagingClient):
  *   trust_threshold  (number, default 40)  — used by low_trust
@@ -117,8 +123,100 @@ async function sendBroadcast(fd: FormData) {
   const { data: { user: admin }, error: authError } = await supabase.auth.getUser();
   if (authError || !admin) throw new Error('Unauthenticated');
 
-  // Base query — always select only active accounts unless the segment overrides
-  // (inactive targets active accounts that have gone dormant, not suspended/banned ones)
+  // ── Resolve recipient IDs for segments that require a pre-query ─────────────
+  //
+  // Two segments cannot be resolved with a simple profiles column filter because
+  // the relevant columns do not exist on the profiles table:
+  //
+  //   inactive → user_devices.last_seen_at  (profiles has no last_seen_at)
+  //   state    → user_locations.state       (profiles has location: string | null,
+  //                                          which is free-text, not a state enum)
+  //
+  // Strategy: pre-query the owning table, collect profile UUIDs, then apply
+  // .in('id', ids) on the main profiles query. Both tables have a user_id FK
+  // to profiles and are schema-verified in database.types.ts.
+
+  let preFilteredIds: string[] | null = null; // null = no pre-filter needed
+
+  if (audience === 'inactive') {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - inactiveDays);
+
+    // user_devices.last_seen_at: string | null (schema-verified)
+    // A user may have multiple device rows; we want the ones whose MOST RECENT
+    // device activity is still before the cutoff. Selecting distinct user_ids
+    // whose every device row is old is non-trivial in a single Supabase query,
+    // so we take the pragmatic approach: select all user_ids that appear in
+    // user_devices with last_seen_at < cutoff, then exclude any whose user_id
+    // also appears with last_seen_at >= cutoff (active on at least one device).
+    // Implemented as two queries + set subtraction.
+
+    const { data: staleDevices, error: staleErr } = await supabase
+      .from('user_devices')
+      .select('user_id')
+      .lt('last_seen_at', cutoff.toISOString())
+      .not('user_id', 'is', null);
+
+    if (staleErr) {
+      console.error('[sendBroadcast] inactive stale-device query error:', staleErr);
+      throw new Error('Failed to resolve inactive segment');
+    }
+
+    const { data: activeDevices, error: activeErr } = await supabase
+      .from('user_devices')
+      .select('user_id')
+      .gte('last_seen_at', cutoff.toISOString())
+      .not('user_id', 'is', null);
+
+    if (activeErr) {
+      console.error('[sendBroadcast] inactive active-device query error:', activeErr);
+      throw new Error('Failed to resolve inactive segment');
+    }
+
+    const activeSet = new Set(
+      (activeDevices ?? []).map((d) => d.user_id).filter(Boolean) as string[]
+    );
+
+    preFilteredIds = [
+      ...new Set(
+        (staleDevices ?? [])
+          .map((d) => d.user_id)
+          .filter((id): id is string => !!id && !activeSet.has(id))
+      ),
+    ];
+
+    if (preFilteredIds.length === 0) {
+      throw new Error('No inactive users found for the given window');
+    }
+  }
+
+  if (audience === 'state' && targetState) {
+    // user_locations.state: string (NOT NULL, schema-verified)
+    // user_locations has a 1:1 FK to profiles (user_locations_user_id_fkey).
+
+    const { data: locationRows, error: locErr } = await supabase
+      .from('user_locations')
+      .select('user_id')
+      .eq('state', targetState);
+
+    if (locErr) {
+      console.error('[sendBroadcast] state location query error:', locErr);
+      throw new Error('Failed to resolve state segment');
+    }
+
+    preFilteredIds = [
+      ...new Set(
+        (locationRows ?? []).map((l) => l.user_id).filter(Boolean) as string[]
+      ),
+    ];
+
+    if (preFilteredIds.length === 0) {
+      throw new Error(`No users found in state: ${targetState}`);
+    }
+  }
+
+  // ── Main profiles query ─────────────────────────────────────────────────────
+
   let recipientQuery = supabase
     .from('profiles')
     .select('id')
@@ -129,37 +227,25 @@ async function sendBroadcast(fd: FormData) {
     case 'freelancer':
     case 'client':
     case 'both':
-      // Filter by role; active status already applied above
       recipientQuery = recipientQuery.eq('user_type', audience);
       break;
 
-    case 'inactive': {
-      // Users who have not been seen for at least `inactiveDays` days.
-      // Relies on profiles.last_seen_at — verify column name against database.types.ts.
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - inactiveDays);
-      recipientQuery = recipientQuery.lt('last_seen_at', cutoff.toISOString());
+    case 'inactive':
+    case 'state':
+      // Pre-filter IDs resolved above; apply them here.
+      // preFilteredIds is guaranteed non-null and non-empty at this point.
+      recipientQuery = recipientQuery.in('id', preFilteredIds!);
       break;
-    }
 
     case 'low_trust':
-      // trust_score is nullable; .lt() will naturally exclude NULL rows,
-      // which is the correct behaviour (NULL score = unscored, not low).
+      // trust_score is nullable; .lt() naturally excludes NULL rows,
+      // which is correct (NULL = unscored, not low-trust).
       recipientQuery = recipientQuery.lt('trust_score', trustThreshold);
       break;
 
     case 'unverified':
       // Target users who have not completed identity verification.
-      // Adjust the column(s) to match the intended definition of "unverified"
-      // in your spec (e.g. swap for email_verified if preferred).
       recipientQuery = recipientQuery.eq('identity_verified', false);
-      break;
-
-    case 'state':
-      // Relies on profiles.state — verify column name against database.types.ts.
-      if (targetState) {
-        recipientQuery = recipientQuery.eq('state', targetState);
-      }
       break;
 
     case 'all':

@@ -12,6 +12,17 @@
 //      The sync_wallet_on_withdrawal AFTER UPDATE trigger only fires when
 //      NEW.status = 'completed', so promoting 'held' → 'pending' is
 //      wallet-safe and causes no premature balance deduction.
+// NEW: Rule 5 — Scheduled broadcast dispatch.
+//      Finds notifications WHERE scheduled_at IS NOT NULL
+//        AND scheduled_at <= now()
+//        AND dispatched_at IS NULL
+//        AND delivery_method IN ('inbox', 'both')
+//      For each row: fires sendF9SystemMessage() then stamps dispatched_at.
+//      delivery_method='in_app' rows are excluded — the in-app bell already
+//      filters by scheduled_at <= now(), making cron dispatch unnecessary for
+//      that channel. dispatched_at IS NOT NULL rows are excluded to guarantee
+//      idempotency across repeated cron runs.
+//      Requires migration: migrations/20260406_add_notification_dispatched_at.sql
 
 import { NextResponse }        from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -286,8 +297,6 @@ export async function POST() {
   //      The sync_wallet_on_withdrawal trigger only fires on status='completed',
   //      so this update is wallet-safe — no premature balance deduction.
   //   2. Dual-channel notification: notifications row + F9 inbox message.
-  //      supabase here is createServiceClient() (service role) so it satisfies
-  //      the same RLS bypass requirement as adminClient in earnings/page.tsx.
 
   type HeldWithdrawalRow = {
     id:      string;
@@ -323,7 +332,7 @@ export async function POST() {
       if (updateError) {
         console.error(`[Rule 4] Failed to release hold ${hold.id}:`, updateError);
         logs.push(`Rule 4: FAILED to release hold ${hold.id} for user ${hold.user_id}`);
-        continue; // do not notify if the update itself failed
+        continue;
       }
 
       // ── 2. Dual-channel notification ──────────────────────────────────────
@@ -333,17 +342,12 @@ export async function POST() {
         `You will receive the funds within 1–3 business days.`;
 
       await Promise.all([
-        // Channel 1 — notifications row
         supabase.from('notifications').insert({
           user_id: hold.user_id,
           type:    'withdrawal_released',
           title:   'Withdrawal Hold Released',
           message: releaseMessage,
         }),
-
-        // Channel 2 — F9 inbox message
-        // supabase is createServiceClient() (service role) — satisfies the same
-        // RLS bypass requirement as adminClient in earnings/page.tsx.
         sendF9SystemMessage(supabase, hold.user_id, releaseMessage),
       ]);
 
@@ -352,6 +356,93 @@ export async function POST() {
         `(₦${hold.amount.toLocaleString('en-NG')}) for user ${hold.user_id} → pending`
       );
     }
+  }
+
+  // ─── RULE 5: Scheduled broadcast dispatch ─────────────────────────────────
+  //
+  // Fires the F9 inbox leg of scheduled notifications whose delivery time has
+  // arrived but whose inbox message has not yet been sent.
+  //
+  // WHY ONLY 'inbox' AND 'both':
+  //   delivery_method='in_app' — the notification bell UI already filters by
+  //     scheduled_at <= now(), so in-app delivery is self-executing. No cron
+  //     action is needed or safe (inserting a second row would duplicate the bell
+  //     notification).
+  //   delivery_method='inbox' or 'both' — the F9 inbox message is a row in the
+  //     messages table delivered via sendF9SystemMessage(). That insertion cannot
+  //     happen at authoring time (scheduled_at is in the future) and must happen
+  //     here, exactly once, when the window arrives.
+  //
+  // IDEMPOTENCY:
+  //   dispatched_at IS NULL is the eligibility gate. After successful delivery
+  //   the column is stamped to now(). Repeated cron runs will never re-fire a
+  //   row whose dispatched_at is set, regardless of how many times the cron
+  //   executes within the same minute.
+  //
+  //   If sendF9SystemMessage fails (logged internally, never throws), we still
+  //   stamp dispatched_at. The inbox message is best-effort; the notification
+  //   bell row is the durable record. A failed inbox message is preferable to
+  //   an infinite retry loop that spam-delivers to the user.
+  //
+  // REQUIRES MIGRATION: migrations/20260406_add_notification_dispatched_at.sql
+  //   Until applied, the .is('dispatched_at', null) filter will cause a
+  //   PostgREST column-not-found error, which is caught below. The rule will
+  //   log the error and no-op — it will NOT crash the cron or affect other rules.
+
+  type ScheduledNotifRow = {
+    id:              string;
+    user_id:         string | null;
+    message:         string;
+    delivery_method: string | null;
+  };
+
+  const { data: scheduledRows, error: scheduleQueryError } = await supabase
+    .from('notifications')
+    .select('id, user_id, message, delivery_method')
+    .not('scheduled_at', 'is', null)
+    .lte('scheduled_at', new Date().toISOString())
+    .is('dispatched_at', null)
+    .in('delivery_method', ['inbox', 'both'])
+    .limit(200) as { data: ScheduledNotifRow[] | null; error: unknown };
+
+  if (scheduleQueryError) {
+    // Most likely cause pre-migration: column "dispatched_at" does not exist.
+    // Log and skip — other rules are unaffected.
+    console.error('[Rule 5] Failed to query scheduled notifications:', scheduleQueryError);
+    logs.push('Rule 5: SKIPPED — query error (migration may not be applied yet)');
+  } else if (scheduledRows && scheduledRows.length > 0) {
+    const dispatchedAt = new Date().toISOString();
+
+    for (const notif of scheduledRows) {
+      if (!notif.user_id) {
+        // Broadcast rows with user_id IS NULL should not exist in practice
+        // (sendBroadcast always sets user_id per-recipient), but guard anyway.
+        logs.push(`Rule 5: Skipped notification ${notif.id} — no user_id`);
+        continue;
+      }
+
+      // Fire the F9 inbox message. sendF9SystemMessage catches its own errors
+      // and never throws — a failure here is logged inside the helper and does
+      // not prevent the dispatched_at stamp below.
+      await sendF9SystemMessage(supabase, notif.user_id, notif.message);
+
+      // Stamp dispatched_at regardless of inbox delivery success (see IDEMPOTENCY
+      // note above). If the UPDATE itself fails, log but do not retry — the next
+      // cron tick would re-fire which is the lesser evil compared to silent loss.
+      const { error: stampError } = await supabase
+        .from('notifications')
+        .update({ dispatched_at: dispatchedAt } as Record<string, unknown>)
+        .eq('id', notif.id);
+
+      if (stampError) {
+        console.error(`[Rule 5] Failed to stamp dispatched_at for notification ${notif.id}:`, stampError);
+        logs.push(`Rule 5: FAILED to stamp ${notif.id} — may re-fire on next tick`);
+      } else {
+        logs.push(`Rule 5: Dispatched scheduled inbox message for notification ${notif.id} → user ${notif.user_id}`);
+      }
+    }
+  } else if (!scheduleQueryError) {
+    logs.push('Rule 5: No scheduled notifications due for dispatch');
   }
 
   return NextResponse.json({ success: true, actions: logs });

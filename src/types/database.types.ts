@@ -784,6 +784,7 @@ export type Database = {
         Row: {
           created_at: string | null
           delivery_method: string
+          dispatched_at: string | null
           id: string
           is_read: boolean | null
           link: string | null
@@ -797,6 +798,7 @@ export type Database = {
         Insert: {
           created_at?: string | null
           delivery_method?: string
+          dispatched_at?: string | null
           id?: string
           is_read?: boolean | null
           link?: string | null
@@ -810,6 +812,7 @@ export type Database = {
         Update: {
           created_at?: string | null
           delivery_method?: string
+          dispatched_at?: string | null
           id?: string
           is_read?: boolean | null
           link?: string | null
@@ -1948,7 +1951,9 @@ export type Database = {
           bank_details_updated_at: string | null
           bank_name: string | null
           created_at: string | null
+          frozen_at: string | null
           id: string
+          is_frozen: boolean
           pending_clearance: number | null
           total_earned: number | null
           total_withdrawn: number | null
@@ -1962,7 +1967,9 @@ export type Database = {
           bank_details_updated_at?: string | null
           bank_name?: string | null
           created_at?: string | null
+          frozen_at?: string | null
           id?: string
+          is_frozen?: boolean
           pending_clearance?: number | null
           total_earned?: number | null
           total_withdrawn?: number | null
@@ -1976,7 +1983,9 @@ export type Database = {
           bank_details_updated_at?: string | null
           bank_name?: string | null
           created_at?: string | null
+          frozen_at?: string | null
           id?: string
+          is_frozen?: boolean
           pending_clearance?: number | null
           total_earned?: number | null
           total_withdrawn?: number | null
@@ -2035,6 +2044,7 @@ export type Database = {
           created_at: string | null
           failure_reason: string | null
           flutterwave_transfer_id: string | null
+          hold_release_at: string | null
           id: string
           processed_at: string | null
           status: string | null
@@ -2049,6 +2059,7 @@ export type Database = {
           created_at?: string | null
           failure_reason?: string | null
           flutterwave_transfer_id?: string | null
+          hold_release_at?: string | null
           id?: string
           processed_at?: string | null
           status?: string | null
@@ -2063,6 +2074,7 @@ export type Database = {
           created_at?: string | null
           failure_reason?: string | null
           flutterwave_transfer_id?: string | null
+          hold_release_at?: string | null
           id?: string
           processed_at?: string | null
           status?: string | null
