@@ -5613,3 +5613,7 @@ CREATE TRIGGER trg_dispute_activity_on_message
   AFTER INSERT ON messages
   FOR EACH ROW
   EXECUTE FUNCTION update_dispute_activity_on_message();
+
+
+  ALTER TABLE withdrawals
+  ADD COLUMN IF NOT EXISTS hold_release_at TIMESTAMPTZ;

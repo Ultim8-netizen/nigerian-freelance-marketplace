@@ -1,35 +1,27 @@
 // src/app/api/admin/automation/cron/route.ts
-// FIX: Rule 1 dispute inactivity check previously evaluated .lte('created_at',
-//      sevenDaysAgo), which measured elapsed time since the dispute was OPENED,
-//      not since either party last communicated. Active disputes with ongoing
-//      message exchanges were being force-closed after 7 days regardless of
-//      activity — a direct spec violation.
-//
-//      Fix: filter now uses disputes.last_activity_at, a new TIMESTAMPTZ column
-//      maintained by two database triggers:
-//
-//        trg_dispute_last_activity (BEFORE UPDATE ON disputes)
-//          — resets last_activity_at = NOW() on any row update (status change,
-//            evidence upload, resolution note, admin action).
-//
-//        trg_dispute_activity_on_message (AFTER INSERT ON messages)
-//          — resets last_activity_at on any open dispute whose order_id matches
-//            the order linked to the conversation the message was sent in.
-//
-//      The migration backfills last_activity_at = created_at for all existing
-//      disputes so the column is never NULL and the filter behaves correctly
-//      for historical rows from day one.
+// FIX: Rule 1 dispute inactivity check now uses disputes.last_activity_at
+//      instead of created_at — see original file header for full rationale.
+// NEW: Rule 4 — Auto-release timed withdrawal holds.
+//      Queries withdrawals WHERE status='held' AND hold_release_at IS NOT NULL
+//      AND hold_release_at <= now(). For each row found:
+//        1. Updates status → 'pending' and clears failure_reason.
+//        2. Fires dual-channel notification: notifications row + F9 inbox
+//           message via sendF9SystemMessage() (same pattern as earnings page).
+//      Rows where hold_release_at IS NULL (Check 0 / admin-gate holds) are
+//      never touched — they require explicit admin approval.
+//      The sync_wallet_on_withdrawal AFTER UPDATE trigger only fires when
+//      NEW.status = 'completed', so promoting 'held' → 'pending' is
+//      wallet-safe and causes no premature balance deduction.
 
-import { NextResponse } from 'next/server';
+import { NextResponse }        from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
+import { sendF9SystemMessage } from '@/lib/messaging/system-message';
 
 export async function POST() {
-  // Service client bypasses RLS — correct for a cron with no user session.
   const supabase = createServiceClient();
   const logs: string[] = [];
 
-  // ── Fetch all configurable thresholds in one query ────────────────────────
   const config = await getPlatformConfigs(supabase, [
     CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS,
     CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS,
@@ -37,15 +29,6 @@ export async function POST() {
   ]);
 
   // ─── RULE 0: Lift expired timed suspensions ────────────────────────────────
-  //
-  // Runs first so a user whose suspension expires today is active again before
-  // any fraud rules evaluate their account status.
-  //
-  // lift_expired_suspensions() is a SECURITY DEFINER function that:
-  //   - Matches: account_status='suspended' AND suspended_until <= now()
-  //   - Clears:  account_status→'active', suspended_until→NULL,
-  //              suspension_reason→NULL
-  //   - Returns: the UUIDs of every profile it updated
 
   const { data: liftedRows, error: liftError } = await supabase
     .rpc('lift_expired_suspensions') as {
@@ -84,27 +67,15 @@ export async function POST() {
   }
 
   // ─── RULE 1: Stale dispute auto-resolution ─────────────────────────────────
-  //
-  // "Both parties silent for N days → auto-resolve in buyer's favour."
-  //
-  // The inactivity clock is disputes.last_activity_at, which is reset by:
-  //   • Any UPDATE to the dispute row (trigger: trg_dispute_last_activity)
-  //   • Any new message in the conversation linked to the dispute's order
-  //     (trigger: trg_dispute_activity_on_message)
-  //
-  // Using created_at here would close active disputes after N days regardless
-  // of whether the parties are still communicating — that is the bug this fix
-  // resolves. last_activity_at is backfilled to created_at by the migration
-  // so existing rows are never NULL.
 
-  const disputeWindowMs = config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS] * 24 * 60 * 60 * 1000;
+  const disputeWindowMs  = config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS] * 24 * 60 * 60 * 1000;
   const inactivityCutoff = new Date(Date.now() - disputeWindowMs).toISOString();
 
   const { data: staleDisputes, error: disputeError } = await supabase
     .from('disputes')
     .select('id, order_id')
     .eq('status', 'open')
-    .lte('last_activity_at', inactivityCutoff)          // ← was: created_at
+    .lte('last_activity_at', inactivityCutoff)
     .not('reason', 'in', '("quality","delivery")');
 
   if (disputeError) {
@@ -139,12 +110,11 @@ export async function POST() {
     }
   }
 
-  // Quality/delivery disputes → admin queue (same inactivity threshold)
   const { data: qualityDisputes, error: qualityError } = await supabase
     .from('disputes')
     .select('id')
     .eq('status', 'open')
-    .lte('last_activity_at', inactivityCutoff)          // ← was: created_at
+    .lte('last_activity_at', inactivityCutoff)
     .in('reason', ['quality', 'delivery']);
 
   if (qualityError) {
@@ -165,7 +135,8 @@ export async function POST() {
     }
   }
 
-  // ─── RULE 2: Frequent disputers — Level 1 advisory ────────────────────────
+  // ─── RULE 2: Frequent disputers ───────────────────────────────────────────
+
   const disputer_window_ms = config[CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS] * 24 * 60 * 60 * 1000;
   const thirtyDaysAgo      = new Date(Date.now() - disputer_window_ms).toISOString();
 
@@ -198,6 +169,7 @@ export async function POST() {
   }
 
   // ─── RULE 3: 5+ unique senders with no linked orders → suspend + flag ──────
+
   const unlinked_window_ms = config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS] * 60 * 60 * 1000;
   const twentyFourHoursAgo = new Date(Date.now() - unlinked_window_ms).toISOString();
 
@@ -294,6 +266,91 @@ export async function POST() {
 
         logs.push(`Suspended account ${recipientId} — ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no linked orders`);
       }
+    }
+  }
+
+  // ─── RULE 4: Auto-release timed withdrawal holds ───────────────────────────
+  //
+  // Condition: status='held' AND hold_release_at IS NOT NULL AND
+  //            hold_release_at <= now()
+  //
+  // hold_release_at is written at withdrawal creation time in
+  // earnings/page.tsx initiateWithdrawal():
+  //   Check 0 (gate threshold) → NULL   ← never matched here; admin-only
+  //   Check 1 (wallet funded)  → +24h   ← matched and released
+  //   Check 2 (bank details)   → +24h   ← matched and released
+  //   Check 3 (trust 40–59)    → +48h   ← matched and released
+  //
+  // Action per row:
+  //   1. Update status → 'pending', clear failure_reason.
+  //      The sync_wallet_on_withdrawal trigger only fires on status='completed',
+  //      so this update is wallet-safe — no premature balance deduction.
+  //   2. Dual-channel notification: notifications row + F9 inbox message.
+  //      supabase here is createServiceClient() (service role) so it satisfies
+  //      the same RLS bypass requirement as adminClient in earnings/page.tsx.
+
+  type HeldWithdrawalRow = {
+    id:      string;
+    user_id: string;
+    amount:  number;
+  };
+
+  const { data: expiredHolds, error: holdsError } = await supabase
+    .from('withdrawals')
+    .select('id, user_id, amount')
+    .eq('status', 'held')
+    .not('hold_release_at', 'is', null)
+    .lte('hold_release_at', new Date().toISOString()) as {
+      data: HeldWithdrawalRow[] | null;
+      error: unknown;
+    };
+
+  if (holdsError) {
+    console.error('[Rule 4] Error fetching expired holds:', holdsError);
+  }
+
+  if (expiredHolds && expiredHolds.length > 0) {
+    for (const hold of expiredHolds) {
+      // ── 1. Promote to pending ─────────────────────────────────────────────
+      const { error: updateError } = await supabase
+        .from('withdrawals')
+        .update({
+          status:         'pending',
+          failure_reason: null,
+        })
+        .eq('id', hold.id);
+
+      if (updateError) {
+        console.error(`[Rule 4] Failed to release hold ${hold.id}:`, updateError);
+        logs.push(`Rule 4: FAILED to release hold ${hold.id} for user ${hold.user_id}`);
+        continue; // do not notify if the update itself failed
+      }
+
+      // ── 2. Dual-channel notification ──────────────────────────────────────
+      const releaseMessage =
+        `Your withdrawal of ₦${hold.amount.toLocaleString('en-NG')} has been automatically ` +
+        `released from its fraud-prevention hold and is now queued for processing. ` +
+        `You will receive the funds within 1–3 business days.`;
+
+      await Promise.all([
+        // Channel 1 — notifications row
+        supabase.from('notifications').insert({
+          user_id: hold.user_id,
+          type:    'withdrawal_released',
+          title:   'Withdrawal Hold Released',
+          message: releaseMessage,
+        }),
+
+        // Channel 2 — F9 inbox message
+        // supabase is createServiceClient() (service role) — satisfies the same
+        // RLS bypass requirement as adminClient in earnings/page.tsx.
+        sendF9SystemMessage(supabase, hold.user_id, releaseMessage),
+      ]);
+
+      logs.push(
+        `Rule 4: Released hold on withdrawal ${hold.id} ` +
+        `(₦${hold.amount.toLocaleString('en-NG')}) for user ${hold.user_id} → pending`
+      );
     }
   }
 
