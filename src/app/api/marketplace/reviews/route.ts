@@ -8,6 +8,9 @@
 //      passed explicitly into checkAndSuspendPostingOnConsecutiveLowRatings.
 //      platform_config has admin-only RLS — createAdminClient() (service role)
 //      is required; a regular user-scoped createClient() returns no rows.
+// FIX: checkAndSuspendPostingOnConsecutiveLowRatings now fires dual-channel
+//      on new suspensions: bell notification (notifications.insert) + F9 inbox
+//      message (sendF9SystemMessage). Previously only the bell was sent.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth }               from '@/lib/api/middleware';
@@ -18,6 +21,7 @@ import { sanitizeHtml, sanitizeUuid } from '@/lib/security/sanitize';
 import { logger }                    from '@/lib/logger';
 import { z }                         from 'zod';
 import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
+import { sendF9SystemMessage }       from '@/lib/messaging/system-message';
 import type { SupabaseClient }       from '@supabase/supabase-js';
 
 const createReviewSchema = z.object({
@@ -113,7 +117,7 @@ export async function POST(request: NextRequest) {
       CONFIG_KEYS.POSTING_SUSPENSION_HOURS,
     ]);
 
-    const consecutiveThreshold = config[CONFIG_KEYS.CONSECUTIVE_LOW_RATING_THRESHOLD];
+    const consecutiveThreshold   = config[CONFIG_KEYS.CONSECUTIVE_LOW_RATING_THRESHOLD];
     const postingSuspensionHours = config[CONFIG_KEYS.POSTING_SUSPENSION_HOURS];
 
     // ── Order guard ──────────────────────────────────────────────────────────
@@ -339,7 +343,7 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       return;
     }
 
-    const now             = new Date();
+    const now                = new Date();
     const existingSuspension = profile?.posting_suspended_until
       ? new Date(profile.posting_suspended_until)
       : null;
@@ -366,16 +370,21 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
     // Only notify on first suspension, not on window extensions
     const isNewSuspension = !existingSuspension || existingSuspension <= now;
     if (isNewSuspension) {
-      await supabase.from('notifications').insert({
-        user_id: sellerId,
-        type:    'posting_suspended',
-        title:   `Posting Privileges Suspended (${suspensionHours} Hours)`,
-        message:
-          `You have received ${consecutiveThreshold} consecutive 1-star reviews. ` +
-          `Your ability to create new listings has been suspended for ${suspensionHours} hours. ` +
-          'Existing listings and your account remain active. ' +
-          'Contact support if you believe this is in error.',
-      });
+      const advisoryMessage =
+        `You have received ${consecutiveThreshold} consecutive 1-star reviews. ` +
+        `Your ability to create new listings has been suspended for ${suspensionHours} hours. ` +
+        'Existing listings and your account remain active. ' +
+        'Contact support if you believe this is in error.';
+
+      await Promise.all([
+        supabase.from('notifications').insert({
+          user_id: sellerId,
+          type:    'posting_suspended',
+          title:   `Posting Privileges Suspended (${suspensionHours} Hours)`,
+          message: advisoryMessage,
+        }),
+        sendF9SystemMessage(supabase, sellerId, advisoryMessage),
+      ]);
     }
 
     logger.warn('Seller posting suspended after consecutive 1-star reviews', {

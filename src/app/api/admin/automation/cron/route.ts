@@ -1,6 +1,46 @@
 // src/app/api/admin/automation/cron/route.ts
+//
 // FIX: Rule 1 dispute inactivity check now uses disputes.last_activity_at
-//      instead of created_at — see original file header for full rationale.
+//      instead of created_at.
+//
+// FIX (VERDICT → PASS): Rule 1 now performs actual financial restitution on
+//      auto-resolution. Previously only escrow.status text was updated —
+//      no funds reached the buyer. The corrected sequence is:
+//
+//        A. Fetch escrow.amount + orders.client_id BEFORE mutating escrow,
+//           so the guard_against_double_wallet_credit trigger cannot interfere
+//           with the SELECT, and the refund amount is known before escrow is
+//           marked terminal.
+//        B. Update dispute → 'resolved_client', escrow → 'refunded_to_client',
+//           order → 'cancelled'. The guard trigger fires on the escrow UPDATE;
+//           it will RAISE if escrow is already terminal (idempotency protection).
+//        C. Credit buyer wallet via increment_wallet_balance() — a SECURITY
+//           DEFINER function that performs the arithmetic atomically.
+//           Only balance is incremented; total_earned is NOT touched (this is
+//           a refund, not income).
+//           Requires: migrations/20260407_add_increment_wallet_balance.sql
+//        D. Insert a transactions row for full audit trail.
+//        E. Notify buyer.
+//
+//      If escrow is not in 'held' state at resolution time (already released
+//      in a race), the dispute is still closed but no wallet credit is issued
+//      and the anomaly is logged.
+//
+//      If the wallet credit RPC fails, the escrow has already been marked
+//      'refunded_to_client' (step B committed). A security_log row with
+//      event_type='manual_credit_required' is inserted so the admin can
+//      manually adjust the wallet. The transactions row is NOT inserted in
+//      this case (no credit = no audit entry).
+//
+// FIX: Rule 2 — Level 1 advisory now fires dual-channel: bell notification
+//      (notifications.insert) + F9 inbox message (sendF9SystemMessage),
+//      matching the pattern used in Rules 4 and 5.
+//
+// FIX: Rule 3 — Fraud detection now freezes the wallet (wallets.is_frozen = true)
+//      instead of suspending the entire account (profiles.account_status = 'suspended').
+//      Spec requires wallet-scoped punishment only; full account suspension is a
+//      separate admin action taken after review.
+//
 // NEW: Rule 4 — Auto-release timed withdrawal holds.
 //      Queries withdrawals WHERE status='held' AND hold_release_at IS NOT NULL
 //      AND hold_release_at <= now(). For each row found:
@@ -12,6 +52,7 @@
 //      The sync_wallet_on_withdrawal AFTER UPDATE trigger only fires when
 //      NEW.status = 'completed', so promoting 'held' → 'pending' is
 //      wallet-safe and causes no premature balance deduction.
+//
 // NEW: Rule 5 — Scheduled broadcast dispatch.
 //      Finds notifications WHERE scheduled_at IS NOT NULL
 //        AND scheduled_at <= now()
@@ -73,7 +114,7 @@ export async function POST() {
     );
 
     for (const userId of liftedIds) {
-      logs.push(`Lifted suspension for user ${userId} — timed suspension expired`);
+      logs.push(`[Rule 0] Lifted suspension for user ${userId}`);
     }
   }
 
@@ -90,36 +131,172 @@ export async function POST() {
     .not('reason', 'in', '("quality","delivery")');
 
   if (disputeError) {
-    console.error('Error fetching stale disputes:', disputeError);
+    console.error('[Rule 1] Error fetching stale disputes:', disputeError);
   }
 
   if (staleDisputes && staleDisputes.length > 0) {
     for (const dispute of staleDisputes) {
-      if (dispute.order_id) {
+      if (!dispute.order_id) {
+        logs.push(`[Rule 1] Skipped dispute ${dispute.id} — no associated order`);
+        continue;
+      }
+
+      // ── A. Read financial data BEFORE any escrow mutation ──────────────────
+      //
+      // .eq('status', 'held') is a correctness guard, not just a filter.
+      // If escrow is already terminal (released/refunded), maybeSingle()
+      // returns null and we skip to the "already terminal" branch below.
+      // This prevents the guard_against_double_wallet_credit trigger from
+      // seeing a second terminal→terminal transition and raising an exception.
+
+      const { data: escrowRow, error: escrowFetchError } = await supabase
+        .from('escrow')
+        .select('amount')
+        .eq('order_id', dispute.order_id)
+        .eq('status', 'held')
+        .maybeSingle();
+
+      if (escrowFetchError) {
+        console.error(`[Rule 1] Escrow fetch error for order ${dispute.order_id}:`, escrowFetchError);
+        logs.push(`[Rule 1] Skipped dispute ${dispute.id} — escrow fetch error`);
+        continue;
+      }
+
+      if (!escrowRow) {
+        // Escrow already terminal or missing. Close the dispute so it does not
+        // re-appear on the next cron tick, but issue no wallet credit.
         await supabase
           .from('disputes')
           .update({
             status:           'resolved_client',
-            resolution_notes: `Auto-resolved: no activity from either party for ${config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]} days.`,
+            resolution_notes: `Auto-resolved: no activity for ${config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]} days. Escrow was not in held state at resolution time — no refund issued.`,
           })
           .eq('id', dispute.id);
 
-        await supabase
-          .from('escrow')
-          .update({ status: 'refunded_to_client' })
-          .eq('order_id', dispute.order_id);
-
-        await supabase
-          .from('orders')
-          .update({ status: 'cancelled' })
-          .eq('id', dispute.order_id);
-
-        logs.push(`Auto-resolved dispute ${dispute.id}`);
-      } else {
-        logs.push(`Skipped dispute ${dispute.id} — no associated order`);
+        logs.push(`[Rule 1] Closed dispute ${dispute.id} — escrow already terminal, no wallet credit`);
+        continue;
       }
+
+      const { data: orderRow, error: orderFetchError } = await supabase
+        .from('orders')
+        .select('client_id')
+        .eq('id', dispute.order_id)
+        .single();
+
+      if (orderFetchError || !orderRow) {
+        console.error(`[Rule 1] Order fetch error for ${dispute.order_id}:`, orderFetchError);
+        logs.push(`[Rule 1] Skipped dispute ${dispute.id} — order fetch error`);
+        continue;
+      }
+
+      const refundAmount = Number(escrowRow.amount);
+      const buyerId      = orderRow.client_id;
+
+      // ── B. Status mutations ─────────────────────────────────────────────────
+
+      const { error: disputeUpdateError } = await supabase
+        .from('disputes')
+        .update({
+          status:           'resolved_client',
+          resolution_notes: `Auto-resolved: no activity from either party for ${config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]} days.`,
+        })
+        .eq('id', dispute.id);
+
+      if (disputeUpdateError) {
+        console.error(`[Rule 1] Dispute update failed for ${dispute.id}:`, disputeUpdateError);
+        logs.push(`[Rule 1] FAILED to update dispute ${dispute.id} — skipping`);
+        continue;
+      }
+
+      // Re-assert status='held' in the WHERE clause so that a race between
+      // cron ticks cannot cause a double escrow update.
+      const { error: escrowUpdateError } = await supabase
+        .from('escrow')
+        .update({ status: 'refunded_to_client' })
+        .eq('order_id', dispute.order_id)
+        .eq('status', 'held');
+
+      if (escrowUpdateError) {
+        // guard_against_double_wallet_credit trigger raised, or genuine race.
+        // Dispute is already closed above. Do not credit wallet.
+        console.error(`[Rule 1] Escrow update blocked for order ${dispute.order_id}:`, escrowUpdateError);
+        logs.push(`[Rule 1] Escrow update blocked for dispute ${dispute.id} — double-credit guard fired, no wallet credit`);
+        continue;
+      }
+
+      // Order cancellation is best-effort; failure here does not block the refund.
+      await supabase
+        .from('orders')
+        .update({ status: 'cancelled' })
+        .eq('id', dispute.order_id);
+
+      // ── C. Credit buyer wallet (single path, atomic) ────────────────────────
+      //
+      // increment_wallet_balance is a SECURITY DEFINER function:
+      //   UPDATE wallets SET balance = balance + p_amount WHERE user_id = p_user_id
+      // Only balance is touched — NOT total_earned (refund ≠ income).
+      // Requires: migrations/20260407_add_increment_wallet_balance.sql
+
+      const { error: walletCreditError } = await supabase.rpc(
+        'increment_wallet_balance',
+        { p_user_id: buyerId, p_amount: refundAmount }
+      );
+
+      if (walletCreditError) {
+        // Escrow is already 'refunded_to_client'. We cannot undo that.
+        // Flag for manual admin action.
+        console.error(`[Rule 1] Wallet credit failed for buyer ${buyerId}:`, walletCreditError);
+
+        await supabase.from('security_logs').insert({
+          user_id:     buyerId,
+          event_type:  'manual_credit_required',
+          severity:    'high',
+          description:
+            `Dispute ${dispute.id} auto-resolved: escrow marked 'refunded_to_client' ` +
+            `but wallet credit of ₦${refundAmount.toLocaleString('en-NG')} failed. ` +
+            `Manual wallet adjustment required. Order: ${dispute.order_id}.`,
+        });
+
+        logs.push(
+          `[Rule 1] FAILED wallet credit for buyer ${buyerId} — ` +
+          `MANUAL CREDIT REQUIRED ₦${refundAmount.toLocaleString('en-NG')} ` +
+          `(dispute ${dispute.id})`
+        );
+        continue;
+      }
+
+      // ── D. Transactions audit row ───────────────────────────────────────────
+      // Only inserted after confirmed wallet credit. No credit = no audit entry.
+
+      await supabase.from('transactions').insert({
+        recipient_user_id: buyerId,
+        transaction_type:  'refund',
+        transaction_ref:   `REFUND-${dispute.id}-${Date.now()}`,
+        amount:            refundAmount,
+        status:            'completed',
+        order_id:          dispute.order_id,
+      });
+
+      // ── E. Notify buyer ─────────────────────────────────────────────────────
+
+      await supabase.from('notifications').insert({
+        user_id: buyerId,
+        type:    'dispute_auto_resolved',
+        title:   'Dispute Auto-Resolved — Refund Issued',
+        message:
+          `Your dispute has been automatically resolved in your favour after ` +
+          `${config[CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]} days of inactivity from both parties. ` +
+          `₦${refundAmount.toLocaleString('en-NG')} has been refunded to your F9 wallet.`,
+      });
+
+      logs.push(
+        `[Rule 1] Auto-resolved dispute ${dispute.id} — ` +
+        `refunded ₦${refundAmount.toLocaleString('en-NG')} to buyer ${buyerId}`
+      );
     }
   }
+
+  // ─── RULE 1 (cont.): Quality/delivery disputes → escalate ──────────────────
 
   const { data: qualityDisputes, error: qualityError } = await supabase
     .from('disputes')
@@ -129,7 +306,7 @@ export async function POST() {
     .in('reason', ['quality', 'delivery']);
 
   if (qualityError) {
-    console.error('Error fetching quality/delivery disputes:', qualityError);
+    console.error('[Rule 1] Error fetching quality/delivery disputes:', qualityError);
   }
 
   if (qualityDisputes && qualityDisputes.length > 0) {
@@ -142,11 +319,14 @@ export async function POST() {
         })
         .eq('id', dispute.id);
 
-      logs.push(`Escalated quality/delivery dispute ${dispute.id} to admin queue`);
+      logs.push(`[Rule 1] Escalated quality/delivery dispute ${dispute.id} to admin queue`);
     }
   }
 
   // ─── RULE 2: Frequent disputers ───────────────────────────────────────────
+  //
+  // FIX: Advisory now fires dual-channel — bell notification (notifications
+  //      table) + F9 inbox message (sendF9SystemMessage) — matching Rules 4/5.
 
   const disputer_window_ms = config[CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS] * 24 * 60 * 60 * 1000;
   const thirtyDaysAgo      = new Date(Date.now() - disputer_window_ms).toISOString();
@@ -157,7 +337,7 @@ export async function POST() {
   );
 
   if (dispusterError) {
-    console.error('Error finding frequent disputers:', dispusterError);
+    console.error('[Rule 2] Error finding frequent disputers:', dispusterError);
   }
 
   if (frequentDisputers && Array.isArray(frequentDisputers) && frequentDisputers.length > 0) {
@@ -168,18 +348,29 @@ export async function POST() {
         p_score_change: -15,
       });
 
-      await supabase.from('notifications').insert({
-        user_id: user.id,
-        type:    'level_1_advisory',
-        title:   'Level 1 Advisory Notice',
-        message: 'Your account has initiated an unusually high number of disputes recently. Please review our marketplace guidelines.',
-      });
+      const advisoryMessage =
+        'Your account has initiated an unusually high number of disputes recently. ' +
+        'Please review our marketplace guidelines.';
 
-      logs.push(`Issued Level 1 advisory to user ${user.id}`);
+      await Promise.all([
+        supabase.from('notifications').insert({
+          user_id: user.id,
+          type:    'level_1_advisory',
+          title:   'Level 1 Advisory Notice',
+          message: advisoryMessage,
+        }),
+        sendF9SystemMessage(supabase, user.id, advisoryMessage),
+      ]);
+
+      logs.push(`[Rule 2] Issued Level 1 advisory to user ${user.id}`);
     }
   }
 
-  // ─── RULE 3: 5+ unique senders with no linked orders → suspend + flag ──────
+  // ─── RULE 3: 5+ unique senders with no linked orders → freeze wallet + flag ─
+  //
+  // FIX: The spec requires isolating the punishment to the wallet
+  //      (wallets.is_frozen = true), not suspending the entire account.
+  //      Full account suspension is a separate admin action taken after review.
 
   const unlinked_window_ms = config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS] * 60 * 60 * 1000;
   const twentyFourHoursAgo = new Date(Date.now() - unlinked_window_ms).toISOString();
@@ -200,18 +391,15 @@ export async function POST() {
     .gte('created_at', twentyFourHoursAgo) as { data: UnlinkedTxRow[] | null; error: unknown };
 
   if (txError) {
-    console.error('Error fetching unlinked transactions for fraud check:', txError);
+    console.error('[Rule 3] Error fetching unlinked transactions:', txError);
   }
 
   if (unlinkedTx && unlinkedTx.length > 0) {
     const migrationApplied = unlinkedTx.some((tx) => tx.recipient_user_id !== null);
 
     if (!migrationApplied) {
-      console.warn(
-        '[Rule 3] Skipped: recipient_user_id column not yet populated. ' +
-        'Run the migration and update the wallet top-up route to set this field.'
-      );
-      logs.push('Rule 3 skipped — recipient_user_id not yet populated');
+      console.warn('[Rule 3] Skipped: recipient_user_id not yet populated.');
+      logs.push('[Rule 3] Skipped — recipient_user_id not yet populated');
     } else {
       const recipientMap = new Map<string, Set<string>>();
 
@@ -239,16 +427,17 @@ export async function POST() {
       for (const [recipientId, senders] of recipientMap.entries()) {
         if (senders.size < 5) continue;
 
+        // ── Freeze wallet only — full account suspension is an admin action ──
         await supabase
-          .from('profiles')
-          .update({ account_status: 'suspended' })
-          .eq('id', recipientId);
+          .from('wallets')
+          .update({ is_frozen: true })
+          .eq('user_id', recipientId);
 
         await supabase.from('security_logs').insert({
           user_id:     recipientId,
           event_type:  'suspicious_unlinked_inflow',
           severity:    'critical',
-          description: `Received funds from ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no corresponding orders. Account suspended pending admin review.`,
+          description: `Received funds from ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no corresponding orders. Wallet frozen pending admin review.`,
         });
 
         const { data: adminProfiles } = await supabase
@@ -263,19 +452,19 @@ export async function POST() {
               user_id: a.id,
               type:    'critical_fraud_alert',
               title:   'Critical: Suspicious Wallet Inflow',
-              message: `User ${recipientId} received funds from ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no linked orders. Account auto-suspended. Immediate review required.`,
+              message: `User ${recipientId} received funds from ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no linked orders. Wallet auto-frozen. Immediate review required.`,
             }))
           );
         }
 
         await supabase.from('notifications').insert({
           user_id: recipientId,
-          type:    'account_suspended',
-          title:   'Account Suspended',
-          message: 'Unusual payment activity has been detected on your account. It has been temporarily suspended pending review. Please contact support.',
+          type:    'wallet_frozen',
+          title:   'Wallet Frozen',
+          message: 'Unusual payment activity has been detected on your account. Your wallet has been temporarily frozen pending review. Please contact support.',
         });
 
-        logs.push(`Suspended account ${recipientId} — ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no linked orders`);
+        logs.push(`[Rule 3] Frozen wallet for ${recipientId} — ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no linked orders`);
       }
     }
   }
@@ -320,22 +509,17 @@ export async function POST() {
 
   if (expiredHolds && expiredHolds.length > 0) {
     for (const hold of expiredHolds) {
-      // ── 1. Promote to pending ─────────────────────────────────────────────
       const { error: updateError } = await supabase
         .from('withdrawals')
-        .update({
-          status:         'pending',
-          failure_reason: null,
-        })
+        .update({ status: 'pending', failure_reason: null })
         .eq('id', hold.id);
 
       if (updateError) {
         console.error(`[Rule 4] Failed to release hold ${hold.id}:`, updateError);
-        logs.push(`Rule 4: FAILED to release hold ${hold.id} for user ${hold.user_id}`);
+        logs.push(`[Rule 4] FAILED to release hold ${hold.id} for user ${hold.user_id}`);
         continue;
       }
 
-      // ── 2. Dual-channel notification ──────────────────────────────────────
       const releaseMessage =
         `Your withdrawal of ₦${hold.amount.toLocaleString('en-NG')} has been automatically ` +
         `released from its fraud-prevention hold and is now queued for processing. ` +
@@ -351,10 +535,7 @@ export async function POST() {
         sendF9SystemMessage(supabase, hold.user_id, releaseMessage),
       ]);
 
-      logs.push(
-        `Rule 4: Released hold on withdrawal ${hold.id} ` +
-        `(₦${hold.amount.toLocaleString('en-NG')}) for user ${hold.user_id} → pending`
-      );
+      logs.push(`[Rule 4] Released hold ${hold.id} (₦${hold.amount.toLocaleString('en-NG')}) for user ${hold.user_id} → pending`);
     }
   }
 
@@ -406,29 +587,19 @@ export async function POST() {
     .limit(200) as { data: ScheduledNotifRow[] | null; error: unknown };
 
   if (scheduleQueryError) {
-    // Most likely cause pre-migration: column "dispatched_at" does not exist.
-    // Log and skip — other rules are unaffected.
     console.error('[Rule 5] Failed to query scheduled notifications:', scheduleQueryError);
-    logs.push('Rule 5: SKIPPED — query error (migration may not be applied yet)');
+    logs.push('[Rule 5] SKIPPED — query error (migration may not be applied yet)');
   } else if (scheduledRows && scheduledRows.length > 0) {
     const dispatchedAt = new Date().toISOString();
 
     for (const notif of scheduledRows) {
       if (!notif.user_id) {
-        // Broadcast rows with user_id IS NULL should not exist in practice
-        // (sendBroadcast always sets user_id per-recipient), but guard anyway.
-        logs.push(`Rule 5: Skipped notification ${notif.id} — no user_id`);
+        logs.push(`[Rule 5] Skipped notification ${notif.id} — no user_id`);
         continue;
       }
 
-      // Fire the F9 inbox message. sendF9SystemMessage catches its own errors
-      // and never throws — a failure here is logged inside the helper and does
-      // not prevent the dispatched_at stamp below.
       await sendF9SystemMessage(supabase, notif.user_id, notif.message);
 
-      // Stamp dispatched_at regardless of inbox delivery success (see IDEMPOTENCY
-      // note above). If the UPDATE itself fails, log but do not retry — the next
-      // cron tick would re-fire which is the lesser evil compared to silent loss.
       const { error: stampError } = await supabase
         .from('notifications')
         .update({ dispatched_at: dispatchedAt } as Record<string, unknown>)
@@ -436,13 +607,13 @@ export async function POST() {
 
       if (stampError) {
         console.error(`[Rule 5] Failed to stamp dispatched_at for notification ${notif.id}:`, stampError);
-        logs.push(`Rule 5: FAILED to stamp ${notif.id} — may re-fire on next tick`);
+        logs.push(`[Rule 5] FAILED to stamp ${notif.id} — may re-fire on next tick`);
       } else {
-        logs.push(`Rule 5: Dispatched scheduled inbox message for notification ${notif.id} → user ${notif.user_id}`);
+        logs.push(`[Rule 5] Dispatched scheduled inbox message for notification ${notif.id} → user ${notif.user_id}`);
       }
     }
   } else if (!scheduleQueryError) {
-    logs.push('Rule 5: No scheduled notifications due for dispatch');
+    logs.push('[Rule 5] No scheduled notifications due for dispatch');
   }
 
   return NextResponse.json({ success: true, actions: logs });

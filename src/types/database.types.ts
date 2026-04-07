@@ -2180,6 +2180,10 @@ export type Database = {
         Args: { p_service_id: string }
         Returns: undefined
       }
+      increment_wallet_balance: {
+        Args: { p_amount: number; p_user_id: string }
+        Returns: undefined
+      }
       lift_expired_suspensions: {
         Args: never
         Returns: {

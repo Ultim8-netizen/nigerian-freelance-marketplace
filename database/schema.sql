@@ -5684,4 +5684,62 @@ WHERE  scheduled_at IS NOT NULL
   AND  dispatched_at IS NULL;
 
 
-  
+  -- migrations/20260407_add_increment_wallet_balance.sql
+--
+-- PURPOSE:
+--   Provides a safe, single-path way to credit a user's wallet balance
+--   from a cron/service-role context without relying on supabase-js v2's
+--   inability to perform arithmetic in .update() calls.
+--
+--   Used exclusively by:
+--     src/app/api/admin/automation/cron/route.ts — Rule 1 (escrow refund to buyer)
+--
+-- DESIGN NOTES:
+--   • SECURITY DEFINER — runs as the function owner (postgres), bypassing RLS.
+--     This is equivalent to what a service-role client does, but expressed as
+--     a DB primitive so the arithmetic is atomic and cannot race with other
+--     concurrent balance updates.
+--   • Only increments `balance`. Does NOT touch `total_earned` — this is a
+--     refund, not income, and must not inflate the seller-side earnings metric.
+--   • Raises an exception if no wallet row exists for the given user. A missing
+--     wallet is a data integrity problem that must surface loudly, not be
+--     silently inserted with a possibly wrong initial state.
+--   • Uses named dollar-quote tag $func$ (required by Supabase SQL editor for
+--     multi-byte safe parsing).
+
+CREATE OR REPLACE FUNCTION public.increment_wallet_balance(
+  p_user_id UUID,
+  p_amount  NUMERIC
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+BEGIN
+  IF p_amount <= 0 THEN
+    RAISE EXCEPTION
+      'increment_wallet_balance: p_amount must be positive, got %', p_amount;
+  END IF;
+
+  UPDATE wallets
+  SET
+    balance    = balance + p_amount,
+    updated_at = NOW()
+  WHERE user_id = p_user_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION
+      'increment_wallet_balance: No wallet found for user %. Cannot credit ₦%.', 
+      p_user_id, p_amount;
+  END IF;
+END;
+$func$;
+
+-- Restrict execution to service role only (cron context).
+-- Revoke from public so anon/authenticated callers cannot self-credit.
+REVOKE EXECUTE ON FUNCTION public.increment_wallet_balance(UUID, NUMERIC) FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION public.increment_wallet_balance(UUID, NUMERIC) TO service_role;
+
+
+
