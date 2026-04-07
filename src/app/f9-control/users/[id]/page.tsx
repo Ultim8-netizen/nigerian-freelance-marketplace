@@ -356,9 +356,9 @@ async function addPrivateNote(fd: FormData) {
 export default async function AdminUserProfilePage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const { id } = params;
+  const { id } = await params;
   const supabase = await createClient();
 
   // ── Profile ────────────────────────────────────────────────────────────────
@@ -398,6 +398,58 @@ export default async function AdminUserProfilePage({
     .eq('user_id', id)
     .order('created_at', { ascending: false })
     .limit(20);
+
+  // ── Transactions ───────────────────────────────────────────────────────────
+  // The transactions table links a user in two ways:
+  //
+  //   1. recipient_user_id = id  — the user received money (escrow release,
+  //                                 wallet top-up, refund, etc.)
+  //   2. order_id ∈ user's orders — the user was the paying client on a
+  //                                 service/job order payment. The transactions
+  //                                 table has no direct payer FK; the client
+  //                                 relationship lives on orders.client_id.
+  //
+  // We resolve both legs independently then deduplicate by id so a transaction
+  // that matches both conditions (e.g. freelancer paid into their own order) is
+  // only shown once.
+  //
+  // Limit 30 per leg → at most 60 rows before dedup; after dedup ≤ 60 but
+  // typically far fewer. Sorted descending so newest rows survive dedup.
+
+  const orderIds = (orders ?? []).map((o) => o.id);
+
+  const [{ data: txByRecipient }, { data: txByOrder }] = await Promise.all([
+    // Leg 1: transactions where this user is the named recipient
+    supabase
+      .from('transactions')
+      .select('*')
+      .eq('recipient_user_id', id)
+      .order('created_at', { ascending: false })
+      .limit(30),
+
+    // Leg 2: transactions linked to orders the user participated in as client
+    // Skip the query entirely when the user has no orders — avoids an empty .in()
+    // which Supabase would reject or return all rows on some driver versions.
+    orderIds.length > 0
+      ? supabase
+          .from('transactions')
+          .select('*')
+          .in('order_id', orderIds)
+          .order('created_at', { ascending: false })
+          .limit(30)
+      : Promise.resolve({ data: [] as import('@/types').Tables<'transactions'>[] }),
+  ]);
+
+  // Deduplicate: build a Map keyed by id; leg 1 wins on collision (recipient
+  // rows are the most directly relevant to the user).
+  const txMap = new Map<string, import('@/types').Tables<'transactions'>>();
+  for (const tx of [...(txByOrder ?? []), ...(txByRecipient ?? [])]) {
+    txMap.set(tx.id, tx);
+  }
+  // Re-sort the merged set by created_at descending
+  const transactions = Array.from(txMap.values()).sort(
+    (a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime(),
+  );
 
   // ── Flags & History ────────────────────────────────────────────────────────
   const { data: securityLogs } = await supabase
@@ -455,6 +507,7 @@ export default async function AdminUserProfilePage({
         disputes={disputes ?? []}
         wallet={wallet ?? null}
         withdrawals={withdrawals ?? []}
+        transactions={transactions}
         securityLogs={securityLogs ?? []}
         trustEvents={trustEvents ?? []}
         devices={devices ?? []}

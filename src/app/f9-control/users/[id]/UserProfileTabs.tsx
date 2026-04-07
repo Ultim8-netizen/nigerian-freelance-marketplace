@@ -19,6 +19,8 @@ export interface UserProfileTabsProps {
   disputes:     Tables<'disputes'>[];
   wallet:       Tables<'wallets'> | null;
   withdrawals:  Tables<'withdrawals'>[];
+  /** Full transaction history — both legs (recipient + order-linked). */
+  transactions: Tables<'transactions'>[];
   securityLogs: Tables<'security_logs'>[];
   trustEvents:  Tables<'trust_score_events'>[];
   devices:      Tables<'user_devices'>[];
@@ -411,14 +413,28 @@ function ActivityTab({
   );
 }
 
+// ─── Transaction status badge colour helper ───────────────────────────────────
+
+function txStatusColour(status: string | null): string {
+  switch (status) {
+    case 'successful': return 'text-green-700 bg-green-50';
+    case 'pending':    return 'text-amber-700 bg-amber-50';
+    case 'failed':     return 'text-red-700 bg-red-50';
+    default:           return 'text-gray-600 bg-gray-100';
+  }
+}
+
 function FinancialsTab({
-  wallet, withdrawals,
+  wallet, withdrawals, transactions,
 }: {
-  wallet:      Tables<'wallets'> | null;
-  withdrawals: Tables<'withdrawals'>[];
+  wallet:       Tables<'wallets'> | null;
+  withdrawals:  Tables<'withdrawals'>[];
+  transactions: Tables<'transactions'>[];
 }) {
   return (
     <div className="space-y-6">
+
+      {/* ── Wallet ──────────────────────────────────────────────────────── */}
       <div>
         <h4 className="text-sm font-semibold text-gray-700 mb-3">Wallet</h4>
         {!wallet ? (
@@ -448,6 +464,77 @@ function FinancialsTab({
         )}
       </div>
 
+      {/* ── Transaction History ─────────────────────────────────────────── */}
+      <div>
+        <h4 className="text-sm font-semibold text-gray-700 mb-3">
+          Transaction History ({transactions.length})
+        </h4>
+        {transactions.length === 0 ? (
+          <p className="text-sm text-gray-400 italic">No transactions found.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left border-collapse">
+              <thead className="bg-gray-50">
+                <tr>
+                  {['Ref', 'Type', 'Amount', 'Method', 'Status', 'Paid At', 'Created'].map((h) => (
+                    <th key={h} className="px-4 py-2 text-xs font-medium text-gray-500 border-b whitespace-nowrap">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {transactions.map((tx) => (
+                  <tr key={tx.id} className="hover:bg-gray-50">
+                    {/* Ref — truncated for display; full value in title tooltip */}
+                    <td className="px-4 py-2 font-mono text-xs text-gray-500 max-w-[120px]">
+                      <span title={tx.transaction_ref} className="block truncate">
+                        {tx.transaction_ref}
+                      </span>
+                      {tx.flutterwave_tx_ref && (
+                        <span title={tx.flutterwave_tx_ref} className="block truncate text-gray-400 mt-0.5">
+                          flw: {tx.flutterwave_tx_ref}
+                        </span>
+                      )}
+                    </td>
+                    {/* Type */}
+                    <td className="px-4 py-2 capitalize whitespace-nowrap">
+                      {tx.transaction_type.replace(/_/g, ' ')}
+                    </td>
+                    {/* Amount */}
+                    <td className="px-4 py-2 font-medium whitespace-nowrap">
+                      {formatNGN(tx.amount)}
+                      {tx.currency && tx.currency !== 'NGN' && (
+                        <span className="ml-1 text-xs text-gray-400">{tx.currency}</span>
+                      )}
+                    </td>
+                    {/* Method */}
+                    <td className="px-4 py-2 text-xs text-gray-500 capitalize whitespace-nowrap">
+                      {tx.payment_method ?? '—'}
+                    </td>
+                    {/* Status badge */}
+                    <td className="px-4 py-2 whitespace-nowrap">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold capitalize ${txStatusColour(tx.status)}`}>
+                        {tx.status ?? '—'}
+                      </span>
+                    </td>
+                    {/* Paid at */}
+                    <td className="px-4 py-2 text-xs text-gray-500 whitespace-nowrap">
+                      {dt(tx.paid_at)}
+                    </td>
+                    {/* Created */}
+                    <td className="px-4 py-2 text-xs text-gray-500 whitespace-nowrap">
+                      {dt(tx.created_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Withdrawals ─────────────────────────────────────────────────── */}
       <div>
         <h4 className="text-sm font-semibold text-gray-700 mb-3">Withdrawals ({withdrawals.length})</h4>
         {withdrawals.length === 0 ? (
@@ -692,6 +779,7 @@ export function UserProfileTabs({
   disputes,
   wallet,
   withdrawals,
+  transactions,
   securityLogs,
   trustEvents,
   devices,
@@ -839,7 +927,13 @@ export function UserProfileTabs({
         <div className="p-6">
           {active === 'Overview'        && <OverviewTab   p={profile} />}
           {active === 'Activity'        && <ActivityTab   orders={orders} disputes={disputes} />}
-          {active === 'Financials'      && <FinancialsTab wallet={wallet} withdrawals={withdrawals} />}
+          {active === 'Financials'      && (
+            <FinancialsTab
+              wallet={wallet}
+              withdrawals={withdrawals}
+              transactions={transactions}
+            />
+          )}
           {active === 'Flags & History' && <FlagsTab      securityLogs={securityLogs} trustEvents={trustEvents} />}
           {active === 'Security'        && <SecurityTab   devices={devices} auditLogs={auditLogs} />}
           {active === 'Admin Notes'     && (
