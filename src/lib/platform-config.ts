@@ -31,6 +31,29 @@ export const CONFIG_KEYS = {
    * Set via the admin finance panel → Withdrawal Gate banner.
    */
   WITHDRAWAL_GATE_THRESHOLD:          'withdrawal_gate_threshold',
+
+  /**
+   * On/Off toggle for the "Same device/IP on two accounts → flag both"
+   * fraud detection rule that fires at registration.
+   *
+   * Stored as a numeric boolean: 1 = enabled, 0 = disabled.
+   * Treat any non-zero value as enabled.
+   *
+   * Admin panel path: Config → Security → Shared IP Check.
+   */
+  SHARED_IP_CHECK_ENABLED:            'shared_ip_check_enabled',
+
+  /**
+   * Minimum number of *other* accounts that must share the same IP before
+   * the shared-IP rule fires. Allows single-household false positives (e.g.
+   * two siblings, one router) to be tolerated up to a configurable threshold.
+   *
+   * Default: 1 — any overlap triggers the flag (original behaviour).
+   * Raise to 2+ in environments with high NAT / shared-campus IP density.
+   *
+   * Admin panel path: Config → Security → Shared IP Min Accounts.
+   */
+  SHARED_IP_MIN_ACCOUNTS:             'shared_ip_min_accounts',
 } as const;
 
 export type ConfigKey = typeof CONFIG_KEYS[keyof typeof CONFIG_KEYS];
@@ -51,6 +74,9 @@ const DEFAULTS: Record<ConfigKey, number> = {
   [CONFIG_KEYS.HIGH_VALUE_LISTING_THRESHOLD]:     100000,
   [CONFIG_KEYS.NEW_ACCOUNT_HOLD_DAYS]:            7,
   [CONFIG_KEYS.WITHDRAWAL_GATE_THRESHOLD]:        0,   // 0 = gate disabled
+  // Shared-IP fraud rule — on by default, flag on first overlap
+  [CONFIG_KEYS.SHARED_IP_CHECK_ENABLED]:          1,   // 1 = enabled
+  [CONFIG_KEYS.SHARED_IP_MIN_ACCOUNTS]:           1,   // flag if ≥ 1 other account shares IP
 };
 
 /**

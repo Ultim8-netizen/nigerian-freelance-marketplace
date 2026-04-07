@@ -7,6 +7,14 @@
 //          user_devices under a different user_id, a 'high'-severity security_logs
 //          entry is written for both the new account and each conflicting account so
 //          they surface in the Admin Flags & Tickets queue.
+//
+// CONFIG-DRIVEN: The shared-IP rule is now fully controlled by platform_config:
+//   • shared_ip_check_enabled  — On/Off toggle (1 = on, 0 = off).
+//   • shared_ip_min_accounts   — Minimum number of conflicting accounts required
+//                                before the flag fires. Default: 1.
+// Both values are read once per request from the DB (with hardcoded fallbacks)
+// before the fire-and-forget is dispatched, so an admin can disable or tune the
+// rule without a code deployment.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware }           from '@/lib/api/enhanced-middleware';
@@ -14,6 +22,7 @@ import { createClient }              from '@/lib/supabase/server';
 import { createAdminClient }         from '@/lib/supabase/admin';
 import { registerSchema }            from '@/lib/validations';
 import { checkSharedIpAddress }      from '@/lib/security/fraud-detection';
+import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
 import { z }                         from 'zod';
 import { logger }                    from '@/lib/logger';
 import type { Json }                 from '@/types/database.types';
@@ -97,15 +106,36 @@ export async function POST(request: NextRequest) {
     //   a) user_devices cross-user reads require service role (own-user RLS)
     //   b) security_logs has no user INSERT policy
     //
-    // The new user's IP is recorded in user_devices so future registrations
-    // from the same IP are cross-referenceable.
+    // Config is fetched here (in the request context) using the already-
+    // instantiated adminClient so the fire-and-forget closure receives plain
+    // booleans/numbers — no async config resolution inside the background task.
     const ip = (
       request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
       request.headers.get('x-real-ip') ||
       'unknown'
     );
 
-    void flagSharedIpOnRegistration({ userId: newUserId, ip });
+    const adminClient = createAdminClient();
+
+    const config = await getPlatformConfigs(adminClient, [
+      CONFIG_KEYS.SHARED_IP_CHECK_ENABLED,
+      CONFIG_KEYS.SHARED_IP_MIN_ACCOUNTS,
+    ]);
+
+    // Treat any non-zero value of SHARED_IP_CHECK_ENABLED as enabled.
+    const sharedIpEnabled    = config[CONFIG_KEYS.SHARED_IP_CHECK_ENABLED] !== 0;
+    const sharedIpMinAccounts = config[CONFIG_KEYS.SHARED_IP_MIN_ACCOUNTS];
+
+    if (sharedIpEnabled) {
+      void flagSharedIpOnRegistration({
+        userId:      newUserId,
+        ip,
+        adminClient,
+        minAccounts: sharedIpMinAccounts,
+      });
+    } else {
+      logger.info('Shared-IP check skipped — disabled via platform_config', { userId: newUserId });
+    }
 
     return NextResponse.json(
       {
@@ -144,24 +174,31 @@ export async function POST(request: NextRequest) {
 
 /**
  * Registers the new user's IP in user_devices, then cross-references it against
- * all existing rows. If any other user_id shares this IP, inserts a 'high'-severity
- * security_logs entry for the new account AND each conflicting account so both
- * surface in the Admin Flags & Tickets queue.
+ * all existing rows. If the number of other accounts sharing this IP meets or
+ * exceeds `minAccounts`, inserts a 'high'-severity security_logs entry for the
+ * new account AND each conflicting account so both surface in the Admin Flags &
+ * Tickets queue.
  *
  * Spec: "Same device/IP on two accounts → flag both. No auto-action."
+ *
+ * The rule is only called when SHARED_IP_CHECK_ENABLED !== 0 (checked by the
+ * caller). `minAccounts` maps to the SHARED_IP_MIN_ACCOUNTS platform_config key.
  *
  * All errors are caught and logged — this function is always fire-and-forget.
  */
 async function flagSharedIpOnRegistration({
   userId,
   ip,
+  adminClient,
+  minAccounts,
 }: {
-  userId: string;
-  ip:     string;
+  userId:      string;
+  ip:          string;
+  adminClient: ReturnType<typeof createAdminClient>;
+  minAccounts: number;
 }): Promise<void> {
   try {
-    const adminClient = createAdminClient();
-    const now         = new Date().toISOString();
+    const now = new Date().toISOString();
 
     // Record IP for this new user — upsert is safe if trigger already inserted a row.
     // device_fingerprint is namespaced with 'ip:' to avoid collisions with any
@@ -190,12 +227,14 @@ async function flagSharedIpOnRegistration({
     // Cross-reference: find other users who registered from the same IP
     const conflictingUserIds = await checkSharedIpAddress(adminClient, userId, ip);
 
-    if (conflictingUserIds.length === 0) return;
+    // Only fire if the number of conflicting accounts meets the configured threshold.
+    if (conflictingUserIds.length < minAccounts) return;
 
     logger.warn('Shared IP detected at registration — flagging both sides', {
       userId,
       conflictingUserIds,
       ip,
+      minAccounts,
     });
 
     // Build security_log rows — one for the new account, one per conflicting account.
@@ -210,6 +249,7 @@ async function flagSharedIpOnRegistration({
         metadata:    {
           conflicting_user_ids: conflictingUserIds,
           event:                'registration',
+          min_accounts_config:  minAccounts,
         } as Json,
       },
       ...conflictingUserIds.map((conflictId) => ({
@@ -219,8 +259,9 @@ async function flagSharedIpOnRegistration({
         ip_address:  ip as unknown,
         description: `A new account (${userId}) registered from this account's IP address. No automatic action taken — queued for admin review.`,
         metadata:    {
-          new_user_id: userId,
-          event:       'registration',
+          new_user_id:         userId,
+          event:               'registration',
+          min_accounts_config: minAccounts,
         } as Json,
       })),
     ];

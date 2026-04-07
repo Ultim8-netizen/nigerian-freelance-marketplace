@@ -5743,3 +5743,8 @@ GRANT  EXECUTE ON FUNCTION public.increment_wallet_balance(UUID, NUMERIC) TO ser
 
 
 
+INSERT INTO platform_config (key, value, enabled, description)
+VALUES
+  ('shared_ip_check_enabled', 1,  true, 'On/Off toggle for the shared-IP fraud detection rule at registration.'),
+  ('shared_ip_min_accounts',  1,  true, 'Minimum number of conflicting accounts required to trigger the shared-IP flag.')
+ON CONFLICT (key) DO NOTHING;
