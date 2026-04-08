@@ -4,14 +4,15 @@
 // CSV export for the F9 Analytics dashboard.
 //
 // Sections:
-//   1. User Growth      — line chart + onboarding completion rate (NEW)
+//   1. User Growth      — line chart + onboarding completion rate
 //   2. Marketplace      — bar/area charts + AOV, popular categories,
-//                         repeat user rate (NEW)
+//                         repeat user rate
 //   3. Financial Flow   — area chart + escrow turnover, avg payment-to-
-//                         release time (NEW)
+//                         release time
 //   4. Trust & Safety   — bar (disputes) + pie (trust levels) +
-//                         verification completion rates + flag volume (NEW)
-//   5. Geography        — horizontal bar, top 10 user locations
+//                         verification completion rates + flag volume
+//   5. Geography        — user count by state (horizontal bar) +
+//                         transaction volume by state (horizontal bar)
 //
 // Dependency: recharts
 
@@ -64,7 +65,7 @@ export type ContestTicketRow = {
   status:     string;
 };
 
-// NEW — order row from the orders table with service join for category.
+// order row from the orders table with service join for category.
 // service_id is returned as an object when Supabase resolves the FK join.
 export type OrderRow = {
   created_at: string;
@@ -75,7 +76,7 @@ export type OrderRow = {
   service_id: { category: string } | null;
 };
 
-// NEW — escrow row for turnover + payment-to-release timing.
+// escrow row for turnover + payment-to-release timing.
 export type EscrowRow = {
   created_at:  string;
   released_at: string | null;
@@ -83,11 +84,25 @@ export type EscrowRow = {
   amount:      number;
 };
 
-// NEW — security_log row for flag volume over time.
+// security_log row for flag volume over time.
 export type SecurityLogRow = {
   created_at: string;
   event_type: string;
   severity:   string | null;
+};
+
+// Transaction row joined to the recipient's profile location.
+// Used exclusively in the Geography section to produce transaction volume
+// by Nigerian state.
+//
+// Supabase resolves the recipient_user_id FK join as a nested object:
+//   { location: string | null } | null
+// null outer  = transaction has no recipient_user_id (e.g. wallet top-up)
+// null inner  = recipient profile has no location set
+export type GeoTransactionRow = {
+  created_at:        string;
+  amount:            number;
+  recipient_user_id: { location: string | null } | null;
 };
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -109,12 +124,13 @@ interface Props {
   withdrawals:       WithdrawalRow[];
   disputes:          DisputeRow[];
   contestTickets:    ContestTicketRow[];
-  // Replaces allProfileTrustLevels — now carries all verification columns too.
+  // Carries all verification columns for the Trust & Safety section snapshot.
   allProfiles:       AllProfileSnapshot[];
-  // NEW props
   orders:            OrderRow[];
   escrowEntries:     EscrowRow[];
   securityLogs:      SecurityLogRow[];
+  // Transactions joined to recipient profile location — Geography section.
+  geoTransactions:   GeoTransactionRow[];
 }
 
 // ─── Date range ───────────────────────────────────────────────────────────────
@@ -299,6 +315,7 @@ export function AnalyticsClient({
   orders,
   escrowEntries,
   securityLogs,
+  geoTransactions,
 }: Props) {
   const [range, setRange] = useState<DateRange>('90d');
 
@@ -376,7 +393,6 @@ export function AnalyticsClient({
   }, [ordersInRange]);
 
   // Popular categories — derived from the service_id join on orders.
-  // service_id is an object { category } when the FK join resolves.
   const popularCategoriesData = useMemo(() => {
     const map: Record<string, number> = {};
     for (const o of ordersInRange) {
@@ -471,14 +487,14 @@ export function AnalyticsClient({
     );
     if (!released.length) return null;
     const totalMs = released.reduce((s, e) => {
-      const created  = new Date(e.created_at).getTime();
+      const created    = new Date(e.created_at).getTime();
       const releasedAt = new Date(e.released_at!).getTime();
       return s + Math.max(0, releasedAt - created);
     }, 0);
     return totalMs / released.length / (1000 * 60 * 60); // → hours
   }, [escrowInRange]);
 
-  // Escrow volume over time — for chart
+  // Escrow volume over time — for chart.
   const escrowVolumeData = useMemo(
     () =>
       groupByBucket(
@@ -556,7 +572,7 @@ export function AnalyticsClient({
     [securityLogsInRange, range],
   );
 
-  // Top flag types — for supplementary breakdown bar chart.
+  // Top flag types — supplementary breakdown bar chart.
   const flagTypeData = useMemo(() => {
     const map: Record<string, number> = {};
     for (const l of securityLogsInRange) {
@@ -572,6 +588,9 @@ export function AnalyticsClient({
   // 5. GEOGRAPHY
   // ══════════════════════════════════════════════════════════════════════════
 
+  // ── User count by state ───────────────────────────────────────────────────
+  // Derived from profiles.location (free-text field, normalised to trim).
+  // Top 10 states by new-user registrations in the selected period.
   const geoData = useMemo(() => {
     const map: Record<string, number> = {};
     for (const p of profilesInRange) {
@@ -590,6 +609,45 @@ export function AnalyticsClient({
     return s.size;
   }, [profilesInRange]);
 
+  // ── Transaction volume by state ───────────────────────────────────────────
+  // Derived from geoTransactions — each row is a successful transaction joined
+  // to its recipient profile's location. We aggregate ₦ volume per state and
+  // also track transaction count for the tooltip / CSV.
+  //
+  // Date-range filter applied client-side (same pattern as all other series).
+  // Rows where recipient_user_id or recipient_user_id.location is null are
+  // excluded — they represent transactions with no locatable recipient (e.g.
+  // platform fee captures, unlinked top-ups).
+  const geoTxData = useMemo(() => {
+    const cutoff = getCutoff(range);
+    const volMap:   Record<string, number> = {};
+    const countMap: Record<string, number> = {};
+
+    for (const row of geoTransactions) {
+      if (new Date(row.created_at) < cutoff) continue;
+      const loc = row.recipient_user_id?.location?.trim();
+      if (!loc) continue;
+      volMap[loc]   = (volMap[loc]   ?? 0) + (Number(row.amount) || 0);
+      countMap[loc] = (countMap[loc] ?? 0) + 1;
+    }
+
+    return Object.entries(volMap)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([location, volume]) => ({
+        location,
+        volume,
+        count: countMap[location] ?? 0,
+      }));
+  }, [geoTransactions, range]);
+
+  const totalGeoTxVolume = useMemo(
+    () => geoTxData.reduce((s, r) => s + r.volume, 0),
+    [geoTxData],
+  );
+
+  const topTxState = geoTxData[0] ?? null;
+
   // ── CSV export payloads ───────────────────────────────────────────────────
 
   function exportUserGrowth() {
@@ -606,25 +664,17 @@ export function AnalyticsClient({
     downloadCSV(
       [
         ...popularCategoriesData.map((d) => ({
-          section:  'popular_category',
-          label:    d.category,
-          count:    d.orders,
+          section: 'popular_category',
+          label:   d.category,
+          count:   d.orders,
         })),
         ...orderStatusData.map((d) => ({
           section: 'order_status',
           label:   d.status,
           count:   d.count,
         })),
-        {
-          section: 'summary',
-          label:   'aov',
-          count:   aov,
-        },
-        {
-          section: 'summary',
-          label:   'repeat_user_rate',
-          count:   repeatUserRate,
-        },
+        { section: 'summary', label: 'aov',              count: aov          },
+        { section: 'summary', label: 'repeat_user_rate', count: repeatUserRate },
       ],
       `f9_marketplace_${range}.csv`,
     );
@@ -639,9 +689,9 @@ export function AnalyticsClient({
           withdrawals:  d.withdrawals,
         })),
         ...escrowVolumeData.map((d) => ({
-          period:       d.period,
+          period:          d.period,
           escrow_released: d.value,
-          withdrawals:  0,
+          withdrawals:     0,
         })),
       ],
       `f9_financial_flow_${range}.csv`,
@@ -668,9 +718,27 @@ export function AnalyticsClient({
     );
   }
 
+  // Geography CSV now includes both user-count and transaction-volume sheets.
   function exportGeography() {
     downloadCSV(
-      geoData.map((d) => ({ location: d.location, users: d.users })),
+      [
+        // User registrations by state
+        ...geoData.map((d) => ({
+          sheet:    'user_registrations',
+          location: d.location,
+          users:    d.users,
+          volume:   '',
+          tx_count: '',
+        })),
+        // Transaction volume by state
+        ...geoTxData.map((d) => ({
+          sheet:    'transaction_volume',
+          location: d.location,
+          users:    '',
+          volume:   d.volume,
+          tx_count: d.count,
+        })),
+      ],
       `f9_geography_${range}.csv`,
     );
   }
@@ -716,7 +784,6 @@ export function AnalyticsClient({
           <StatCard label="New Users"           value={profilesInRange.length} />
           <StatCard label="Freelancers"         value={freelancerCount}        />
           <StatCard label="Clients / Buyers"    value={clientCount}            />
-          {/* NEW — onboarding completion rate */}
           <StatCard
             label="Onboarding Complete"
             value={onboardingRate}
@@ -756,7 +823,6 @@ export function AnalyticsClient({
       <section className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
         <SectionHeader title="Marketplace Health" onExport={exportMarketplace} />
 
-        {/* NEW stat cards: AOV + repeat user rate alongside existing ones */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
           <StatCard label="Total Orders"      value={ordersInRange.length}       />
           <StatCard label="Delivered"         value={completedOrders}            />
@@ -781,7 +847,6 @@ export function AnalyticsClient({
         </div>
 
         <div className="grid grid-cols-2 gap-6 mb-6">
-          {/* Order volume over time */}
           <div>
             <SubHeader title="Order Volume Over Time" />
             {orderVolumeData.length === 0 ? (
@@ -809,7 +874,6 @@ export function AnalyticsClient({
             )}
           </div>
 
-          {/* Orders by status */}
           <div>
             <SubHeader title="Orders by Status" />
             {orderStatusData.length === 0 ? (
@@ -841,7 +905,6 @@ export function AnalyticsClient({
           </div>
         </div>
 
-        {/* NEW — Popular categories */}
         <div>
           <SubHeader title="Popular Categories (by order count)" />
           {popularCategoriesData.length === 0 ? (
@@ -890,7 +953,6 @@ export function AnalyticsClient({
             label="Net Retained"
             value={fmt(Math.max(0, totalTxVolume - totalWdVolume))}
           />
-          {/* NEW — Escrow turnover */}
           <StatCard
             label="Escrow Turnover"
             value={fmt(escrowTurnover)}
@@ -898,7 +960,6 @@ export function AnalyticsClient({
           />
         </div>
 
-        {/* NEW — Avg payment-to-release time */}
         <div className="mb-6">
           <StatCard
             label="Avg Payment-to-Release"
@@ -907,7 +968,6 @@ export function AnalyticsClient({
           />
         </div>
 
-        {/* Transaction + withdrawal area chart */}
         <div className="mb-6">
           <SubHeader title="Transaction & Withdrawal Volume Over Time" />
           {financialData.length === 0 ? (
@@ -948,7 +1008,6 @@ export function AnalyticsClient({
           )}
         </div>
 
-        {/* NEW — Escrow released volume over time */}
         <div>
           <SubHeader title="Escrow Released Over Time" />
           {escrowVolumeData.length === 0 ? (
@@ -994,7 +1053,6 @@ export function AnalyticsClient({
         </div>
 
         <div className="grid grid-cols-2 gap-6 mb-8">
-          {/* Disputes by status */}
           <div>
             <SubHeader title="Disputes by Status" />
             {disputeStatusData.length === 0 ? (
@@ -1025,7 +1083,6 @@ export function AnalyticsClient({
             )}
           </div>
 
-          {/* Trust level distribution */}
           <div>
             <SubHeader title="Trust Level Distribution (all active users)" />
             {trustLevelData.length === 0 ? (
@@ -1059,7 +1116,6 @@ export function AnalyticsClient({
           </div>
         </div>
 
-        {/* NEW — Verification completion rates */}
         <div className="mb-8">
           <SubHeader title="Verification Completion Rates (active users)" />
           {verificationData.length === 0 ? (
@@ -1080,7 +1136,6 @@ export function AnalyticsClient({
           )}
         </div>
 
-        {/* NEW — Flag volume over time + top flag types */}
         <div className="grid grid-cols-2 gap-6">
           <div>
             <SubHeader title="Security Flag Volume Over Time" />
@@ -1152,38 +1207,117 @@ export function AnalyticsClient({
       <section className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
         <SectionHeader title="Geography" onExport={exportGeography} />
 
-        <div className="grid grid-cols-3 gap-4 mb-6">
-          <StatCard label="Unique Locations"  value={uniqueLocations}             />
-          <StatCard label="Top Location"      value={geoData[0]?.location ?? '—'} />
-          <StatCard label="Users in Top City" value={geoData[0]?.users    ?? 0}   />
+        {/* ── User registrations by state ─────────────────────────────── */}
+        <div className="mb-8">
+          <SubHeader title="User Registrations by State (top 10)" />
+
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <StatCard label="Unique Locations"  value={uniqueLocations}             />
+            <StatCard label="Top State (Users)" value={geoData[0]?.location ?? '—'} />
+            <StatCard label="Users in Top State" value={geoData[0]?.users ?? 0}     />
+          </div>
+
+          {geoData.length === 0 ? (
+            <Empty label="No location data in this period." />
+          ) : (
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart
+                data={geoData}
+                layout="vertical"
+                margin={{ top: 4, right: 16, bottom: 0, left: 110 }}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="#f1f5f9"
+                  horizontal={false}
+                />
+                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="location" tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Bar
+                  dataKey="users"
+                  name="Users"
+                  fill={CHART_COLORS.violet}
+                  radius={[0, 3, 3, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
-        {geoData.length === 0 ? (
-          <Empty label="No location data in this period." />
-        ) : (
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart
-              data={geoData}
-              layout="vertical"
-              margin={{ top: 4, right: 16, bottom: 0, left: 110 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="#f1f5f9"
-                horizontal={false}
-              />
-              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="location" tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Bar
-                dataKey="users"
-                name="Users"
-                fill={CHART_COLORS.violet}
-                radius={[0, 3, 3, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        )}
+        {/* ── Transaction volume by state ──────────────────────────────── */}
+        {/* Sourced from transactions joined to recipient profile location. */}
+        {/* Rows with no recipient location are excluded (null location =   */}
+        {/* unlocatable recipient — e.g. platform fee captures).            */}
+        <div>
+          <SubHeader title="Transaction Volume by State — ₦ received (top 10)" />
+
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <StatCard
+              label="States with Transactions"
+              value={geoTxData.length}
+              sub="states represented in this period"
+            />
+            <StatCard
+              label="Top State (Volume)"
+              value={topTxState?.location ?? '—'}
+              sub={topTxState ? `${topTxState.count} transactions` : undefined}
+            />
+            <StatCard
+              label="Top State Volume"
+              value={topTxState ? fmt(topTxState.volume) : '—'}
+              sub={
+                topTxState && totalGeoTxVolume > 0
+                  ? `${Math.round((topTxState.volume / totalGeoTxVolume) * 100)}% of mapped total`
+                  : undefined
+              }
+            />
+          </div>
+
+          {geoTxData.length === 0 ? (
+            <Empty label="No transaction data with locatable recipients in this period." />
+          ) : (
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart
+                data={geoTxData}
+                layout="vertical"
+                margin={{ top: 4, right: 16, bottom: 0, left: 110 }}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="#f1f5f9"
+                  horizontal={false}
+                />
+                <XAxis
+                  type="number"
+                  tickFormatter={(v: number) => fmt(v)}
+                  tick={{ fontSize: 10 }}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="location"
+                  tick={{ fontSize: 11 }}
+                />
+                {/* ── FIX (TS2322): formatter param widened to ValueType | undefined ── */}
+                <Tooltip
+                  formatter={(
+                    value: number | string | readonly (number | string)[] | undefined,
+                  ) =>
+                    typeof value === 'number'
+                      ? [fmt(value), 'Volume']
+                      : String(value ?? '')
+                  }
+                />
+                <Bar
+                  dataKey="volume"
+                  name="Transaction Volume"
+                  fill={CHART_COLORS.teal}
+                  radius={[0, 3, 3, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
       </section>
     </div>
   );

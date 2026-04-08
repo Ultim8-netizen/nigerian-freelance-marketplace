@@ -91,13 +91,15 @@ async function sendDirect(fd: FormData) {
  *                 user_devices.last_seen_at — schema-verified)
  *   low_trust  — active users with trust_score < `trust_threshold`
  *   unverified — active users who have not completed identity verification
- *   state      — active users whose user_locations.state matches `state`
+ *   state      — active users whose user_locations.state matches `state`,
+ *                optionally narrowed to a specific `city` within that state
  *                (profiles has no state column; geography lives in the
  *                 user_locations table — schema-verified)
  *
  * Audience-specific FormData fields (appended by MessagingClient):
  *   trust_threshold  (number, default 40)  — used by low_trust
  *   state            (string)              — used by state
+ *   city             (string | absent)     — used by state; omitted = all cities
  *   inactive_days    (number, default 30)  — used by inactive
  */
 async function sendBroadcast(fd: FormData) {
@@ -117,6 +119,9 @@ async function sendBroadcast(fd: FormData) {
   // Audience-specific filter values
   const trustThreshold = parseInt((fd.get('trust_threshold') as string) || '40', 10);
   const targetState    = (fd.get('state') as string) || null;
+  // targetCity is optional — empty string / absent both mean "all cities in state"
+  const rawCity        = (fd.get('city') as string | null) ?? '';
+  const targetCity     = rawCity.trim().length > 0 ? rawCity.trim() : null;
   const inactiveDays   = parseInt((fd.get('inactive_days') as string) || '30', 10);
 
   const supabase = await createClient();
@@ -131,6 +136,7 @@ async function sendBroadcast(fd: FormData) {
   //   inactive → user_devices.last_seen_at  (profiles has no last_seen_at)
   //   state    → user_locations.state       (profiles has location: string | null,
   //                                          which is free-text, not a state enum)
+  //              user_locations.city        (optional sub-filter — schema-verified)
   //
   // Strategy: pre-query the owning table, collect profile UUIDs, then apply
   // .in('id', ids) on the main profiles query. Both tables have a user_id FK
@@ -191,13 +197,28 @@ async function sendBroadcast(fd: FormData) {
   }
 
   if (audience === 'state' && targetState) {
-    // user_locations.state: string (NOT NULL, schema-verified)
-    // user_locations has a 1:1 FK to profiles (user_locations_user_id_fkey).
+    // user_locations columns (schema-verified):
+    //   state : string  NOT NULL
+    //   city  : string | null
+    //
+    // The 1:1 FK (user_locations_user_id_fkey) means at most one row per user.
+    // When targetCity is provided we chain a second .eq() to narrow to that city.
+    // When targetCity is null we query by state only (all cities in that state).
 
-    const { data: locationRows, error: locErr } = await supabase
+    let locationQuery = supabase
       .from('user_locations')
       .select('user_id')
       .eq('state', targetState);
+
+    if (targetCity) {
+      // Narrow to the specific city within the state.
+      // user_locations.city is nullable; .eq() will exclude NULL rows, which is
+      // correct — a NULL city means the user hasn't provided city-level detail
+      // and should not receive city-targeted broadcasts.
+      locationQuery = locationQuery.eq('city', targetCity);
+    }
+
+    const { data: locationRows, error: locErr } = await locationQuery;
 
     if (locErr) {
       console.error('[sendBroadcast] state location query error:', locErr);
@@ -210,8 +231,12 @@ async function sendBroadcast(fd: FormData) {
       ),
     ];
 
+    const locationLabel = targetCity
+      ? `${targetCity}, ${targetState}`
+      : targetState;
+
     if (preFilteredIds.length === 0) {
-      throw new Error(`No users found in state: ${targetState}`);
+      throw new Error(`No users found in ${locationLabel}`);
     }
   }
 
@@ -281,12 +306,23 @@ async function sendBroadcast(fd: FormData) {
     throw new Error('Failed to insert broadcast notifications');
   }
 
+  // Build a human-readable location label for the audit log
+  const locationLabel = audience === 'state'
+    ? targetCity
+      ? `${targetCity}, ${targetState}`
+      : targetState ?? 'unknown state'
+    : null;
+
   const scheduleNote = scheduledAt ? ` | scheduled: ${scheduledAt}` : '';
+  const audienceLabel = locationLabel
+    ? `state: ${locationLabel}`
+    : audience;
+
   const { error: logError } = await supabase.from('admin_action_logs').insert({
     admin_id:       admin.id,
     target_user_id: null,
     action_type:    'broadcast',
-    reason:         `[${type}] ${title} → audience: ${audience} (${recipients.length} users) | delivery: ${deliveryMethod}${scheduleNote}`,
+    reason:         `[${type}] ${title} → audience: ${audienceLabel} (${recipients.length} users) | delivery: ${deliveryMethod}${scheduleNote}`,
   });
 
   if (logError) console.error('[sendBroadcast] audit log error:', logError);

@@ -8,6 +8,7 @@ import {
   Trophy, RefreshCcw, TrendingUp, Megaphone,
 } from 'lucide-react';
 import type { Tables } from '@/types';
+import { NIGERIAN_STATES, MAJOR_CITIES } from '@/types/location.types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -58,7 +59,7 @@ const AUDIENCES = [
   { value: 'inactive',   label: 'Inactive users (re-engagement)'    },
   { value: 'low_trust',  label: 'Users below trust score threshold' },
   { value: 'unverified', label: 'Unverified accounts'               },
-  { value: 'state',      label: 'Users by state'                    },
+  { value: 'state',      label: 'Users by state / city'             },
 ];
 
 const DELIVERY_METHODS = [
@@ -67,14 +68,8 @@ const DELIVERY_METHODS = [
   { value: 'inbox',  label: 'F9 Inbox only'  },
 ];
 
-// Nigerian states including FCT — used for state-targeted broadcasts
-const NG_STATES = [
-  'Abia', 'Adamawa', 'Akwa Ibom', 'Anambra', 'Bauchi', 'Bayelsa', 'Benue',
-  'Borno', 'Cross River', 'Delta', 'Ebonyi', 'Edo', 'Ekiti', 'Enugu',
-  'FCT (Abuja)', 'Gombe', 'Imo', 'Jigawa', 'Kaduna', 'Kano', 'Katsina',
-  'Kebbi', 'Kogi', 'Kwara', 'Lagos', 'Nasarawa', 'Niger', 'Ogun', 'Ondo',
-  'Osun', 'Oyo', 'Plateau', 'Rivers', 'Sokoto', 'Taraba', 'Yobe', 'Zamfara',
-];
+// Canonical state list sourced from location.types.ts (DB-aligned, 'FCT' not 'FCT (Abuja)')
+const NG_STATES = [...NIGERIAN_STATES] as string[];
 
 // ─── Template library ─────────────────────────────────────────────────────────
 
@@ -674,17 +669,29 @@ function ComposeTab({
 
   // audience-specific filter fields
   const [trustThreshold, setTrustThreshold] = useState('40');
-  const [selectedState,  setSelectedState]  = useState(NG_STATES[0]);
+  const [selectedState,  setSelectedState]  = useState<string>(NG_STATES[0]);
+  // selectedCity: '' means "All cities" — no city filter applied
+  const [selectedCity,   setSelectedCity]   = useState<string>('');
   // inactive threshold: days since last login
   const [inactiveDays,   setInactiveDays]   = useState('30');
 
   const isScheduled        = scheduledAt.trim().length > 0;
   const hasUnfilledBracket = message.includes('[') && message.includes(']');
 
+  // Cities available for the currently selected state (may be empty for states
+  // not in MAJOR_CITIES, which is fine — city dropdown will only show "All")
+  const citiesForState: string[] = MAJOR_CITIES[selectedState] ?? [];
+
   const applyTemplate = (t: Template) => {
     setType(t.type);
     setTitle(t.title);
     setMessage(t.message);
+  };
+
+  const handleStateChange = (newState: string) => {
+    setSelectedState(newState);
+    // Reset city selection whenever state changes — avoids stale city values
+    setSelectedCity('');
   };
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
@@ -693,9 +700,15 @@ function ComposeTab({
 
     // Append audience-specific filter values so the server action can apply them
     if (mode === 'broadcast') {
-      if (audience === 'low_trust')  fd.set('trust_threshold', trustThreshold);
-      if (audience === 'state')      fd.set('state',           selectedState);
-      if (audience === 'inactive')   fd.set('inactive_days',   inactiveDays);
+      if (audience === 'low_trust') fd.set('trust_threshold', trustThreshold);
+      if (audience === 'inactive')  fd.set('inactive_days',   inactiveDays);
+      if (audience === 'state') {
+        fd.set('state', selectedState);
+        // Only send 'city' when a specific city is chosen — empty string means
+        // "all cities in this state", which the server action interprets as no
+        // city-level filter.
+        if (selectedCity) fd.set('city', selectedCity);
+      }
     }
 
     const action = mode === 'direct' ? onSendDirect : onSendBroadcast;
@@ -778,20 +791,55 @@ function ComposeTab({
               </div>
             )}
 
-            {/* State selector — shown when audience is state */}
+            {/* State + city selectors — shown when audience is state */}
             {audience === 'state' && (
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Target State</label>
-                <select
-                  value={selectedState} onChange={(e) => setSelectedState(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                >
-                  {NG_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <p className="text-xs text-gray-400 mt-1">
-                  Only users whose profile state matches <strong>{selectedState}</strong> will receive this message.
-                </p>
-              </div>
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Target State</label>
+                  <select
+                    value={selectedState}
+                    onChange={(e) => handleStateChange(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    {NG_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Only users whose profile state matches <strong>{selectedState}</strong> will
+                    be considered. Optionally narrow further by city below.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Target City <span className="text-gray-400 font-normal">(optional &mdash; leave as &ldquo;All cities&rdquo; to target the entire state)</span>
+                  </label>
+                  <select
+                    value={selectedCity}
+                    onChange={(e) => setSelectedCity(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    <option value="">All cities in {selectedState}</option>
+                    {citiesForState.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  {citiesForState.length === 0 && (
+                    <p className="text-xs text-gray-400 mt-1">
+                      No major cities are listed for <strong>{selectedState}</strong> — state-wide broadcast only.
+                    </p>
+                  )}
+                  {selectedCity && (
+                    <p className="text-xs text-blue-600 mt-1 font-medium">
+                      Broadcast will be limited to users in <strong>{selectedCity}</strong>, {selectedState}.
+                    </p>
+                  )}
+                  {!selectedCity && citiesForState.length > 0 && (
+                    <p className="text-xs text-gray-400 mt-1">
+                      All {citiesForState.length} listed cities in {selectedState} are included.
+                    </p>
+                  )}
+                </div>
+              </>
             )}
 
             {/* Inactivity window — shown when audience is inactive */}
