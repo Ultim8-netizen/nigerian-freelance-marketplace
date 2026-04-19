@@ -576,8 +576,10 @@ export type Database = {
           order_number: string
           paid_at: string | null
           payment_method: string
+          platform_fee: number
           product_id: string
           quantity: number
+          seller_earnings: number
           seller_id: string
           shipped_at: string | null
           status: string
@@ -599,8 +601,10 @@ export type Database = {
           order_number: string
           paid_at?: string | null
           payment_method: string
+          platform_fee?: number
           product_id: string
           quantity: number
+          seller_earnings?: number
           seller_id: string
           shipped_at?: string | null
           status?: string
@@ -622,8 +626,10 @@ export type Database = {
           order_number?: string
           paid_at?: string | null
           payment_method?: string
+          platform_fee?: number
           product_id?: string
           quantity?: number
+          seller_earnings?: number
           seller_id?: string
           shipped_at?: string | null
           status?: string
@@ -1705,10 +1711,10 @@ export type Database = {
           amount: number
           created_at: string | null
           currency: string | null
-          flutterwave_response: Json | null
-          flutterwave_tx_ref: string | null
           id: string
           marketplace_order_id: string | null
+          monnify_payment_ref: string | null
+          monnify_response: Json | null
           order_id: string | null
           paid_at: string | null
           payment_method: string | null
@@ -1721,10 +1727,10 @@ export type Database = {
           amount: number
           created_at?: string | null
           currency?: string | null
-          flutterwave_response?: Json | null
-          flutterwave_tx_ref?: string | null
           id?: string
           marketplace_order_id?: string | null
+          monnify_payment_ref?: string | null
+          monnify_response?: Json | null
           order_id?: string | null
           paid_at?: string | null
           payment_method?: string | null
@@ -1737,10 +1743,10 @@ export type Database = {
           amount?: number
           created_at?: string | null
           currency?: string | null
-          flutterwave_response?: Json | null
-          flutterwave_tx_ref?: string | null
           id?: string
           marketplace_order_id?: string | null
+          monnify_payment_ref?: string | null
+          monnify_response?: Json | null
           order_id?: string | null
           paid_at?: string | null
           payment_method?: string | null
@@ -2043,9 +2049,9 @@ export type Database = {
           bank_name: string
           created_at: string | null
           failure_reason: string | null
-          flutterwave_transfer_id: string | null
           hold_release_at: string | null
           id: string
+          monnify_transfer_ref: string | null
           processed_at: string | null
           status: string | null
           user_id: string | null
@@ -2058,9 +2064,9 @@ export type Database = {
           bank_name: string
           created_at?: string | null
           failure_reason?: string | null
-          flutterwave_transfer_id?: string | null
           hold_release_at?: string | null
           id?: string
+          monnify_transfer_ref?: string | null
           processed_at?: string | null
           status?: string | null
           user_id?: string | null
@@ -2073,9 +2079,9 @@ export type Database = {
           bank_name?: string
           created_at?: string | null
           failure_reason?: string | null
-          flutterwave_transfer_id?: string | null
           hold_release_at?: string | null
           id?: string
+          monnify_transfer_ref?: string | null
           processed_at?: string | null
           status?: string | null
           user_id?: string | null

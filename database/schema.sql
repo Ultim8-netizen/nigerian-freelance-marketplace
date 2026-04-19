@@ -5748,3 +5748,96 @@ VALUES
   ('shared_ip_check_enabled', 1,  true, 'On/Off toggle for the shared-IP fraud detection rule at registration.'),
   ('shared_ip_min_accounts',  1,  true, 'Minimum number of conflicting accounts required to trigger the shared-IP flag.')
 ON CONFLICT (key) DO NOTHING;
+
+
+-- =============================================================================
+-- Migration: 001_monnify_migration.sql
+-- Phase 1: Flutterwave → Monnify column renames + marketplace earnings fields
+-- Safe to re-run: every statement is wrapped in an existence guard.
+-- No data is dropped. Old columns are renamed, not deleted.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- transactions: flutterwave_tx_ref → monnify_payment_ref
+-- -----------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'transactions'
+      AND column_name  = 'flutterwave_tx_ref'
+  ) THEN
+    ALTER TABLE public.transactions
+      RENAME COLUMN flutterwave_tx_ref TO monnify_payment_ref;
+  END IF;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- transactions: flutterwave_response → monnify_response
+-- -----------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'transactions'
+      AND column_name  = 'flutterwave_response'
+  ) THEN
+    ALTER TABLE public.transactions
+      RENAME COLUMN flutterwave_response TO monnify_response;
+  END IF;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- withdrawals: flutterwave_transfer_id → monnify_transfer_ref
+-- -----------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'withdrawals'
+      AND column_name  = 'flutterwave_transfer_id'
+  ) THEN
+    ALTER TABLE public.withdrawals
+      RENAME COLUMN flutterwave_transfer_id TO monnify_transfer_ref;
+  END IF;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- marketplace_orders: ADD platform_fee
+-- -----------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'marketplace_orders'
+      AND column_name  = 'platform_fee'
+  ) THEN
+    ALTER TABLE public.marketplace_orders
+      ADD COLUMN platform_fee NUMERIC(12,2) NOT NULL DEFAULT 0;
+  END IF;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- marketplace_orders: ADD seller_earnings
+-- -----------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'marketplace_orders'
+      AND column_name  = 'seller_earnings'
+  ) THEN
+    ALTER TABLE public.marketplace_orders
+      ADD COLUMN seller_earnings NUMERIC(12,2) NOT NULL DEFAULT 0;
+  END IF;
+END;
+$$;
