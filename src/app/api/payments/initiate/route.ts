@@ -1,17 +1,15 @@
 // src/app/api/payments/initiate/route.ts
-// PRODUCTION-READY: Secure payment initiation for clients paying for orders.
-// NOTE: Withdrawal hold logic previously placed here has been removed.
-//       It was misplaced — this route handles CLIENT payments, not freelancer
-//       withdrawal requests. The hold checks now live exclusively in
-//       src/app/(dashboard)/freelancer/earnings/page.tsx inside initiateWithdrawal.
+// Initialises a Monnify hosted-checkout transaction for a pending order.
+// NOTE: Withdrawal hold logic does NOT live here — it belongs exclusively in
+//       src/app/(dashboard)/freelancer/earnings/page.tsx (initiateWithdrawal).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
-import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
+import { MonnifyServerService } from '@/lib/monnify/server-service';
+import { serverEnv } from '@/lib/env';
 import { sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
-import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 
 const initiateSchema = z.object({
@@ -31,7 +29,7 @@ export async function POST(request: NextRequest) {
     if (!user) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized' },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -44,7 +42,7 @@ export async function POST(request: NextRequest) {
     const validatedData = initiateSchema.parse(sanitizedBody);
     const supabase = await createClient();
 
-    // ── Fetch order ──────────────────────────────────────────────────────────
+    // ── Fetch order + client profile ─────────────────────────────────────────
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .select('*, client:profiles!orders_client_id_fkey(*)')
@@ -52,10 +50,12 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (orderError || !order) {
-      logger.warn('Invalid order ID in payment initiation', { orderId: validatedData.order_id });
+      logger.warn('Invalid order ID in payment initiation', {
+        orderId: validatedData.order_id,
+      });
       return NextResponse.json(
         { success: false, error: 'Order not found' },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -67,62 +67,72 @@ export async function POST(request: NextRequest) {
       });
       return NextResponse.json(
         { success: false, error: 'Unauthorized' },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
     if (order.status !== 'pending_payment') {
       return NextResponse.json(
         { success: false, error: 'Order already paid or cancelled' },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    // ── Proceed to Flutterwave ───────────────────────────────────────────────
-    const txRef = `TX-${Date.now()}-${uuidv4().slice(0, 8)}`;
+    // ── Generate payment reference (server-side, cryptographically secure) ───
+    const paymentRef = MonnifyServerService.generatePaymentRef();
 
-    const paymentData = {
-      tx_ref:       txRef,
-      amount:       order.amount,
-      currency:     'NGN',
-      redirect_url:
-        validatedData.redirect_url ||
-        `${process.env.NEXT_PUBLIC_APP_URL}/payment/callback`,
-      customer: {
-        email:        order.client.email,
-        phone_number: order.client.phone_number || '',
-        name:         order.client.full_name,
-      },
-      customizations: {
-        title:       process.env.NEXT_PUBLIC_APP_NAME || 'F9',
-        description: order.title,
-        logo:        `${process.env.NEXT_PUBLIC_APP_URL}/logo.png`,
-      },
-    };
+    const redirectUrl =
+      validatedData.redirect_url ||
+      `${process.env.NEXT_PUBLIC_APP_URL}/payment/callback`;
 
-    const flutterwaveResponse =
-      await FlutterwaveServerService.initializePayment(paymentData);
-
-    await supabase.from('transactions').insert({
-      order_id:         order.id,
-      transaction_ref:  txRef,
-      amount:           order.amount,
-      transaction_type: 'payment',
-      status:           'pending',
+    // ── Initialise Monnify hosted-checkout transaction ────────────────────────
+    const monnifyResponse = await MonnifyServerService.initializeTransaction({
+      amount:             order.amount,
+      currencyCode:       'NGN',
+      contractCode:       serverEnv.MONNIFY_CONTRACT_CODE,
+      paymentReference:   paymentRef,
+      paymentDescription: order.title,
+      customerEmail:      order.client.email,
+      customerName:       order.client.full_name,
+      customerPhone:      order.client.phone_number || '',
+      redirectUrl,
+      paymentMethods:     ['ACCOUNT_TRANSFER', 'CARD', 'USSD'],
     });
 
-    logger.info('Payment initiated successfully', {
-      orderId: order.id,
-      userId:  user.id,
-      txRef,
-      amount:  order.amount,
+    // ── Persist pending transaction ───────────────────────────────────────────
+    // transaction_ref is the canonical ref used internally across the platform;
+    // monnify_payment_ref is the ref Monnify uses for lookup / webhook matching.
+    // Both are set to the same value — one source of truth per transaction.
+    const { error: insertError } = await supabase.from('transactions').insert({
+      order_id:          order.id,
+      transaction_ref:   paymentRef,
+      monnify_payment_ref: paymentRef,
+      amount:            order.amount,
+      transaction_type:  'payment',
+      status:            'pending',
+      currency:          'NGN',
+    });
+
+    if (insertError) {
+      logger.error('Failed to persist transaction record', insertError as Error);
+      return NextResponse.json(
+        { success: false, error: 'Failed to create transaction record' },
+        { status: 500 },
+      );
+    }
+
+    logger.info('Monnify payment initiated', {
+      orderId:    order.id,
+      userId:     user.id,
+      paymentRef,
+      amount:     order.amount,
     });
 
     return NextResponse.json({
       success: true,
       data: {
-        payment_link: flutterwaveResponse.data.link,
-        tx_ref:       txRef,
+        checkout_url: monnifyResponse.checkoutUrl,
+        payment_ref:  paymentRef,
       },
     });
   } catch (error) {
@@ -130,14 +140,14 @@ export async function POST(request: NextRequest) {
       logger.warn('Payment validation failed', { errors: error.issues });
       return NextResponse.json(
         { success: false, error: 'Invalid request data' },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     logger.error('Payment initiation error', error as Error);
     return NextResponse.json(
       { success: false, error: 'Payment initiation failed' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

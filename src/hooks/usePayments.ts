@@ -1,92 +1,137 @@
 // src/hooks/usePayments.ts
-// Payment processing hook
+// Payment processing hook — Monnify edition.
+// initiatePayment  → POST /api/payments/initiate → returns { checkout_url, payment_ref }
+// verifyPayment    → POST /api/payments/verify   → accepts payment_ref
 
 import { useState } from 'react';
 
-/**
- * Helper function to safely extract an error message from an unknown error type.
- * @param error The unknown error object caught in a try/catch block.
- * @returns A string representation of the error message.
- */
-const getErrorMessage = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  // This handles cases where the error might be an object with a 'message' property
-  if (typeof error === 'object' && error !== null && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface InitiatePaymentData {
+  orderId:      string;
+  redirectUrl?: string;
+}
+
+interface InitiatePaymentResult {
+  checkout_url: string;
+  payment_ref:  string;
+}
+
+interface VerifyPaymentResult {
+  transaction: Record<string, unknown>;
+  order:       Record<string, unknown> | null;
+}
+
+// ── Helper ────────────────────────────────────────────────────────────────────
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof (error as { message: unknown }).message === 'string'
+  ) {
     return (error as { message: string }).message;
   }
   return String(error);
-};
-
-
-interface PaymentData {
-  orderId: string;
-  amount: number;
-  email: string;
-  phoneNumber?: string;
-  fullName: string;
 }
+
+// ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function usePayments() {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
 
-  const initiatePayment = async (data: PaymentData) => {
+  /**
+   * Initialise a Monnify transaction for the given order.
+   * Returns { checkout_url, payment_ref } — caller is responsible for
+   * redirecting to checkout_url.
+   */
+  const initiatePayment = async (
+    data: InitiatePaymentData,
+  ): Promise<
+    | { success: true;  data: InitiatePaymentResult }
+    | { success: false; error: string }
+  > => {
     setLoading(true);
     setError(null);
 
     try {
       const response = await fetch('/api/payments/initiate', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          order_id: data.orderId,
-          tx_ref: `TX-${Date.now()}-${data.orderId.slice(0, 8)}`,
+        body:    JSON.stringify({
+          order_id:     data.orderId,
+          redirect_url: data.redirectUrl,
         }),
       });
 
-      const result = await response.json();
+      const result = await response.json() as {
+        success: boolean;
+        error?:  string;
+        data?:   InitiatePaymentResult;
+      };
 
-      if (result.success) {
+      if (result.success && result.data) {
         return { success: true, data: result.data };
-      } else {
-        throw new Error(result.error || 'Unknown error during payment initiation.');
       }
-    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
-      const errorMessage = getErrorMessage(err);
-      setError(errorMessage);
-      return { success: false, error: errorMessage };
+
+      throw new Error(result.error || 'Unknown error during payment initiation.');
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      setError(message);
+      return { success: false, error: message };
     } finally {
       setLoading(false);
     }
   };
 
-  const verifyPayment = async (transactionId: string, txRef: string) => {
+  /**
+   * Manually verify a payment by its Monnify payment reference.
+   * Used as a fallback when the webhook has not yet fired.
+   * Idempotent: safe to call multiple times.
+   *
+   * Returns `message: 'Payment already verified'` when the webhook already
+   * settled this transaction — the callback page uses this to render the
+   * `already_paid` state without re-running side effects.
+   */
+  const verifyPayment = async (
+    paymentRef: string,
+  ): Promise<
+    | { success: true;  data: VerifyPaymentResult; message?: string }
+    | { success: false; error: string }
+  > => {
     setLoading(true);
     setError(null);
 
     try {
       const response = await fetch('/api/payments/verify', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transaction_id: transactionId,
-          tx_ref: txRef,
-        }),
+        body:    JSON.stringify({ payment_ref: paymentRef }),
       });
 
-      const result = await response.json();
+      const result = await response.json() as {
+        success:  boolean;
+        error?:   string;
+        message?: string;
+        data?:    VerifyPaymentResult;
+      };
 
-      if (result.success) {
-        return { success: true, data: result.data };
-      } else {
-        throw new Error(result.error || 'Unknown error during payment verification.');
+      if (result.success && result.data) {
+        return {
+          success: true,
+          data:    result.data,
+          message: result.message, // 'Payment already verified' on idempotent hit
+        };
       }
-    } catch (err: unknown) { // Fixed: Replaced 'any' with 'unknown'
-      const errorMessage = getErrorMessage(err);
-      setError(errorMessage);
-      return { success: false, error: errorMessage };
+
+      throw new Error(result.error || 'Unknown error during payment verification.');
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      setError(message);
+      return { success: false, error: message };
     } finally {
       setLoading(false);
     }
