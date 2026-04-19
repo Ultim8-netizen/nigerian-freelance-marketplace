@@ -1,21 +1,24 @@
 // src/app/api/orders/route.ts
-// PRODUCTION-READY: Secure orders management with comprehensive validation
+// PRODUCTION-READY: Secure orders management with dynamic platform fee
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
+import { calculatePlatformFee, calculateFreelancerEarnings } from '@/lib/utils';
 import { sanitizeText, sanitizeHtml, sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
 const createOrderSchema = z.object({
   freelancer_id: z.string().uuid(),
-  service_id: z.string().uuid().optional(),
-  job_id: z.string().uuid().optional(),
-  proposal_id: z.string().uuid().optional(),
-  title: z.string().min(10).max(200),
-  description: z.string().min(20).max(2000),
-  amount: z.number().min(1000).max(10000000),
+  service_id:    z.string().uuid().optional(),
+  job_id:        z.string().uuid().optional(),
+  proposal_id:   z.string().uuid().optional(),
+  title:         z.string().min(10).max(200),
+  description:   z.string().min(20).max(2000),
+  amount:        z.number().min(1000).max(10000000),
   delivery_days: z.number().int().min(1).max(90),
   max_revisions: z.number().int().min(0).max(10).default(1),
 });
@@ -37,10 +40,10 @@ export async function GET(request: NextRequest) {
     }
 
     const searchParams = request.nextUrl.searchParams;
-    const status = sanitizeText(searchParams.get('status') || '');
+    const status   = sanitizeText(searchParams.get('status') || '');
     const userType = sanitizeText(searchParams.get('user_type') || '');
-    const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
-    const perPage = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
+    const page     = Math.max(1, parseInt(searchParams.get('page') || '1'));
+    const perPage  = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
 
     const supabase = await createClient();
 
@@ -54,7 +57,6 @@ export async function GET(request: NextRequest) {
         job:jobs(*)
       `, { count: 'exact' });
 
-    // Filter by user role
     if (userType === 'client') {
       query = query.eq('client_id', user.id);
     } else if (userType === 'freelancer') {
@@ -63,12 +65,10 @@ export async function GET(request: NextRequest) {
       query = query.or(`client_id.eq.${user.id},freelancer_id.eq.${user.id}`);
     }
 
-    if (status) {
-      query = query.eq('status', status);
-    }
+    if (status) query = query.eq('status', status);
 
     const from = (page - 1) * perPage;
-    const to = from + perPage - 1;
+    const to   = from + perPage - 1;
 
     const { data, error: queryError, count } = await query
       .order('created_at', { ascending: false })
@@ -79,18 +79,15 @@ export async function GET(request: NextRequest) {
       throw queryError;
     }
 
-    logger.info('Orders query executed', {
-      userId: user.id,
-      resultCount: data?.length || 0
-    });
+    logger.info('Orders query executed', { userId: user.id, resultCount: data?.length || 0 });
 
     return NextResponse.json({
       success: true,
       data,
       pagination: {
         page,
-        per_page: perPage,
-        total: count || 0,
+        per_page:    perPage,
+        total:       count || 0,
         total_pages: Math.ceil((count || 0) / perPage),
       },
     });
@@ -120,22 +117,36 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    
+
+    // Strip any client-supplied fee fields — fees are always server-calculated.
     const sanitizedBody = {
       ...body,
       freelancer_id: sanitizeUuid(body.freelancer_id) || '',
-      service_id: body.service_id ? sanitizeUuid(body.service_id) : undefined,
-      job_id: body.job_id ? sanitizeUuid(body.job_id) : undefined,
-      proposal_id: body.proposal_id ? sanitizeUuid(body.proposal_id) : undefined,
-      title: sanitizeText(body.title || ''),
-      description: sanitizeHtml(body.description || ''),
+      service_id:    body.service_id  ? sanitizeUuid(body.service_id)  : undefined,
+      job_id:        body.job_id      ? sanitizeUuid(body.job_id)      : undefined,
+      proposal_id:   body.proposal_id ? sanitizeUuid(body.proposal_id) : undefined,
+      title:         sanitizeText(body.title || ''),
+      description:   sanitizeHtml(body.description || ''),
     };
 
     const validatedData = createOrderSchema.parse(sanitizedBody);
 
-    const supabase = await createClient();
+    // Use admin client for platform_config (RLS blocks public SELECT)
+    // and for the platform_revenue insert.
+    const adminClient = createAdminClient();
+    const supabase    = await createClient();
 
-    // Verify freelancer exists and is active
+    // ── 1. Fetch fee percent from platform_config ─────────────────────────
+    const configs = await getPlatformConfigs(adminClient, [
+      CONFIG_KEYS.FREELANCE_FEE_PERCENT,
+    ]);
+    const feePercent = configs[CONFIG_KEYS.FREELANCE_FEE_PERCENT]; // e.g. 10
+
+    // ── 2. Calculate fees server-side — never trust client payload ────────
+    const platformFee        = calculatePlatformFee(validatedData.amount, feePercent);
+    const freelancerEarnings = calculateFreelancerEarnings(validatedData.amount, feePercent);
+
+    // ── 3. Verify freelancer ──────────────────────────────────────────────
     const { data: freelancer, error: freelancerError } = await supabase
       .from('profiles')
       .select('id, account_status')
@@ -157,33 +168,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Calculate fees
-    const platformFee = Math.round(validatedData.amount * 0.1);
-    const freelancerEarnings = validatedData.amount - platformFee;
-
     const deliveryDate = new Date();
     deliveryDate.setDate(deliveryDate.getDate() + validatedData.delivery_days);
 
     const orderNumber = `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
 
+    // ── 4. Insert order ───────────────────────────────────────────────────
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .insert({
-        order_number: orderNumber,
-        client_id: user.id,
-        freelancer_id: validatedData.freelancer_id,
-        service_id: validatedData.service_id,
-        job_id: validatedData.job_id,
-        proposal_id: validatedData.proposal_id,
-        title: validatedData.title,
-        description: validatedData.description,
-        amount: validatedData.amount,
-        platform_fee: platformFee,
+        order_number:        orderNumber,
+        client_id:           user.id,
+        freelancer_id:       validatedData.freelancer_id,
+        service_id:          validatedData.service_id,
+        job_id:              validatedData.job_id,
+        proposal_id:         validatedData.proposal_id,
+        title:               validatedData.title,
+        description:         validatedData.description,
+        amount:              validatedData.amount,
+        platform_fee:        platformFee,
         freelancer_earnings: freelancerEarnings,
-        delivery_date: deliveryDate.toISOString(),
-        max_revisions: validatedData.max_revisions,
-        status: 'pending_payment',
-        revision_count: 0,
+        delivery_date:       deliveryDate.toISOString(),
+        max_revisions:       validatedData.max_revisions,
+        status:              'pending_payment',
+        revision_count:      0,
       })
       .select()
       .single();
@@ -193,50 +201,71 @@ export async function POST(request: NextRequest) {
       throw orderError;
     }
 
-    // Update related records
+    // ── 5. Record platform revenue — synchronous, same request ────────────
+    // If this insert fails, we throw so the overall request 500s and the
+    // caller knows the order was not fully committed.
+    const { error: revenueError } = await adminClient
+      .from('platform_revenue')
+      .insert({
+        revenue_type:   'freelance_commission',
+        amount:         platformFee,
+        source_user_id: user.id,      // client_id is the payer
+        transaction_ref: order.id,
+      });
+
+    if (revenueError) {
+      logger.error('platform_revenue insert failed for order', revenueError, {
+        orderId: order.id,
+      });
+      // Revenue record is mandatory — surface error rather than silently drop it.
+      throw revenueError;
+    }
+
+    // ── 6. Side-effects (fire-and-forget) ─────────────────────────────────
     if (validatedData.proposal_id) {
-      await supabase
+      void supabase
         .from('proposals')
         .update({ status: 'accepted' })
         .eq('id', validatedData.proposal_id);
 
       if (validatedData.job_id) {
-        await supabase
+        void supabase
           .from('jobs')
           .update({ status: 'in_progress' })
           .eq('id', validatedData.job_id);
       }
     }
 
-    // Notify freelancer
-    await supabase.from('notifications').insert({
+    void supabase.from('notifications').insert({
       user_id: validatedData.freelancer_id,
-      type: 'new_order',
-      title: 'New Order Received',
+      type:    'new_order',
+      title:   'New Order Received',
       message: `You have a new order: ${validatedData.title}`,
-      link: `/freelancer/orders/${order.id}`,
+      link:    `/freelancer/orders/${order.id}`,
     });
 
     logger.info('Order created successfully', {
-      orderId: order.id,
-      clientId: user.id,
+      orderId:      order.id,
+      clientId:     user.id,
       freelancerId: validatedData.freelancer_id,
-      amount: validatedData.amount
+      amount:       validatedData.amount,
+      platformFee,
+      feePercent,
     });
 
     return NextResponse.json({
       success: true,
-      data: order,
+      data:    order,
       message: 'Order created successfully. Proceed to payment.',
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
       logger.warn('Order validation failed', { errors: error.issues });
       return NextResponse.json(
-        { 
-          success: false, 
-          error: error.issues[0]?.message || 'Validation failed',
-          details: error.issues 
+        {
+          success: false,
+          error:   error.issues[0]?.message || 'Validation failed',
+          details: error.issues,
         },
         { status: 400 }
       );

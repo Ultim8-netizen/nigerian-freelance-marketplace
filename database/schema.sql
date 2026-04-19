@@ -5841,3 +5841,11 @@ BEGIN
   END IF;
 END;
 $$;
+
+
+INSERT INTO platform_config (key, value, description) VALUES
+  ('freelance_fee_percent', 10, 'Platform commission on freelance orders'),
+  ('marketplace_fee_percent', 8, 'Platform commission on marketplace orders')
+ON CONFLICT (key) DO NOTHING;
+
+

@@ -13,7 +13,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 // ── Canonical keys ──────────────────────────────────────────────────────────
-// These must match the keys seeded by migration_platform_config_thresholds.sql
 
 export const CONFIG_KEYS = {
   DISPUTE_AUTO_RESOLVE_DAYS:          'dispute_auto_resolve_days',
@@ -54,14 +53,27 @@ export const CONFIG_KEYS = {
    * Admin panel path: Config → Security → Shared IP Min Accounts.
    */
   SHARED_IP_MIN_ACCOUNTS:             'shared_ip_min_accounts',
+
+  /**
+   * Platform commission rate applied to freelance / job orders.
+   * Stored as a whole number (e.g. 10 = 10%).
+   * Default: 10
+   * Admin panel path: Config → Fees → Freelance Commission.
+   */
+  FREELANCE_FEE_PERCENT:              'freelance_fee_percent',
+
+  /**
+   * Platform commission rate applied to physical marketplace orders.
+   * Stored as a whole number (e.g. 8 = 8%).
+   * Default: 8
+   * Admin panel path: Config → Fees → Marketplace Commission.
+   */
+  MARKETPLACE_FEE_PERCENT:            'marketplace_fee_percent',
 } as const;
 
 export type ConfigKey = typeof CONFIG_KEYS[keyof typeof CONFIG_KEYS];
 
 // ── Hardcoded fallback defaults ─────────────────────────────────────────────
-// Used when a key is absent, disabled, or returns null.
-// Mirrors the values seeded by the migration so cold starts behave correctly
-// even before the migration runs.
 
 const DEFAULTS: Record<ConfigKey, number> = {
   [CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS]:        7,
@@ -77,6 +89,8 @@ const DEFAULTS: Record<ConfigKey, number> = {
   // Shared-IP fraud rule — on by default, flag on first overlap
   [CONFIG_KEYS.SHARED_IP_CHECK_ENABLED]:          1,   // 1 = enabled
   [CONFIG_KEYS.SHARED_IP_MIN_ACCOUNTS]:           1,   // flag if ≥ 1 other account shares IP
+  [CONFIG_KEYS.FREELANCE_FEE_PERCENT]:            10,
+  [CONFIG_KEYS.MARKETPLACE_FEE_PERCENT]:          8,
 };
 
 /**
@@ -92,7 +106,6 @@ export async function getPlatformConfigs(
   supabase: SupabaseClient,
   keys:     ConfigKey[]
 ): Promise<Record<ConfigKey, number>> {
-  // Initialise result with defaults — any missing key stays as its default
   const result = Object.fromEntries(
     keys.map((k) => [k, DEFAULTS[k]])
   ) as Record<ConfigKey, number>;
@@ -112,7 +125,6 @@ export async function getPlatformConfigs(
 
     for (const row of data ?? []) {
       const key = row.key as ConfigKey;
-      // Skip if not one of the requested keys, disabled, or value is null
       if (!(key in result))      continue;
       if (row.enabled === false) continue;
       if (row.value   === null)  continue;

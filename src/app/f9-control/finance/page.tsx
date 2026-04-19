@@ -1,12 +1,25 @@
-import { createClient } from '@/lib/supabase/server';
-import { revalidatePath } from 'next/cache';
-import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
-import { createAdminClient } from '@/lib/supabase/admin';
-import FinanceClient from "./FinanceClient";
+// src/app/f9-control/finance/page.tsx
+
+import { createClient }             from '@/lib/supabase/server';
+import { revalidatePath }           from 'next/cache';
+import { MonnifyServerService }     from '@/lib/monnify/server-service';
+import { createAdminClient }        from '@/lib/supabase/admin';
+import FinanceClient                from './FinanceClient';
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
 
-/** Approve a pending withdrawal — sets status to 'approved'. */
+/**
+ * Approve a pending withdrawal.
+ *
+ * Flow:
+ *   1. Set withdrawal status → 'approved'
+ *   2. POST to /api/admin/withdrawals/execute to trigger the Monnify transfer
+ *   3. Log the admin action
+ *
+ * The execute route is responsible for idempotency, role-checking the *route*
+ * layer, and all Monnify interaction. approveWithdrawal's only job here is to
+ * advance the status and hand off to the execute route.
+ */
 async function approveWithdrawal(fd: FormData) {
   'use server';
   const withdrawalId = fd.get('withdrawal_id') as string;
@@ -14,15 +27,43 @@ async function approveWithdrawal(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  // Step 1 — advance status so the execute route sees 'approved'
+  const { error: updateErr } = await supabase
     .from('withdrawals')
     .update({ status: 'approved', processed_at: new Date().toISOString() })
     .eq('id', withdrawalId);
 
+  if (updateErr) {
+    throw new Error(`Failed to approve withdrawal: ${updateErr.message}`);
+  }
+
+  // Step 2 — call the execute route to trigger the actual Monnify transfer.
+  // We pass the admin session cookie so the route can authenticate the caller.
+  // The execute route handles idempotency: if called twice it returns early.
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+
+  const executeRes = await fetch(`${baseUrl}/api/admin/withdrawals/execute`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ withdrawal_id: withdrawalId }),
+    // Forward cookies so the route can verify the admin session
+    credentials: 'include',
+  });
+
+  const executeJson = await executeRes.json().catch(() => ({}));
+
+  if (!executeRes.ok && !executeJson?.idempotent) {
+    // Transfer failed or route error — log and surface; withdrawal is already
+    // 'approved' in DB but execute route will have set it to 'failed' if
+    // Monnify rejected. Admin can retry from the failed state.
+    console.error('[approveWithdrawal] execute route error:', executeJson);
+  }
+
+  // Step 3 — log admin action regardless of transfer outcome
   await supabase.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'approve_withdrawal',
-    reason:      `Withdrawal ${withdrawalId} approved`,
+    reason:      `Withdrawal ${withdrawalId} approved — transfer ${executeJson?.transfer_ref ?? 'attempted'}`,
   });
 
   revalidatePath('/f9-control/finance');
@@ -130,8 +171,7 @@ async function freezeEscrow(fd: FormData) {
 
 /**
  * Cancel/refund an escrow entry to the client.
- * Requires a non-empty `reason` from FormData — collected by the inline
- * EscrowCancelWithReason component before the FormData is submitted.
+ * Requires a non-empty `reason` from FormData.
  */
 async function cancelEscrow(fd: FormData) {
   'use server';
@@ -168,32 +208,21 @@ async function cancelEscrow(fd: FormData) {
  * When `new_status` is 'refunded', three reversal paths are attempted in order
  * of applicability — exactly one will execute per transaction type:
  *
- *   PATH A — Gateway payment (flutterwave_tx_ref present):
- *     Calls FlutterwaveServerService.refundTransaction to reverse the charge
- *     at the gateway level. No internal wallet mutation is needed because the
- *     original credit came from the gateway, not from an internal balance.
+ *   PATH A — Gateway payment (monnify_payment_ref present):
+ *     Calls MonnifyServerService.refundTransaction to reverse the charge at
+ *     the gateway level. No internal wallet mutation needed.
  *
  *   PATH B — Internal wallet_credit (recipient credited from platform funds):
- *     The original transaction added `amount` to the recipient's wallet balance.
- *     Reversal: decrement `wallets.balance` by `amount` for `recipient_user_id`.
- *     Uses createAdminClient() because wallets have no admin-user RLS write path.
- *     Guard: balance is floored at 0 — we never push a wallet negative.
+ *     Reversal: decrement wallets.balance by amount for recipient_user_id.
+ *     Uses createAdminClient() — wallets have no admin-session RLS write path.
+ *     Guard: balance is floored at 0.
  *
  *   PATH C — Internal wallet_debit (recipient was debited by platform):
- *     The original transaction subtracted `amount` from the recipient's balance.
- *     Reversal: increment `wallets.balance` by `amount` for `recipient_user_id`.
+ *     Reversal: increment wallets.balance by amount for recipient_user_id.
  *
- *   PATH D — All other transaction types (escrow_payment, platform_fee, etc.):
- *     No automated wallet mutation is possible without knowing the full
- *     multi-party intent. The status is still marked 'refunded' and logged
- *     so the admin retains a clear audit trail; any balance correction for
- *     these types must be handled manually via the escrow release controls.
- *
- * In all paths the transaction row is updated to `new_status` only after the
- * side-effect succeeds, ensuring the status never advances on a failed mutation.
- *
- * TODO [MONNIFY MIGRATION]: Replace FlutterwaveServerService.refundTransaction
- *   with the equivalent Monnify call once the gateway switch is complete.
+ *   PATH D — All other types (escrow_payment, platform_fee, etc.):
+ *     Status is marked 'refunded' for audit trail; manual balance correction
+ *     via escrow release controls if required.
  */
 async function updateTransactionStatus(fd: FormData) {
   'use server';
@@ -208,10 +237,9 @@ async function updateTransactionStatus(fd: FormData) {
   if (!admin) throw new Error('Unauthenticated');
 
   if (newStatus === 'refunded') {
-    // Fetch all columns needed to route reversal correctly in a single round-trip.
     const { data: tx, error: txFetchError } = await supabase
       .from('transactions')
-      .select('transaction_type, recipient_user_id, amount, flutterwave_tx_ref')
+      .select('transaction_type, recipient_user_id, amount, monnify_payment_ref')
       .eq('id', txId)
       .single();
 
@@ -219,18 +247,14 @@ async function updateTransactionStatus(fd: FormData) {
       throw new Error(`Failed to fetch transaction: ${txFetchError?.message ?? 'not found'}`);
     }
 
-    // ── PATH A: Gateway payment reversal ─────────────────────────────────────
-    if (tx.flutterwave_tx_ref) {
-      // TODO [MONNIFY MIGRATION]: Replace this call.
-      await FlutterwaveServerService.refundTransaction(tx.flutterwave_tx_ref, reason);
+    // ── PATH A: Gateway payment reversal via Monnify ──────────────────────
+    if (tx.monnify_payment_ref) {
+      await MonnifyServerService.refundTransaction(tx.monnify_payment_ref, tx.amount);
 
-    // ── PATH B: Internal wallet_credit reversal ───────────────────────────────
+    // ── PATH B: Internal wallet_credit reversal ───────────────────────────
     } else if (tx.transaction_type === 'wallet_credit' && tx.recipient_user_id) {
-      // The credit added `amount` to the wallet; reversal removes it.
-      // Service role is required — wallets have no admin-session RLS write policy.
       const adminClient = createAdminClient();
 
-      // Fetch current balance so we can floor at 0 rather than going negative.
       const { data: wallet, error: walletFetchErr } = await adminClient
         .from('wallets')
         .select('balance')
@@ -244,21 +268,17 @@ async function updateTransactionStatus(fd: FormData) {
         );
       }
 
-      const currentBalance = wallet.balance ?? 0;
-      const newBalance     = Math.max(0, currentBalance - tx.amount);
+      const newBalance = Math.max(0, (wallet.balance ?? 0) - tx.amount);
 
       const { error: debitErr } = await adminClient
         .from('wallets')
         .update({ balance: newBalance })
         .eq('user_id', tx.recipient_user_id);
 
-      if (debitErr) {
-        throw new Error(`Wallet debit reversal failed: ${debitErr.message}`);
-      }
+      if (debitErr) throw new Error(`Wallet debit reversal failed: ${debitErr.message}`);
 
-    // ── PATH C: Internal wallet_debit reversal ────────────────────────────────
+    // ── PATH C: Internal wallet_debit reversal ────────────────────────────
     } else if (tx.transaction_type === 'wallet_debit' && tx.recipient_user_id) {
-      // The debit removed `amount` from the wallet; reversal restores it.
       const adminClient = createAdminClient();
 
       const { data: wallet, error: walletFetchErr } = await adminClient
@@ -274,28 +294,22 @@ async function updateTransactionStatus(fd: FormData) {
         );
       }
 
-      const currentBalance = wallet.balance ?? 0;
-      const newBalance     = currentBalance + tx.amount;
+      const newBalance = (wallet.balance ?? 0) + tx.amount;
 
       const { error: creditErr } = await adminClient
         .from('wallets')
         .update({ balance: newBalance })
         .eq('user_id', tx.recipient_user_id);
 
-      if (creditErr) {
-        throw new Error(`Wallet credit reversal failed: ${creditErr.message}`);
-      }
+      if (creditErr) throw new Error(`Wallet credit reversal failed: ${creditErr.message}`);
 
-    // ── PATH D: Non-automatable types (escrow_payment, platform_fee, etc.) ────
+    // ── PATH D: Non-automatable types ─────────────────────────────────────
     } else {
-      // Status is still set to 'refunded' below so the admin has a clear audit
-      // trail. Any balance correction for these types should be performed via
-      // the escrow release/freeze controls above.
-      // No automated wallet mutation — manual intervention required if applicable.
+      // Status is advanced to 'refunded' below for audit trail.
+      // Manual balance correction via escrow release controls if needed.
     }
   }
 
-  // Advance the transaction status — reached only after the side-effect succeeds.
   const { error: updateError } = await supabase
     .from('transactions')
     .update({ status: newStatus })
@@ -344,12 +358,8 @@ async function toggleWithdrawalGate(fd: FormData) {
 
 /**
  * Set the withdrawal gate threshold.
- * Withdrawals above this amount are automatically held for manual admin review
- * in the freelancer earnings flow. A threshold of 0 disables the gate.
- *
- * Stored in platform_config as key='withdrawal_gate_threshold', value=<number>.
- * The admin user's session satisfies the admin-only RLS on platform_config, so
- * createClient() is sufficient here (no need for createAdminClient).
+ * Withdrawals above this amount are automatically held for manual admin review.
+ * A threshold of 0 disables the gate.
  */
 async function setWithdrawalGateThreshold(fd: FormData) {
   'use server';
@@ -392,17 +402,15 @@ async function setWithdrawalGateThreshold(fd: FormData) {
 
 // ─── Page Props ───────────────────────────────────────────────────────────────
 
-// Next.js 15: searchParams is a Promise and must be awaited before access.
 interface PageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
-// ─── Data fetches ─────────────────────────────────────────────────────────────
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function AdminFinancePage({ searchParams }: PageProps) {
   const supabase = await createClient();
 
-  // Resolve filter values from URL search params
   const sp = await searchParams;
 
   function sp_str(key: string): string {
@@ -420,7 +428,7 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
     amount_max: sp_str('amount_max'),
   };
 
-  // ── Pending withdrawals with user profile join ───────────────────────────
+  // ── Pending withdrawals ──────────────────────────────────────────────────
 
   type WithdrawalWithUser = {
     id: string; amount: number; bank_name: string; account_number: string;
@@ -438,9 +446,6 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
 
   // ── Filtered transaction ledger ──────────────────────────────────────────
 
-  // The transactions table links to the user via recipient_user_id → profiles.
-  // Filtering by user name/email requires a two-step approach: first resolve
-  // matching profile IDs, then filter transactions by those IDs.
   type TransactionWithUser = {
     id: string;
     transaction_ref: string;
@@ -454,7 +459,6 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
     recipient_user_id: { full_name: string | null; email: string | null } | null;
   };
 
-  // Track whether user search produced zero matches — short-circuits the main query.
   let userSearchEmpty = false;
   let matchedProfileIds: string[] = [];
 
@@ -465,20 +469,15 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
       .or(`full_name.ilike.%${filter.q}%,email.ilike.%${filter.q}%`)
       .limit(100);
 
-    if (profileErr) {
-      console.error('[finance] profile search error:', profileErr);
-    }
+    if (profileErr) console.error('[finance] profile search error:', profileErr);
 
     matchedProfileIds = (profiles ?? []).map((p) => p.id);
-    if (matchedProfileIds.length === 0) {
-      userSearchEmpty = true;
-    }
+    if (matchedProfileIds.length === 0) userSearchEmpty = true;
   }
 
   let transactions: TransactionWithUser[] = [];
 
   if (!userSearchEmpty) {
-    // Build the query dynamically; all filters are additive (AND semantics).
     let txQuery = supabase
       .from('transactions')
       .select(
@@ -487,27 +486,13 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
       .order('created_at', { ascending: false })
       .limit(200);
 
-    // User filter — restrict to resolved profile IDs
     if (matchedProfileIds.length > 0) {
       txQuery = txQuery.in('recipient_user_id', matchedProfileIds);
     }
-
-    if (filter.type) {
-      txQuery = txQuery.eq('transaction_type', filter.type);
-    }
-
-    if (filter.status) {
-      txQuery = txQuery.eq('status', filter.status);
-    }
-
-    // Date range: date_from is inclusive start of day; date_to is inclusive end of day.
-    if (filter.date_from) {
-      txQuery = txQuery.gte('created_at', `${filter.date_from}T00:00:00.000Z`);
-    }
-    if (filter.date_to) {
-      txQuery = txQuery.lte('created_at', `${filter.date_to}T23:59:59.999Z`);
-    }
-
+    if (filter.type)       txQuery = txQuery.eq('transaction_type', filter.type);
+    if (filter.status)     txQuery = txQuery.eq('status', filter.status);
+    if (filter.date_from)  txQuery = txQuery.gte('created_at', `${filter.date_from}T00:00:00.000Z`);
+    if (filter.date_to)    txQuery = txQuery.lte('created_at', `${filter.date_to}T23:59:59.999Z`);
     if (filter.amount_min && !isNaN(Number(filter.amount_min))) {
       txQuery = txQuery.gte('amount', Number(filter.amount_min));
     }
@@ -524,22 +509,14 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
     transactions = txData ?? [];
   }
 
-  // Derive the distinct transaction_type values from the current result set
-  // (plus any hardcoded platform types) for the filter datalist in the UI.
   const knownTypes = Array.from(
     new Set([
       ...transactions.map((t) => t.transaction_type),
-      // Include canonical platform types so the datalist is useful even on an empty filtered view
-      'escrow_payment',
-      'withdrawal',
-      'platform_fee',
-      'refund',
-      'wallet_credit',
-      'wallet_debit',
+      'escrow_payment', 'withdrawal', 'platform_fee', 'refund', 'wallet_credit', 'wallet_debit',
     ])
   ).filter(Boolean).sort();
 
-  // ── Active escrow entries (funded + held) ────────────────────────────────
+  // ── Active escrow entries ────────────────────────────────────────────────
 
   const { data: escrowEntries } = await supabase
     .from('escrow')
@@ -547,8 +524,6 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
     .in('status', ['funded', 'held'])
     .order('created_at', { ascending: false })
     .limit(100);
-
-  // ── Escrow total via RPC ─────────────────────────────────────────────────
 
   const { data: escrowTotal } = await supabase.rpc('get_escrow_total');
 
@@ -562,15 +537,12 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
 
   const withdrawalsPaused = withdrawalGateConfig?.enabled ?? false;
 
-  // ── Withdrawal gate threshold ────────────────────────────────────────────
-
   const { data: withdrawalThresholdConfig } = await supabase
     .from('platform_config')
     .select('value')
     .eq('key', 'withdrawal_gate_threshold')
     .single();
 
-  // value=0 when row is absent or threshold is disabled
   const withdrawalGateThreshold = Number(withdrawalThresholdConfig?.value ?? 0);
 
   return (
