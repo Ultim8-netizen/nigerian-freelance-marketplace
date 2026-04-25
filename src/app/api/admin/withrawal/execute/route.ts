@@ -9,10 +9,17 @@
 // second call detects status='processing' and returns early without re-calling
 // Monnify, preventing duplicate disbursements.
 //
-// WALLET DEDUCTION: Deliberately absent. The existing
+// WALLET DEDUCTION: Deliberately absent here. The existing
 // sync_wallet_on_withdrawal_complete DB trigger fires when status →
-// 'completed' (set by the Monnify webhook handler). This route never touches
-// wallet.balance directly.
+// 'completed' (set by the Monnify SUCCESSFUL_DISBURSEMENT webhook handler).
+// This route never touches wallet.balance directly.
+//
+// IN-FLIGHT GUARD: Before calling Monnify we sum every other withdrawal for
+// this user that is currently in 'approved' or 'processing' state and verify:
+//   wallet.balance ≥ this_withdrawal.amount + in_flight_sum
+// This prevents a second concurrent withdrawal from being approved against
+// the same undeducted balance, closing the window between 'processing' and
+// 'completed' (when the trigger fires).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient }      from '@/lib/supabase/server';
@@ -27,20 +34,20 @@ import { MonnifyServerService } from '@/lib/monnify/server-service';
 // Missing bank = failed transfer at Monnify.
 
 const BANK_CODES: Record<string, string> = {
-  'Access Bank':  '044',
-  'GTBank':       '058',
-  'First Bank':   '011',
-  'UBA':          '033',
-  'Zenith Bank':  '057',
+  'Access Bank':   '044',
+  'GTBank':        '058',
+  'First Bank':    '011',
+  'UBA':           '033',
+  'Zenith Bank':   '057',
   'Fidelity Bank': '070',
-  'FCMB':         '214',
-  'Polaris Bank': '076',
+  'FCMB':          '214',
+  'Polaris Bank':  '076',
   'Sterling Bank': '232',
-  'Wema Bank':    '035',
-  'Opay':         '305',
-  'Kuda Bank':    '090267',
-  'PalmPay':      '100033',
-  'Moniepoint':   '50515',
+  'Wema Bank':     '035',
+  'Opay':          '305',
+  'Kuda Bank':     '090267',
+  'PalmPay':       '100033',
+  'Moniepoint':    '50515',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,8 +68,6 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 2. Verify caller has admin / financial_analyst role ─────────────────
-    // Use the session client to identify the admin user, then check
-    // staff_roles with the admin client (bypasses RLS on that table).
     const supabase    = await createClient();
     const adminClient = createAdminClient();
 
@@ -107,20 +112,19 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 4. Idempotency check ────────────────────────────────────────────────
-    // If already processing/completed/failed, do not call Monnify again.
     if (withdrawal.status === 'processing') {
       return NextResponse.json({
-        success: true,
+        success:    true,
         idempotent: true,
-        message: 'Transfer already in processing state — no duplicate call made',
+        message:    'Transfer already in processing state — no duplicate call made',
       });
     }
 
     if (withdrawal.status === 'completed') {
       return NextResponse.json({
-        success: true,
+        success:    true,
         idempotent: true,
-        message: 'Withdrawal already completed',
+        message:    'Withdrawal already completed',
       });
     }
 
@@ -128,13 +132,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error: `Cannot execute withdrawal in status '${withdrawal.status}'. Must be 'approved'.`,
+          error:   `Cannot execute withdrawal in status '${withdrawal.status}'. Must be 'approved'.`,
         },
         { status: 409 }
       );
     }
 
-    // ── 5. Verify wallet is not frozen and has sufficient balance ───────────
+    // ── 5. Fetch wallet ─────────────────────────────────────────────────────
     if (!withdrawal.wallet_id && !withdrawal.user_id) {
       return NextResponse.json(
         { success: false, error: 'Withdrawal has no associated wallet or user' },
@@ -143,8 +147,16 @@ export async function POST(request: NextRequest) {
     }
 
     const walletQuery = withdrawal.wallet_id
-      ? adminClient.from('wallets').select('id, balance, is_frozen').eq('id', withdrawal.wallet_id).single()
-      : adminClient.from('wallets').select('id, balance, is_frozen').eq('user_id', withdrawal.user_id!).single();
+      ? adminClient
+          .from('wallets')
+          .select('id, balance, is_frozen, user_id')
+          .eq('id', withdrawal.wallet_id)
+          .single()
+      : adminClient
+          .from('wallets')
+          .select('id, balance, is_frozen, user_id')
+          .eq('user_id', withdrawal.user_id!)
+          .single();
 
     const { data: wallet, error: walletErr } = await walletQuery;
 
@@ -167,22 +179,77 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if ((wallet.balance ?? 0) < withdrawal.amount) {
+    // ── 6. In-flight balance guard ──────────────────────────────────────────
+    //
+    // The trigger deducts wallet.balance only when a withdrawal reaches
+    // 'completed' (fired by the Monnify SUCCESSFUL_DISBURSEMENT webhook).
+    // Between 'processing' and 'completed' the balance has not yet been
+    // reduced. A second admin approval in that window would find the full
+    // balance still available, enabling a double-spend.
+    //
+    // We prevent this by summing every other 'approved' or 'processing'
+    // withdrawal for this user. The current withdrawal may only proceed if:
+    //   wallet.balance ≥ this_amount + in_flight_sum
+    //
+    // The `.neq('id', withdrawalId)` excludes the row we are about to
+    // execute — which is still 'approved' at this point.
+
+    // FIX (TS2345): withdrawal.user_id and wallet.user_id are both
+    // string | null. The nullish-coalescing produces string | null, which
+    // Supabase's .eq() rejects. We resolve to a concrete string here and
+    // return 400 if neither side is populated — which should be unreachable
+    // given the guard in step 5, but TypeScript cannot prove that.
+    const effectiveUserId: string | null = withdrawal.user_id ?? wallet.user_id;
+
+    if (!effectiveUserId) {
+      return NextResponse.json(
+        { success: false, error: 'Cannot determine user_id for in-flight guard — aborting' },
+        { status: 400 }
+      );
+    }
+
+    // effectiveUserId is now narrowed to string — safe to pass to .eq()
+    const { data: inFlightRows, error: inFlightErr } = await adminClient
+      .from('withdrawals')
+      .select('amount')
+      .eq('user_id', effectiveUserId)
+      .in('status', ['approved', 'processing'])
+      .neq('id', withdrawalId);
+
+    if (inFlightErr) {
+      console.error('[execute-withdrawal] in-flight query failed:', inFlightErr.message);
+      return NextResponse.json(
+        { success: false, error: 'Could not verify in-flight withdrawals — aborting for safety' },
+        { status: 500 }
+      );
+    }
+
+    const inFlightSum = (inFlightRows ?? []).reduce(
+      (acc, row) => acc + (row.amount ?? 0),
+      0
+    );
+
+    const requiredBalance = withdrawal.amount + inFlightSum;
+
+    if ((wallet.balance ?? 0) < requiredBalance) {
+      const reason = inFlightSum > 0
+        ? `Insufficient balance accounting for in-flight withdrawals: ` +
+          `wallet ₦${wallet.balance} < this withdrawal ₦${withdrawal.amount} + ` +
+          `in-flight ₦${inFlightSum} = ₦${requiredBalance}`
+        : `Insufficient wallet balance: ₦${wallet.balance} < ₦${withdrawal.amount}`;
+
       await adminClient
         .from('withdrawals')
-        .update({
-          status:         'failed',
-          failure_reason: `Insufficient wallet balance: ₦${wallet.balance} < ₦${withdrawal.amount}`,
-        })
+        .update({ status: 'failed', failure_reason: reason })
         .eq('id', withdrawalId);
 
       return NextResponse.json(
-        { success: false, error: 'Insufficient wallet balance' },
+        { success: false, error: reason },
         { status: 409 }
       );
     }
 
-    // ── 6. Resolve bank code ────────────────────────────────────────────────
+    // ── 7. Resolve bank code ────────────────────────────────────────────────
     const bankCode = BANK_CODES[withdrawal.bank_name];
     if (!bankCode) {
       const reason = `Unsupported bank: '${withdrawal.bank_name}' has no mapped Monnify code`;
@@ -194,13 +261,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: reason }, { status: 422 });
     }
 
-    // ── 7. Generate unique transfer reference ───────────────────────────────
+    // ── 8. Generate unique transfer reference ───────────────────────────────
     // Format: PAYOUT-{withdrawalId}-{timestamp}
     // Both components are needed: withdrawalId for traceability,
-    // timestamp to guarantee uniqueness if Monnify rejects duplicates.
+    // timestamp to guarantee uniqueness if Monnify rejects exact duplicates.
     const transferRef = `PAYOUT-${withdrawalId}-${Date.now()}`;
 
-    // ── 8. Call Monnify ─────────────────────────────────────────────────────
+    // ── 9. Call Monnify ─────────────────────────────────────────────────────
     let monnifyResult: Awaited<ReturnType<typeof MonnifyServerService.initiateTransfer>>;
     let monnifyFailed = false;
     let monnifyError  = '';
@@ -218,16 +285,16 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       monnifyFailed = true;
       monnifyError  = err instanceof Error ? err.message : String(err);
-      // Construct a minimal failed result so the finally-block path is uniform
       monnifyResult = { status: 'FAILED', reference: transferRef };
     }
 
-    // ── 9. Handle Monnify response ──────────────────────────────────────────
+    // ── 10. Handle Monnify response ─────────────────────────────────────────
 
     if (!monnifyFailed && (monnifyResult.status === 'SUCCESS' || monnifyResult.status === 'PENDING')) {
       // Transfer accepted — mark as processing.
-      // Wallet deduction is handled by the sync_wallet_on_withdrawal_complete
-      // trigger when status later transitions to 'completed' via webhook.
+      // Store monnify_transfer_ref so the SUCCESSFUL_DISBURSEMENT webhook can
+      // look this row up by reference and flip it to 'completed', triggering
+      // the wallet deduction. This ref is the join key between the two systems.
       await adminClient
         .from('withdrawals')
         .update({
@@ -243,9 +310,10 @@ export async function POST(request: NextRequest) {
         resource_type: 'withdrawals',
         resource_id:   withdrawalId,
         metadata: {
-          monnify_ref: monnifyResult.reference,
-          amount:      withdrawal.amount,
-          bank:        withdrawal.bank_name,
+          monnify_ref:    monnifyResult.reference,
+          amount:         withdrawal.amount,
+          bank:           withdrawal.bank_name,
+          in_flight_sum:  inFlightSum,
         },
       });
 
@@ -259,8 +327,8 @@ export async function POST(request: NextRequest) {
       });
 
       return NextResponse.json({
-        success:     true,
-        status:      monnifyResult.status,
+        success:      true,
+        status:       monnifyResult.status,
         transfer_ref: monnifyResult.reference,
       });
     }
@@ -282,7 +350,7 @@ export async function POST(request: NextRequest) {
       action:        'withdrawal_transfer_failed',
       resource_type: 'withdrawals',
       resource_id:   withdrawalId,
-      metadata: { reason: failureReason, amount: withdrawal.amount },
+      metadata:      { reason: failureReason, amount: withdrawal.amount },
     });
 
     // Notify freelancer of failure — fire-and-forget
