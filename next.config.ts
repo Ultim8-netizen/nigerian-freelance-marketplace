@@ -19,7 +19,8 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL!,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY: process.env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY!,
+    NEXT_PUBLIC_MONNIFY_API_KEY: process.env.NEXT_PUBLIC_MONNIFY_API_KEY!,
+    NEXT_PUBLIC_MONNIFY_CONTRACT_CODE: process.env.NEXT_PUBLIC_MONNIFY_CONTRACT_CODE!,
     NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME!,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL!,
   },
@@ -31,7 +32,8 @@ const nextConfig: NextConfig = {
     const connectSrc = [
       "'self'",
       "https://*.supabase.co",
-      "https://api.flutterwave.com",
+      "https://api.monnify.com",
+      "https://sandbox.monnify.com",
       "https://res.cloudinary.com",
       "https://nominatim.openstreetmap.org",
       "https://ipapi.co",
@@ -47,7 +49,7 @@ const nextConfig: NextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdnjs.cloudflare.com",
+              "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdnjs.cloudflare.com https://sdk.monnify.com",
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https: blob:",
               "font-src 'self' data:",

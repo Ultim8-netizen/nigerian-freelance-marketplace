@@ -85,30 +85,22 @@ async function checkRedis(): Promise<ServiceHealth> {
 }
 
 /**
- * Flutterwave — hits the public /v3/banks/NG endpoint.
+ * Monnify — hits the public /api/v1/banks endpoint (no auth required).
  * Any HTTP response confirms the API gateway is reachable; we only verify
  * connectivity, not authorisation. Network error or timeout = 'down'.
- *
- * TODO: replace with Monnify health probe once Monnify integration is live.
- * Suggested replacement: fetch('https://api.monnify.com/api/v1/banks')
- * — public, no auth required, same connectivity-check pattern.
+ * A 5xx from Monnify means their servers are struggling = 'degraded'.
  */
-async function checkFlutterwave(): Promise<ServiceHealth> {
+async function checkMonnify(): Promise<ServiceHealth> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
   const t0 = Date.now();
   try {
-    const res = await fetch('https://api.flutterwave.com/v3/banks/NG', {
+    const res = await fetch('https://api.monnify.com/api/v1/banks', {
       method: 'GET',
-      headers: {
-        Authorization: `Bearer ${process.env.FLW_SECRET_KEY ?? ''}`,
-      },
       signal: controller.signal,
     });
     clearTimeout(timer);
     const latencyMs = Date.now() - t0;
-    // Any HTTP response (200, 401, 422 ...) means the gateway is up.
-    // A 5xx from Flutterwave means their servers are struggling.
     if (res.status >= 500) return { status: 'degraded', latencyMs };
     return { status: latencyMs > 2_500 ? 'degraded' : 'healthy', latencyMs };
   } catch {
@@ -136,7 +128,7 @@ export default async function DailyDigest() {
   const [
     supabaseHealth,
     redisHealth,
-    flutterwaveHealth,
+    monnifyHealth,
 
     { count: ticketsCount },
     { count: newUsers },
@@ -164,9 +156,9 @@ export default async function DailyDigest() {
   ] = await Promise.all([
 
     // ── Health checks ─────────────────────────────────────────────────────────
-    checkSupabase(supabase)  .catch((): ServiceHealth => ({ status: 'down' })),
-    checkRedis()             .catch((): ServiceHealth => ({ status: 'down' })),
-    checkFlutterwave()       .catch((): ServiceHealth => ({ status: 'down' })),
+    checkSupabase(supabase).catch((): ServiceHealth => ({ status: 'down' })),
+    checkRedis()           .catch((): ServiceHealth => ({ status: 'down' })),
+    checkMonnify()         .catch((): ServiceHealth => ({ status: 'down' })),
 
     // ── Data queries ──────────────────────────────────────────────────────────
     supabase
@@ -245,9 +237,9 @@ export default async function DailyDigest() {
   // ─── Derived values ─────────────────────────────────────────────────────────
 
   const healthChecks: { label: string; result: ServiceHealth }[] = [
-    { label: 'Database',           result: supabaseHealth },
-    { label: 'Payments (FLW)',     result: flutterwaveHealth },
-    { label: 'Redis (Rate limits)', result: redisHealth },
+    { label: 'Database',            result: supabaseHealth },
+    { label: 'Payments (Monnify)', result: monnifyHealth  },
+    { label: 'Redis (Rate limits)', result: redisHealth    },
   ];
 
   const overallHealth: HealthStatus =

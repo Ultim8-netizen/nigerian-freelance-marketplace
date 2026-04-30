@@ -20,7 +20,7 @@ interface MonnifyProduct {
 }
 
 interface MonnifyEventData {
-  transactionReference: string; // Monnify internal ref — stored in flw_tx_id column
+  transactionReference: string; // Monnify internal ref — passed as p_monnify_ref
   paymentReference:     string; // our generated ref — maps to transactions.monnify_payment_ref
   amountPaid:           number;
   totalPayable:         number;
@@ -114,8 +114,8 @@ export async function POST(request: NextRequest) {
   let isValidSignature: boolean;
   try {
     isValidSignature = crypto.timingSafeEqual(
-      Buffer.from(signatureHeader,    'utf8'),
-      Buffer.from(expectedSignature,  'utf8')
+      Buffer.from(signatureHeader,   'utf8'),
+      Buffer.from(expectedSignature, 'utf8')
     );
   } catch {
     isValidSignature = false;
@@ -224,8 +224,8 @@ async function handleSuccessfulTransaction(
       await adminClient
         .from('transactions')
         .update({
-          status:            'failed',
-          monnify_response:  {
+          status:           'failed',
+          monnify_response: {
             paymentStatus: verified.paymentStatus,
             verifiedAt:    new Date().toISOString(),
             source:        'webhook_reverification',
@@ -240,18 +240,21 @@ async function handleSuccessfulTransaction(
     let rpcError: { message: string } | null = null;
 
     if (transaction.order_id && !transaction.marketplace_order_id) {
+      // Freelance order — transactionReference is Monnify's internal ref,
+      // stored in monnify_payment_ref inside the function body.
       const res = await adminClient.rpc('process_successful_payment', {
         p_transaction_id: transaction.id,
         p_order_id:       transaction.order_id,
-        p_flw_tx_id:      transactionReference,
+        p_monnify_ref:    transactionReference, // was: p_flw_tx_id
         p_amount:         amountPaid,
       });
       rpcError = res.error;
     } else if (transaction.marketplace_order_id) {
+      // Marketplace order
       const res = await adminClient.rpc('process_marketplace_payment', {
         p_transaction_id: transaction.id,
         p_order_id:       transaction.marketplace_order_id,
-        p_flw_tx_id:      transactionReference,
+        p_monnify_ref:    transactionReference, // was: p_flw_tx_id
         p_amount:         amountPaid,
       });
       rpcError = res.error;

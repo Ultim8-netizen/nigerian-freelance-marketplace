@@ -2199,7 +2199,7 @@ export type Database = {
       process_marketplace_payment: {
         Args: {
           p_amount: number
-          p_flw_tx_id: string
+          p_monnify_ref: string
           p_order_id: string
           p_transaction_id: string
         }
@@ -2214,7 +2214,7 @@ export type Database = {
       process_successful_payment: {
         Args: {
           p_amount: number
-          p_flw_tx_id: string
+          p_monnify_ref: string
           p_order_id: string
           p_transaction_id: string
         }

@@ -5849,3 +5849,193 @@ INSERT INTO platform_config (key, value, description) VALUES
 ON CONFLICT (key) DO NOTHING;
 
 
+-- Drop old signatures first (exact type list required — name doesn't matter, types do)
+DROP FUNCTION IF EXISTS public.process_successful_payment(uuid, uuid, text, numeric);
+DROP FUNCTION IF EXISTS public.process_marketplace_payment(uuid, uuid, text, numeric);
+
+-- Then re-run the CREATE OR REPLACE blocks from the previous response
+
+
+CREATE OR REPLACE FUNCTION public.process_successful_payment(
+  p_transaction_id UUID,
+  p_order_id       UUID,
+  p_monnify_ref    TEXT,     -- was: p_flw_tx_id
+  p_amount         NUMERIC
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $func$
+DECLARE
+  v_order RECORD;
+  v_result jsonb;
+BEGIN
+  -- 1. Confirm payment on the transaction record
+  UPDATE transactions
+  SET
+    status             = 'successful',
+    monnify_payment_ref = p_monnify_ref,   -- was: flutterwave_tx_ref = p_flw_tx_id
+    paid_at            = NOW()
+  WHERE id = p_transaction_id;
+
+  -- 2. Fetch order
+  SELECT * INTO v_order
+  FROM orders
+  WHERE id = p_order_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Order not found';
+  END IF;
+
+  -- 3. Activate the order
+  UPDATE orders
+  SET status = 'awaiting_delivery'
+  WHERE id = p_order_id;
+
+  -- 4. Create escrow record
+  INSERT INTO escrow (order_id, transaction_id, amount, status)
+  VALUES (p_order_id, p_transaction_id, p_amount, 'held');
+
+  -- 5. Load freelancer earnings into pending_clearance (not balance yet —
+  --    process_pending_clearances() releases to balance after 7 days)
+  INSERT INTO wallets (user_id, pending_clearance)
+  VALUES (v_order.freelancer_id, v_order.freelancer_earnings)
+  ON CONFLICT (user_id) DO UPDATE
+    SET
+      pending_clearance = wallets.pending_clearance + v_order.freelancer_earnings,
+      updated_at        = NOW();
+
+  -- 6. Notify both parties
+  INSERT INTO notifications (user_id, type, title, message, link) VALUES
+    (
+      v_order.freelancer_id,
+      'new_order',
+      'New Order Received!',
+      'Payment confirmed. Start working on: ' || v_order.title,
+      '/freelancer/orders/' || p_order_id
+    ),
+    (
+      v_order.client_id,
+      'payment_success',
+      'Payment Successful',
+      'Your payment is secured in escrow for: ' || v_order.title,
+      '/client/orders/' || p_order_id
+    );
+
+  v_result := jsonb_build_object(
+    'success',  true,
+    'order_id', p_order_id,
+    'status',   'awaiting_delivery'
+  );
+
+  RETURN v_result;
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'process_successful_payment failed: %', SQLERRM;
+  RETURN jsonb_build_object('success', false, 'error', SQLERRM);
+END;
+$func$;
+
+
+CREATE OR REPLACE FUNCTION public.process_marketplace_payment(
+  p_transaction_id UUID,
+  p_order_id       UUID,
+  p_monnify_ref    TEXT,     -- was: p_flw_tx_id
+  p_amount         NUMERIC
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $func$
+DECLARE
+  v_order RECORD;
+BEGIN
+  -- 1. Confirm payment on the transaction record
+  UPDATE transactions
+  SET
+    status              = 'successful',
+    monnify_payment_ref = p_monnify_ref,   -- was: flutterwave_tx_ref = p_flw_tx_id
+    paid_at             = NOW()
+  WHERE id = p_transaction_id;
+
+  -- 2. Fetch marketplace order
+  SELECT * INTO v_order
+  FROM marketplace_orders
+  WHERE id = p_order_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Marketplace order not found';
+  END IF;
+
+  -- 3. Confirm the marketplace order
+  UPDATE marketplace_orders
+  SET
+    status  = 'confirmed',
+    paid_at = NOW()
+  WHERE id = p_order_id;
+
+  -- 4. Create escrow record (links via marketplace_order_id)
+  INSERT INTO escrow (marketplace_order_id, transaction_id, amount, status)
+  VALUES (p_order_id, p_transaction_id, p_amount, 'held');
+
+  -- 5. Notify both parties
+  INSERT INTO notifications (user_id, type, title, message, link) VALUES
+    (
+      v_order.seller_id,
+      'new_marketplace_order',
+      'New Order Received!',
+      'Payment confirmed for your product.',
+      '/marketplace/orders/' || p_order_id
+    ),
+    (
+      v_order.buyer_id,
+      'payment_success',
+      'Payment Successful',
+      'Your payment is secured in escrow.',
+      '/marketplace/orders/' || p_order_id
+    );
+
+  RETURN jsonb_build_object(
+    'success',  true,
+    'order_id', p_order_id,
+    'status',   'confirmed'
+  );
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'process_marketplace_payment failed: %', SQLERRM;
+  RETURN jsonb_build_object('success', false, 'error', SQLERRM);
+END;
+$func$;
+
+
+DO $verify$
+DECLARE
+  v_args TEXT;
+BEGIN
+  -- process_successful_payment
+  SELECT pg_get_function_arguments(oid) INTO v_args
+  FROM pg_proc
+  WHERE proname = 'process_successful_payment'
+    AND pronamespace = 'public'::regnamespace;
+
+  IF v_args LIKE '%p_monnify_ref%' THEN
+    RAISE NOTICE 'OK: process_successful_payment uses p_monnify_ref';
+  ELSE
+    RAISE WARNING 'FAIL: process_successful_payment still has old param — got: %', v_args;
+  END IF;
+
+  -- process_marketplace_payment
+  SELECT pg_get_function_arguments(oid) INTO v_args
+  FROM pg_proc
+  WHERE proname = 'process_marketplace_payment'
+    AND pronamespace = 'public'::regnamespace;
+
+  IF v_args LIKE '%p_monnify_ref%' THEN
+    RAISE NOTICE 'OK: process_marketplace_payment uses p_monnify_ref';
+  ELSE
+    RAISE WARNING 'FAIL: process_marketplace_payment still has old param — got: %', v_args;
+  END IF;
+END;
+$verify$;
+
+
