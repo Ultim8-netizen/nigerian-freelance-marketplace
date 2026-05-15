@@ -17,7 +17,6 @@ export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     
-    // Sanitize and validate inputs
     const category = sanitizeText(searchParams.get('category') || '');
     const budgetType = searchParams.get('budget_type');
     const status = searchParams.get('status') || 'open';
@@ -28,7 +27,6 @@ export async function GET(request: NextRequest) {
     const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
     const perPage = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
 
-    // Security check
     if (search && containsSqlInjection(search)) {
       logger.warn('SQL injection attempt in jobs search', { 
         search, 
@@ -58,22 +56,17 @@ export async function GET(request: NextRequest) {
       `, { count: 'exact' })
       .eq('status', status);
 
-    // Search
     if (search) {
       const searchTerm = `%${search}%`;
-      query = query.or(
-        `title.ilike.${searchTerm},description.ilike.${searchTerm}`
-      );
+      query = query.or(`title.ilike.${searchTerm},description.ilike.${searchTerm}`);
     }
 
-    // Filters
     if (category) query = query.eq('category', category);
     if (budgetType) query = query.eq('budget_type', budgetType);
     if (experienceLevel) query = query.eq('experience_level', experienceLevel);
     if (minBudget) query = query.gte('budget_min', parseFloat(minBudget));
     if (maxBudget) query = query.lte('budget_max', parseFloat(maxBudget));
 
-    // Pagination
     const from = (page - 1) * perPage;
     const to = from + perPage - 1;
 
@@ -127,16 +120,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Parse and sanitize request
     const body = await request.json();
 
-    // ADDED: Determine the budget amount to pass to the Trust Gate.
-    // Prefer budget_max when present; fall back to budget_min.
-    const checkAmount = body.budget_max ? Number(body.budget_max) : Number(body.budget_min);
+    // FIX: always evaluate the highest possible financial exposure.
+    // Coerce both fields independently — a missing/NaN field becomes 0
+    // and loses Math.max to whichever field is actually present.
+    // This closes the truthy-ternary bypass where an attacker could pass
+    // budget_max: 1000 alongside budget_min: 5_000_000 and have the gate
+    // only see 1000.
+    const parsedMin = Number(body.budget_min) || 0;
+    const parsedMax = Number(body.budget_max) || 0;
+    const checkAmount = Math.max(parsedMin, parsedMax);
 
-    // ADDED: Evaluate the Trust Gate before any further processing.
-    // If the user is not allowed to post a listing at this budget level,
-    // return a 403 immediately so the client can surface the restriction.
     const gate = await evaluateTrustGate(user.id, 'post_listing', checkAmount);
 
     if (!gate.allowed) {
@@ -164,12 +159,9 @@ export async function POST(request: NextRequest) {
       skills_required: body.skills_required?.map((skill: string) => sanitizeText(skill)) || [],
     };
 
-    // Validate with Zod
     const validatedData = jobSchema.parse(sanitizedBody);
-
     const supabase = await createClient();
 
-    // Create job
     const { data, error: jobError } = await supabase
       .from('jobs')
       .insert({

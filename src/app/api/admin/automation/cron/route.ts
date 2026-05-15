@@ -64,6 +64,32 @@
 //      that channel. dispatched_at IS NOT NULL rows are excluded to guarantee
 //      idempotency across repeated cron runs.
 //      Requires migration: migrations/20260406_add_notification_dispatched_at.sql
+//
+// FIX (TOCTOU / RACE CONDITION — Rule 1 escrow UPDATE):
+//      The Supabase JS client resolves with { error: null, data: [] } when an
+//      UPDATE matches zero rows. The previous guard ( if (escrowUpdateError) )
+//      was therefore completely blind to the race between the cron's escrow
+//      SELECT and the concurrent complete_order_with_payment RPC call:
+//
+//        1. Cron reads escrow WHERE status='held'  → row found (amount captured)
+//        2. complete_order_with_payment fires concurrently
+//           → escrow.status transitions to 'released_to_freelancer'
+//        3. Cron attempts UPDATE WHERE status='held' → 0 rows matched
+//        4. error is null, so the old guard passes
+//        5. increment_wallet_balance fires → buyer receives a full refund
+//           WHILE the freelancer also keeps their released funds (double-spend)
+//
+//      Fix: append .select('id') to the UPDATE so PostgREST returns the
+//      affected rows array. Guard on BOTH escrowUpdateError and
+//      updatedEscrow.length === 0. Either condition means the race was lost
+//      and no wallet credit may be issued.
+//
+//      Additionally, when the race is detected (escrowRow was non-null at
+//      read time but the write matched 0 rows), a security_logs row is
+//      inserted with event_type='cron_escrow_race_detected' so admins have
+//      visibility into concurrent completion events that overlapped with the
+//      cron window. The dispute is still closed to prevent it re-appearing on
+//      the next tick.
 
 import { NextResponse }        from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -208,19 +234,84 @@ export async function POST() {
         continue;
       }
 
-      // Re-assert status='held' in the WHERE clause so that a race between
-      // cron ticks cannot cause a double escrow update.
-      const { error: escrowUpdateError } = await supabase
+      // ── TOCTOU RACE CONDITION FIX ──────────────────────────────────────────
+      //
+      // Problem (previous code):
+      //   The Supabase JS client resolves with { error: null, data: [] } when
+      //   an UPDATE matches zero rows. The previous guard ( if (escrowUpdateError) )
+      //   was blind to this case, allowing execution to continue into wallet
+      //   credit even when the escrow had already transitioned to
+      //   'released_to_freelancer' via a concurrent complete_order_with_payment
+      //   RPC call. The result was a double-spend: freelancer retains released
+      //   funds AND buyer receives a duplicate refund.
+      //
+      // Fix:
+      //   Append .select('id') so PostgREST returns the affected rows array.
+      //   Guard on BOTH escrowUpdateError (DB/network error) and
+      //   updatedEscrow.length === 0 (race lost — status no longer 'held').
+      //   Either condition means the cron lost the race and MUST NOT credit
+      //   the buyer wallet.
+      //
+      //   When the race is detected, a security_logs row is inserted so admins
+      //   have visibility into the concurrent event. The dispute remains closed
+      //   (updated above) to prevent it from re-appearing on the next tick.
+      //   No wallet credit is issued; the freelancer's legitimate release is
+      //   not disturbed.
+      //
+      // Why .select('id') and not .select('status'):
+      //   We only need to confirm at least one row was mutated. Selecting 'id'
+      //   is the minimal projection that satisfies this requirement without
+      //   fetching any additional data we do not use.
+
+      const { data: updatedEscrow, error: escrowUpdateError } = await supabase
         .from('escrow')
         .update({ status: 'refunded_to_client' })
         .eq('order_id', dispute.order_id)
-        .eq('status', 'held');
+        .eq('status', 'held')
+        .select('id');
 
-      if (escrowUpdateError) {
-        // guard_against_double_wallet_credit trigger raised, or genuine race.
-        // Dispute is already closed above. Do not credit wallet.
-        console.error(`[Rule 1] Escrow update blocked for order ${dispute.order_id}:`, escrowUpdateError);
-        logs.push(`[Rule 1] Escrow update blocked for dispute ${dispute.id} — double-credit guard fired, no wallet credit`);
+      if (escrowUpdateError || !updatedEscrow || updatedEscrow.length === 0) {
+        // Distinguish between a genuine DB error and a race condition so logs
+        // are actionable for different on-call responses.
+        if (escrowUpdateError) {
+          console.error(
+            `[Rule 1] Escrow update DB error for order ${dispute.order_id}:`,
+            escrowUpdateError,
+          );
+          logs.push(
+            `[Rule 1] Escrow update DB error for dispute ${dispute.id} — ` +
+            `no wallet credit issued`,
+          );
+        } else {
+          // updatedEscrow.length === 0: race condition confirmed. The escrow
+          // row transitioned out of 'held' between our SELECT (step A) and this
+          // UPDATE (step B). This is the TOCTOU window described above.
+          console.warn(
+            `[Rule 1] TOCTOU race detected for order ${dispute.order_id} — ` +
+            `escrow was 'held' at read time but 0 rows matched on write. ` +
+            `Concurrent complete_order_with_payment likely fired. No wallet credit issued.`,
+          );
+
+          // Insert a security log so the admin panel surfaces this event.
+          // Severity is 'info' — this is an expected edge case under concurrency,
+          // not a malicious event. The system handled it correctly.
+          await supabase.from('security_logs').insert({
+            user_id:     buyerId,
+            event_type:  'cron_escrow_race_detected',
+            severity:    'info',
+            description:
+              `Cron Rule 1 detected a TOCTOU race on order ${dispute.order_id} ` +
+              `(dispute ${dispute.id}). Escrow was in 'held' state at read time ` +
+              `but had already transitioned when the UPDATE was attempted. ` +
+              `No duplicate wallet credit was issued. Order likely completed legitimately.`,
+          });
+
+          logs.push(
+            `[Rule 1] TOCTOU race on dispute ${dispute.id} / order ${dispute.order_id} — ` +
+            `escrow no longer 'held', no wallet credit issued (see security_logs)`,
+          );
+        }
+
         continue;
       }
 
@@ -234,7 +325,7 @@ export async function POST() {
       //
       // increment_wallet_balance is a SECURITY DEFINER function:
       //   UPDATE wallets SET balance = balance + p_amount WHERE user_id = p_user_id
-      // Only balance is touched — NOT total_earned (refund ≠ income).
+      // Only balance is touched — NOT total_earned (refund is not income).
       // Requires: migrations/20260407_add_increment_wallet_balance.sql
 
       const { error: walletCreditError } = await supabase.rpc(
@@ -479,7 +570,7 @@ export async function POST() {
   //   Check 0 (gate threshold) → NULL   ← never matched here; admin-only
   //   Check 1 (wallet funded)  → +24h   ← matched and released
   //   Check 2 (bank details)   → +24h   ← matched and released
-  //   Check 3 (trust 40–59)    → +48h   ← matched and released
+  //   Check 3 (trust 40-59)    → +48h   ← matched and released
   //
   // Action per row:
   //   1. Update status → 'pending', clear failure_reason.
@@ -523,7 +614,7 @@ export async function POST() {
       const releaseMessage =
         `Your withdrawal of ₦${hold.amount.toLocaleString('en-NG')} has been automatically ` +
         `released from its fraud-prevention hold and is now queued for processing. ` +
-        `You will receive the funds within 1–3 business days.`;
+        `You will receive the funds within 1-3 business days.`;
 
       await Promise.all([
         supabase.from('notifications').insert({

@@ -541,8 +541,9 @@ export const jobSchema = z.object({
     .optional(),
 }).refine(
   (data) => {
-    if (data.budget_type !== 'negotiable' && data.budget_min && data.budget_max) {
-      return data.budget_max >= data.budget_min;
+    const { budget_min, budget_max } = data;
+    if (budget_min !== undefined && budget_max !== undefined) {
+      return budget_max >= budget_min;
     }
     return true;
   },
