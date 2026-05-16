@@ -1,14 +1,15 @@
 'use client';
 
 // src/app/payment/callback/page.tsx
-// Receives Monnify's post-payment redirect.
+// Receives Flutterwave's post-payment redirect.
 //
-// Monnify appends these query params to redirectUrl:
-//   paymentReference      — our generated ref (maps to monnify_payment_ref)
-//   transactionReference  — Monnify's internal ref
-//   paymentStatus         — "PAID" | "FAILED" | "PENDING"
-//                           Do NOT trust this value alone — verifyPayment
-//                           performs a server-to-server re-check.
+// Flutterwave appends these query params to redirectUrl:
+//   tx_ref            — our generated ref (maps to flutterwave_tx_ref in DB)
+//   transaction_id    — Flutterwave&apos;s internal numeric transaction ID
+//   status            — "successful" | "failed" | "cancelled"
+//                       Do NOT trust this value alone — verifyPayment
+//                       performs a server-to-server re-check via
+//                       FlutterwaveServerService.verifyTransactionByRef.
 //
 // Next.js 14+ requires useSearchParams() to be inside a <Suspense> boundary.
 // This file exports a shell that provides the boundary; CallbackContent is
@@ -36,7 +37,7 @@ function Spinner({ label }: { label: string }) {
       <div className="text-center space-y-4 p-8">
         <div className="mx-auto h-12 w-12 rounded-full border-4 border-gray-200 border-t-blue-600 animate-spin" />
         <h1 className="text-xl font-semibold text-gray-900">{label}</h1>
-        <p className="text-sm text-gray-500">This takes just a moment. Please don't close this tab.</p>
+        <p className="text-sm text-gray-500">This takes just a moment. Please do not close this tab.</p>
       </div>
     </div>
   );
@@ -45,30 +46,34 @@ function Spinner({ label }: { label: string }) {
 // ── Inner component (uses useSearchParams — must be inside Suspense) ──────────
 
 function CallbackContent() {
-  const searchParams      = useSearchParams();
-  const router            = useRouter();
+  const searchParams = useSearchParams();
+  const router       = useRouter();
   const { verifyPayment } = usePayments();
 
-  const [pageState, setPageState]     = useState<PageState>('verifying');
-  const [orderMeta, setOrderMeta]     = useState<OrderMeta>({ orderId: null, orderTitle: null });
+  // Derive the tx_ref at render time so the effect never needs to call
+  // setState synchronously — the initial pageState is computed directly
+  // from the URL rather than being set inside the effect body.
+  const txRef = searchParams.get('tx_ref');
+
+  const [pageState, setPageState]       = useState<PageState>(txRef ? 'verifying' : 'missing_ref');
+  const [orderMeta, setOrderMeta]       = useState<OrderMeta>({ orderId: null, orderTitle: null });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Prevent double-fire in React Strict Mode / concurrent renders
   const hasRun = useRef(false);
 
   useEffect(() => {
+    // Nothing to verify — initial state already set to 'missing_ref' at render.
+    if (!txRef) return;
     if (hasRun.current) return;
     hasRun.current = true;
 
-    const paymentReference = searchParams.get('paymentReference');
-
-    if (!paymentReference) {
-      setPageState('missing_ref');
-      return;
-    }
+    // Capture verifyPayment in a local const so TypeScript can narrow it to
+    // non-undefined for the async closure below.
+    const doVerify = verifyPayment;
 
     async function verify() {
-      const result = await verifyPayment(paymentReference!);
+      const result = await doVerify(txRef as string);
 
       if (result.success) {
         const order = result.data.order as Record<string, unknown> | null;
@@ -80,7 +85,7 @@ function CallbackContent() {
 
         // The verify route returns message: 'Payment already verified' when
         // the webhook already settled this transaction before the redirect
-        // arrived. Render a distinct state so the UI doesn't falsely claim
+        // arrived. Render a distinct state so the UI does not falsely claim
         // we just confirmed the payment.
         if (result.message === 'Payment already verified') {
           setPageState('already_paid');
@@ -94,7 +99,7 @@ function CallbackContent() {
     }
 
     verify();
-  }, [searchParams, verifyPayment]);
+  }, [txRef, verifyPayment]);
 
   // Auto-redirect to the client order detail page on success
   useEffect(() => {
@@ -103,8 +108,6 @@ function CallbackContent() {
       orderMeta.orderId
     ) {
       const timer = setTimeout(() => {
-        // Client order detail lives at /client/orders/[id]
-        // (confirmed from deliver/route.ts notification links)
         router.push(`/client/orders/${orderMeta.orderId}`);
       }, 4000);
       return () => clearTimeout(timer);
@@ -184,7 +187,7 @@ function CallbackContent() {
           <div className="space-y-2">
             <h1 className="text-2xl font-bold text-gray-900">Missing Payment Reference</h1>
             <p className="text-gray-600">
-              We couldn't find a payment reference in this URL. If you completed
+              We could not find a payment reference in this URL. If you completed
               a payment, it will still be confirmed automatically via our payment
               processor — check your orders in a few minutes.
             </p>
@@ -222,7 +225,7 @@ function CallbackContent() {
         <div className="space-y-2">
           <h1 className="text-2xl font-bold text-gray-900">Payment Not Confirmed</h1>
           <p className="text-gray-600">
-            We couldn't confirm your payment. Your card or account has not been
+            We could not confirm your payment. Your card or account has not been
             charged, or any hold will be reversed automatically.
           </p>
           {errorMessage && (

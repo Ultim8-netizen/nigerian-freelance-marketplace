@@ -27,6 +27,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
 
 // ── Nigerian bank code map ────────────────────────────────────────────────────
+// CBN codes are gateway-agnostic — identical for Flutterwave v3.
 // Must cover every bank in the earnings page dropdown exactly.
 // Missing bank = failed transfer at Flutterwave.
 
@@ -270,6 +271,9 @@ export async function POST(request: NextRequest) {
         narration:                'F9 Earnings Withdrawal',
         destinationBankCode:      bankCode,
         destinationAccountNumber: withdrawal.account_number,
+        // account_name is stored on the withdrawal row at request time;
+        // sent as beneficiary_name to Flutterwave for receipt traceability.
+        destinationAccountName:   withdrawal.account_name ?? undefined,
         currency:                 'NGN',
       });
     } catch (err) {
@@ -284,14 +288,24 @@ export async function POST(request: NextRequest) {
 
     if (!transferFailed && acceptedStatuses.includes(flutterwaveResult.status)) {
       // Transfer accepted — mark as processing.
-      // Store flutterwave_transfer_ref so the transfer.completed webhook can
-      // look this row up by reference and flip it to 'completed', triggering
-      // the wallet deduction. This ref is the join key between the two systems.
+      //
+      // flutterwave_transfer_ref  — the human-readable PAYOUT-{id}-{ts} string
+      //                             used as the join key in the transfer.completed
+      //                             webhook to flip status → 'completed'.
+      // flutterwave_transfer_id   — Flutterwave's internal numeric transfer ID
+      //                             returned in the POST /v3/transfers response.
+      //                             Stored for support lookups and reconciliation;
+      //                             may be undefined if Flutterwave omits it on
+      //                             NEW/PENDING responses (handled gracefully).
       await adminClient
         .from('withdrawals')
         .update({
-          status:                  'processing',
+          status:                   'processing',
           flutterwave_transfer_ref: flutterwaveResult.reference,
+          // Only write if Flutterwave returned an ID — column must be nullable.
+          ...(flutterwaveResult.transferId
+            ? { flutterwave_transfer_id: flutterwaveResult.transferId }
+            : {}),
         })
         .eq('id', withdrawalId);
 
@@ -302,10 +316,11 @@ export async function POST(request: NextRequest) {
         resource_type: 'withdrawals',
         resource_id:   withdrawalId,
         metadata: {
-          flutterwave_ref: flutterwaveResult.reference,
-          amount:          withdrawal.amount,
-          bank:            withdrawal.bank_name,
-          in_flight_sum:   inFlightSum,
+          flutterwave_transfer_ref: flutterwaveResult.reference,
+          flutterwave_transfer_id:  flutterwaveResult.transferId ?? null,
+          amount:                   withdrawal.amount,
+          bank:                     withdrawal.bank_name,
+          in_flight_sum:            inFlightSum,
         },
       });
 
@@ -322,6 +337,7 @@ export async function POST(request: NextRequest) {
         success:      true,
         status:       flutterwaveResult.status,
         transfer_ref: flutterwaveResult.reference,
+        transfer_id:  flutterwaveResult.transferId ?? null,
       });
     }
 

@@ -1,7 +1,7 @@
 // src/app/api/payments/verify/route.ts
 // Manual fallback verification for when webhooks are delayed.
 // Idempotent: calling this twice produces the same result as calling it once.
-// Accepts payment_ref (flutterwave_tx_ref) in the request body.
+// Accepts tx_ref (flutterwave_tx_ref) in the request body.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
@@ -10,11 +10,11 @@ import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { payment_ref } = body as { payment_ref?: string };
+    const { tx_ref } = body as { tx_ref?: string };
 
-    if (!payment_ref) {
+    if (!tx_ref) {
       return NextResponse.json(
-        { success: false, error: 'payment_ref is required' },
+        { success: false, error: 'tx_ref is required' },
         { status: 400 },
       );
     }
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     const { data: transaction, error: txError } = await supabase
       .from('transactions')
       .select('id, order_id, marketplace_order_id, status, amount, flutterwave_tx_ref')
-      .eq('flutterwave_tx_ref', payment_ref)
+      .eq('flutterwave_tx_ref', tx_ref)
       .single();
 
     if (txError || !transaction) {
@@ -52,9 +52,11 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Server-to-server re-verification (never trust client-supplied status) ─
-    // verifyTransactionByRef is used because we only hold the tx_ref string here,
-    // not the numeric Flutterwave transaction ID.
-    const verified = await FlutterwaveServerService.verifyTransactionByRef(payment_ref);
+    // verifyTransactionByRef is used because we hold only the tx_ref string here,
+    // not the numeric Flutterwave transaction ID. The method calls
+    // GET /v3/transactions/verify_by_txref?tx_ref={ref} and validates
+    // currency === 'NGN' before returning.
+    const verified = await FlutterwaveServerService.verifyTransactionByRef(tx_ref);
 
     if (verified.paymentStatus !== 'successful') {
       // Mark the transaction failed so we don't re-verify endlessly
@@ -86,12 +88,13 @@ export async function POST(request: NextRequest) {
         status:               'successful',
         paid_at:              verified.paidOn ?? new Date().toISOString(),
         flutterwave_response: {
-          paymentStatus: verified.paymentStatus,
-          amountPaid:    verified.amountPaid,
-          transactionId: verified.transactionId,
-          flwRef:        verified.flwRef,
-          verifiedAt:    new Date().toISOString(),
-          source:        'manual_verify',
+          paymentStatus:  verified.paymentStatus,
+          amountPaid:     verified.amountPaid,
+          transactionId:  verified.transactionId,
+          flwRef:         verified.flwRef,
+          txRef:          verified.txRef,
+          verifiedAt:     new Date().toISOString(),
+          source:         'manual_verify',
         },
       })
       .eq('id', transaction.id)

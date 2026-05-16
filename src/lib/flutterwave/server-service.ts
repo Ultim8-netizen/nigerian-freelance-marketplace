@@ -56,6 +56,8 @@ export interface FlutterwaveTransferInit {
   narration: string;
   destinationBankCode: string;
   destinationAccountNumber: string;
+  /** Account holder name — sent as beneficiary_name to Flutterwave v3 */
+  destinationAccountName?: string;
   currency: 'NGN';
 }
 
@@ -266,7 +268,19 @@ export class FlutterwaveServerService {
 
   /**
    * Initiate a single disbursement (freelancer withdrawal payout).
-   * Flutterwave: POST /v3/transfers
+   *
+   * Flutterwave v3: POST /v3/transfers
+   *
+   * Payload mapping:
+   *   destinationBankCode      → account_bank
+   *   destinationAccountNumber → account_number
+   *   destinationAccountName   → beneficiary_name  (optional but recommended;
+   *                              Flutterwave uses it for transfer receipts)
+   *   currency                 → currency + debit_currency
+   *
+   * Response status values: "NEW" | "PENDING" | "SUCCESSFUL" | "FAILED"
+   * The caller (execute/route.ts) treats NEW and PENDING as accepted and
+   * marks the withdrawal as 'processing' to await the webhook.
    */
   static async initiateTransfer(
     data: FlutterwaveTransferInit,
@@ -280,13 +294,18 @@ export class FlutterwaveServerService {
       {
         method: 'POST',
         body: JSON.stringify({
-          account_bank:         data.destinationBankCode,
-          account_number:       data.destinationAccountNumber,
-          amount:               data.amount,
-          narration:            data.narration,
-          currency:             data.currency,
-          reference:            data.reference,
-          debit_currency:       data.currency,
+          account_bank:     data.destinationBankCode,
+          account_number:   data.destinationAccountNumber,
+          amount:           data.amount,
+          narration:        data.narration,
+          currency:         data.currency,
+          reference:        data.reference,
+          debit_currency:   data.currency,
+          // beneficiary_name is optional in the Flutterwave v3 spec but
+          // improves traceability on transfer receipts and bank statements.
+          ...(data.destinationAccountName
+            ? { beneficiary_name: data.destinationAccountName }
+            : {}),
         }),
       },
     );

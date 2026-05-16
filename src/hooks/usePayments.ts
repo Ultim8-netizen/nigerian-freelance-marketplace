@@ -1,7 +1,7 @@
 // src/hooks/usePayments.ts
-// Payment processing hook — Monnify edition.
+// Payment processing hook — Flutterwave edition.
 // initiatePayment  → POST /api/payments/initiate → returns { checkout_url, payment_ref }
-// verifyPayment    → POST /api/payments/verify   → accepts payment_ref
+// verifyPayment    → POST /api/payments/verify   → accepts tx_ref (flutterwave_tx_ref)
 
 import { useState } from 'react';
 
@@ -44,16 +44,16 @@ export function usePayments() {
   const [error, setError]     = useState<string | null>(null);
 
   /**
-   * Initialise a Monnify transaction for the given order.
+   * Initialise a Flutterwave transaction for the given order.
    * Returns { checkout_url, payment_ref } — caller is responsible for
    * redirecting to checkout_url.
    */
   const initiatePayment = async (
     data: InitiatePaymentData,
-  ): Promise<
+  ): Promise<(
     | { success: true;  data: InitiatePaymentResult }
     | { success: false; error: string }
-  > => {
+  )> => {
     setLoading(true);
     setError(null);
 
@@ -88,20 +88,23 @@ export function usePayments() {
   };
 
   /**
-   * Manually verify a payment by its Monnify payment reference.
+   * Manually verify a payment by its Flutterwave tx_ref.
    * Used as a fallback when the webhook has not yet fired.
    * Idempotent: safe to call multiple times.
+   *
+   * The tx_ref is the reference string Flutterwave appends to the redirect
+   * URL as ?tx_ref=... and that maps to flutterwave_tx_ref in the DB.
    *
    * Returns `message: 'Payment already verified'` when the webhook already
    * settled this transaction — the callback page uses this to render the
    * `already_paid` state without re-running side effects.
    */
   const verifyPayment = async (
-    paymentRef: string,
-  ): Promise<
+    txRef: string,
+  ): Promise<(
     | { success: true;  data: VerifyPaymentResult; message?: string }
     | { success: false; error: string }
-  > => {
+  )> => {
     setLoading(true);
     setError(null);
 
@@ -109,7 +112,7 @@ export function usePayments() {
       const response = await fetch('/api/payments/verify', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ payment_ref: paymentRef }),
+        body:    JSON.stringify({ tx_ref: txRef }),
       });
 
       const result = await response.json() as {
@@ -123,7 +126,7 @@ export function usePayments() {
         return {
           success: true,
           data:    result.data,
-          message: result.message, // 'Payment already verified' on idempotent hit
+          message: result.message,
         };
       }
 
