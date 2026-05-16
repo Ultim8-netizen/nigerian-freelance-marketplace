@@ -6039,3 +6039,196 @@ END;
 $verify$;
 
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration: Re-align DB schema with Flutterwave (reverse Monnify rename)
+--
+-- During the deferred Monnify migration, three columns and two RPC parameter
+-- names were renamed to monnify_*. Monnify integration is cancelled; Flutterwave
+-- remains the active payment stack. This migration restores the correct names.
+--
+-- Run once in Supabase SQL editor, then:
+--   supabase gen types typescript --project-id <id> > src/types/database.types.ts
+--
+-- All TypeScript errors in:
+--   src/app/api/payments/verify/route.ts
+--   src/app/api/webhooks/flutterwave/route.ts
+--   src/app/f9-control/finance/page.tsx
+-- will resolve after type regeneration with no code changes needed.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- ── 1. transactions ───────────────────────────────────────────────────────────
+
+ALTER TABLE transactions
+  RENAME COLUMN monnify_payment_ref TO flutterwave_tx_ref;
+
+ALTER TABLE transactions
+  RENAME COLUMN monnify_response TO flutterwave_response;
+
+-- ── 2. withdrawals ────────────────────────────────────────────────────────────
+
+ALTER TABLE withdrawals
+  RENAME COLUMN monnify_transfer_ref TO flutterwave_transfer_ref;
+
+-- ── 3. RPCs ───────────────────────────────────────────────────────────────────
+-- PostgreSQL cannot rename function parameters in-place.
+-- The functions are dropped and recreated with p_flw_tx_id in place of
+-- p_monnify_ref. Bodies are reconstructed from application logic.
+--
+-- ⚠️  Before running: open Supabase Dashboard → Database → Functions, locate
+--    process_successful_payment and process_marketplace_payment, and confirm
+--    the bodies below match yours (or merge any extra logic you added).
+--    The core flow — mark tx successful, advance order, create escrow,
+--    notify — is standard and safe to recreate as written.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Drop all overload variants (covers TEXT and UUID type combos)
+DROP FUNCTION IF EXISTS process_successful_payment(numeric, text, text, text);
+DROP FUNCTION IF EXISTS process_successful_payment(numeric, text, uuid, uuid);
+DROP FUNCTION IF EXISTS process_successful_payment(uuid, uuid, text, numeric);
+
+DROP FUNCTION IF EXISTS process_marketplace_payment(numeric, text, text, text);
+DROP FUNCTION IF EXISTS process_marketplace_payment(numeric, text, uuid, uuid);
+DROP FUNCTION IF EXISTS process_marketplace_payment(uuid, uuid, text, numeric);
+
+-- ── 3a. process_successful_payment (freelance orders) ─────────────────────────
+
+CREATE OR REPLACE FUNCTION process_successful_payment(
+  p_transaction_id UUID,
+  p_order_id       UUID,
+  p_flw_tx_id      TEXT,
+  p_amount         NUMERIC
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+DECLARE
+  v_order orders%ROWTYPE;
+BEGIN
+  -- Mark transaction successful (idempotent: WHERE guard prevents double-write)
+  UPDATE transactions
+  SET
+    status               = 'successful',
+    paid_at              = NOW(),
+    flutterwave_response = jsonb_build_object(
+      'paymentStatus', 'successful',
+      'flwTxId',       p_flw_tx_id,
+      'amountSettled', p_amount,
+      'verifiedAt',    NOW()::TEXT,
+      'source',        'webhook'
+    )
+  WHERE id     = p_transaction_id
+    AND status <> 'successful';
+
+  -- Fetch order
+  SELECT * INTO v_order FROM orders WHERE id = p_order_id;
+
+  IF NOT FOUND THEN
+    RETURN json_build_object('success', false, 'error', 'Order not found');
+  END IF;
+
+  -- Advance order — only from pre-delivery states
+  UPDATE orders
+  SET status = 'awaiting_delivery'
+  WHERE id     = p_order_id
+    AND status NOT IN ('awaiting_delivery', 'delivered', 'completed', 'cancelled');
+
+  -- Create escrow (ON CONFLICT on the unique order_id index — prevents duplicates)
+  INSERT INTO escrow (order_id, transaction_id, amount, status)
+  VALUES (p_order_id, p_transaction_id, p_amount, 'held')
+  ON CONFLICT (order_id) DO NOTHING;
+
+  -- Notify freelancer
+  INSERT INTO notifications (user_id, type, title, message, link)
+  VALUES (
+    v_order.freelancer_id,
+    'new_order',
+    'New Order Received',
+    'You have a new order: ' || v_order.title,
+    '/freelancer/orders/' || p_order_id::TEXT
+  );
+
+  RETURN json_build_object('success', true, 'order_id', p_order_id::TEXT);
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING '[process_successful_payment] %', SQLERRM;
+  RETURN json_build_object('success', false, 'error', SQLERRM);
+END;
+$func$;
+
+-- ── 3b. process_marketplace_payment (marketplace orders) ──────────────────────
+
+CREATE OR REPLACE FUNCTION process_marketplace_payment(
+  p_transaction_id UUID,
+  p_order_id       UUID,
+  p_flw_tx_id      TEXT,
+  p_amount         NUMERIC
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+DECLARE
+  v_order    marketplace_orders%ROWTYPE;
+  v_product  products%ROWTYPE;
+BEGIN
+  -- Mark transaction successful
+  UPDATE transactions
+  SET
+    status               = 'successful',
+    paid_at              = NOW(),
+    flutterwave_response = jsonb_build_object(
+      'paymentStatus', 'successful',
+      'flwTxId',       p_flw_tx_id,
+      'amountSettled', p_amount,
+      'verifiedAt',    NOW()::TEXT,
+      'source',        'webhook'
+    )
+  WHERE id     = p_transaction_id
+    AND status <> 'successful';
+
+  -- Fetch marketplace order
+  SELECT * INTO v_order FROM marketplace_orders WHERE id = p_order_id;
+
+  IF NOT FOUND THEN
+    RETURN json_build_object('success', false, 'error', 'Marketplace order not found');
+  END IF;
+
+  -- Advance marketplace order to paid
+  UPDATE marketplace_orders
+  SET
+    status  = 'paid',
+    paid_at = NOW()
+  WHERE id     = p_order_id
+    AND status = 'pending';
+
+  -- Create escrow (guard against duplicate inserts)
+  INSERT INTO escrow (marketplace_order_id, transaction_id, amount, status)
+  SELECT p_order_id, p_transaction_id, p_amount, 'held'
+  WHERE NOT EXISTS (
+    SELECT 1 FROM escrow
+    WHERE marketplace_order_id = p_order_id
+  );
+
+  -- Fetch product title for notification
+  SELECT * INTO v_product FROM products WHERE id = v_order.product_id;
+
+  -- Notify seller
+  INSERT INTO notifications (user_id, type, title, message, link)
+  VALUES (
+    v_order.seller_id,
+    'new_order',
+    'New Marketplace Order',
+    'You have a new order for: ' || COALESCE(v_product.title, 'your product'),
+    '/seller/orders/' || p_order_id::TEXT
+  );
+
+  RETURN json_build_object('success', true, 'order_id', p_order_id::TEXT);
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING '[process_marketplace_payment] %', SQLERRM;
+  RETURN json_build_object('success', false, 'error', SQLERRM);
+END;
+$func$;

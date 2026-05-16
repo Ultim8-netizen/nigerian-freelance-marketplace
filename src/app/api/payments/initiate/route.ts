@@ -1,13 +1,12 @@
 // src/app/api/payments/initiate/route.ts
-// Initialises a Monnify hosted-checkout transaction for a pending order.
+// Initialises a Flutterwave hosted-checkout transaction for a pending order.
 // NOTE: Withdrawal hold logic does NOT live here — it belongs exclusively in
 //       src/app/(dashboard)/freelancer/earnings/page.tsx (initiateWithdrawal).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
-import { MonnifyServerService } from '@/lib/monnify/server-service';
-import { serverEnv } from '@/lib/env';
+import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
 import { sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
@@ -79,38 +78,36 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Generate payment reference (server-side, cryptographically secure) ───
-    const paymentRef = MonnifyServerService.generatePaymentRef();
+    const paymentRef = FlutterwaveServerService.generatePaymentRef();
 
     const redirectUrl =
       validatedData.redirect_url ||
       `${process.env.NEXT_PUBLIC_APP_URL}/payment/callback`;
 
-    // ── Initialise Monnify hosted-checkout transaction ────────────────────────
-    const monnifyResponse = await MonnifyServerService.initializeTransaction({
+    // ── Initialise Flutterwave hosted-checkout transaction ────────────────────
+    const flutterwaveResponse = await FlutterwaveServerService.initializeTransaction({
       amount:             order.amount,
-      currencyCode:       'NGN',
-      contractCode:       serverEnv.MONNIFY_CONTRACT_CODE,
-      paymentReference:   paymentRef,
+      currency:           'NGN',
+      txRef:              paymentRef,
       paymentDescription: order.title,
       customerEmail:      order.client.email,
       customerName:       order.client.full_name,
-      customerPhone:      order.client.phone_number || '',
+      customerPhone:      order.client.phone_number || undefined,
       redirectUrl,
-      paymentMethods:     ['ACCOUNT_TRANSFER', 'CARD', 'USSD'],
     });
 
     // ── Persist pending transaction ───────────────────────────────────────────
     // transaction_ref is the canonical ref used internally across the platform;
-    // monnify_payment_ref is the ref Monnify uses for lookup / webhook matching.
+    // flutterwave_tx_ref is the ref Flutterwave uses for lookup / webhook matching.
     // Both are set to the same value — one source of truth per transaction.
     const { error: insertError } = await supabase.from('transactions').insert({
-      order_id:          order.id,
-      transaction_ref:   paymentRef,
-      monnify_payment_ref: paymentRef,
-      amount:            order.amount,
-      transaction_type:  'payment',
-      status:            'pending',
-      currency:          'NGN',
+      order_id:           order.id,
+      transaction_ref:    paymentRef,
+      flutterwave_tx_ref: paymentRef,
+      amount:             order.amount,
+      transaction_type:   'payment',
+      status:             'pending',
+      currency:           'NGN',
     });
 
     if (insertError) {
@@ -121,7 +118,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    logger.info('Monnify payment initiated', {
+    logger.info('Flutterwave payment initiated', {
       orderId:    order.id,
       userId:     user.id,
       paymentRef,
@@ -131,7 +128,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        checkout_url: monnifyResponse.checkoutUrl,
+        checkout_url: flutterwaveResponse.checkoutUrl,
         payment_ref:  paymentRef,
       },
     });

@@ -1,5 +1,5 @@
 // src/app/api/admin/withdrawals/execute/route.ts
-// Executes the actual Monnify bank transfer for an approved withdrawal.
+// Executes the actual Flutterwave bank transfer for an approved withdrawal.
 //
 // Called by approveWithdrawal() in finance/page.tsx after the withdrawal row
 // has been set to status='approved'. This separation keeps the Server Action
@@ -7,16 +7,16 @@
 //
 // IDEMPOTENCY: If this route is called twice with the same withdrawal_id, the
 // second call detects status='processing' and returns early without re-calling
-// Monnify, preventing duplicate disbursements.
+// Flutterwave, preventing duplicate disbursements.
 //
 // WALLET DEDUCTION: Deliberately absent here. The existing
 // sync_wallet_on_withdrawal_complete DB trigger fires when status →
-// 'completed' (set by the Monnify SUCCESSFUL_DISBURSEMENT webhook handler).
+// 'completed' (set by the Flutterwave transfer.completed webhook handler).
 // This route never touches wallet.balance directly.
 //
-// IN-FLIGHT GUARD: Before calling Monnify we sum every other withdrawal for
-// this user that is currently in 'approved' or 'processing' state and verify:
-//   wallet.balance ≥ this_withdrawal.amount + in_flight_sum
+// IN-FLIGHT GUARD: Before calling Flutterwave we sum every other withdrawal
+// for this user that is currently in 'approved' or 'processing' state and verify:
+//   wallet.balance >= this_withdrawal.amount + in_flight_sum
 // This prevents a second concurrent withdrawal from being approved against
 // the same undeducted balance, closing the window between 'processing' and
 // 'completed' (when the trigger fires).
@@ -24,14 +24,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient }      from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { MonnifyServerService } from '@/lib/monnify/server-service';
-// REQUIRED ENV VAR: MONNIFY_SOURCE_ACCOUNT_NUMBER
-// This is the Monnify settlement/disbursement wallet account number for F9.
-// Add it to your .env.local and Vercel environment variables.
+import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
 
 // ── Nigerian bank code map ────────────────────────────────────────────────────
 // Must cover every bank in the earnings page dropdown exactly.
-// Missing bank = failed transfer at Monnify.
+// Missing bank = failed transfer at Flutterwave.
 
 const BANK_CODES: Record<string, string> = {
   'Access Bank':   '044',
@@ -182,23 +179,18 @@ export async function POST(request: NextRequest) {
     // ── 6. In-flight balance guard ──────────────────────────────────────────
     //
     // The trigger deducts wallet.balance only when a withdrawal reaches
-    // 'completed' (fired by the Monnify SUCCESSFUL_DISBURSEMENT webhook).
+    // 'completed' (fired by the Flutterwave transfer.completed webhook).
     // Between 'processing' and 'completed' the balance has not yet been
     // reduced. A second admin approval in that window would find the full
     // balance still available, enabling a double-spend.
     //
     // We prevent this by summing every other 'approved' or 'processing'
     // withdrawal for this user. The current withdrawal may only proceed if:
-    //   wallet.balance ≥ this_amount + in_flight_sum
+    //   wallet.balance >= this_amount + in_flight_sum
     //
     // The `.neq('id', withdrawalId)` excludes the row we are about to
     // execute — which is still 'approved' at this point.
 
-    // FIX (TS2345): withdrawal.user_id and wallet.user_id are both
-    // string | null. The nullish-coalescing produces string | null, which
-    // Supabase's .eq() rejects. We resolve to a concrete string here and
-    // return 400 if neither side is populated — which should be unreachable
-    // given the guard in step 5, but TypeScript cannot prove that.
     const effectiveUserId: string | null = withdrawal.user_id ?? wallet.user_id;
 
     if (!effectiveUserId) {
@@ -208,7 +200,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // effectiveUserId is now narrowed to string — safe to pass to .eq()
     const { data: inFlightRows, error: inFlightErr } = await adminClient
       .from('withdrawals')
       .select('amount')
@@ -252,7 +243,7 @@ export async function POST(request: NextRequest) {
     // ── 7. Resolve bank code ────────────────────────────────────────────────
     const bankCode = BANK_CODES[withdrawal.bank_name];
     if (!bankCode) {
-      const reason = `Unsupported bank: '${withdrawal.bank_name}' has no mapped Monnify code`;
+      const reason = `Unsupported bank: '${withdrawal.bank_name}' has no mapped Flutterwave code`;
       await adminClient
         .from('withdrawals')
         .update({ status: 'failed', failure_reason: reason })
@@ -264,42 +255,43 @@ export async function POST(request: NextRequest) {
     // ── 8. Generate unique transfer reference ───────────────────────────────
     // Format: PAYOUT-{withdrawalId}-{timestamp}
     // Both components are needed: withdrawalId for traceability,
-    // timestamp to guarantee uniqueness if Monnify rejects exact duplicates.
+    // timestamp to guarantee uniqueness if Flutterwave rejects exact duplicates.
     const transferRef = `PAYOUT-${withdrawalId}-${Date.now()}`;
 
-    // ── 9. Call Monnify ─────────────────────────────────────────────────────
-    let monnifyResult: Awaited<ReturnType<typeof MonnifyServerService.initiateTransfer>>;
-    let monnifyFailed = false;
-    let monnifyError  = '';
+    // ── 9. Call Flutterwave ─────────────────────────────────────────────────
+    let flutterwaveResult: Awaited<ReturnType<typeof FlutterwaveServerService.initiateTransfer>>;
+    let transferFailed = false;
+    let transferError  = '';
 
     try {
-      monnifyResult = await MonnifyServerService.initiateTransfer({
+      flutterwaveResult = await FlutterwaveServerService.initiateTransfer({
         amount:                   withdrawal.amount,
         reference:                transferRef,
         narration:                'F9 Earnings Withdrawal',
         destinationBankCode:      bankCode,
         destinationAccountNumber: withdrawal.account_number,
         currency:                 'NGN',
-        sourceAccountNumber:      process.env.MONNIFY_SOURCE_ACCOUNT_NUMBER ?? '',
       });
     } catch (err) {
-      monnifyFailed = true;
-      monnifyError  = err instanceof Error ? err.message : String(err);
-      monnifyResult = { status: 'FAILED', reference: transferRef };
+      transferFailed      = true;
+      transferError       = err instanceof Error ? err.message : String(err);
+      flutterwaveResult   = { status: 'FAILED', reference: transferRef };
     }
 
-    // ── 10. Handle Monnify response ─────────────────────────────────────────
+    // ── 10. Handle Flutterwave response ─────────────────────────────────────
+    // Flutterwave transfer statuses: NEW | PENDING | SUCCESSFUL | FAILED
+    const acceptedStatuses = ['NEW', 'PENDING', 'SUCCESSFUL'];
 
-    if (!monnifyFailed && (monnifyResult.status === 'SUCCESS' || monnifyResult.status === 'PENDING')) {
+    if (!transferFailed && acceptedStatuses.includes(flutterwaveResult.status)) {
       // Transfer accepted — mark as processing.
-      // Store monnify_transfer_ref so the SUCCESSFUL_DISBURSEMENT webhook can
+      // Store flutterwave_transfer_ref so the transfer.completed webhook can
       // look this row up by reference and flip it to 'completed', triggering
       // the wallet deduction. This ref is the join key between the two systems.
       await adminClient
         .from('withdrawals')
         .update({
-          status:               'processing',
-          monnify_transfer_ref: monnifyResult.reference,
+          status:                  'processing',
+          flutterwave_transfer_ref: flutterwaveResult.reference,
         })
         .eq('id', withdrawalId);
 
@@ -310,10 +302,10 @@ export async function POST(request: NextRequest) {
         resource_type: 'withdrawals',
         resource_id:   withdrawalId,
         metadata: {
-          monnify_ref:    monnifyResult.reference,
-          amount:         withdrawal.amount,
-          bank:           withdrawal.bank_name,
-          in_flight_sum:  inFlightSum,
+          flutterwave_ref: flutterwaveResult.reference,
+          amount:          withdrawal.amount,
+          bank:            withdrawal.bank_name,
+          in_flight_sum:   inFlightSum,
         },
       });
 
@@ -322,22 +314,22 @@ export async function POST(request: NextRequest) {
         user_id: withdrawal.user_id,
         type:    'withdrawal_processing',
         title:   'Withdrawal Processing',
-        message: `Your withdrawal of ₦${withdrawal.amount.toLocaleString('en-NG')} is being processed. Funds typically arrive within 1–3 business days.`,
+        message: `Your withdrawal of ₦${withdrawal.amount.toLocaleString('en-NG')} is being processed. Funds typically arrive within 1 business day.`,
         link:    '/freelancer/earnings',
       });
 
       return NextResponse.json({
         success:      true,
-        status:       monnifyResult.status,
-        transfer_ref: monnifyResult.reference,
+        status:       flutterwaveResult.status,
+        transfer_ref: flutterwaveResult.reference,
       });
     }
 
     // Transfer failed — mark withdrawal as failed.
     // Wallet balance is NOT touched (trigger only fires on 'completed').
-    const failureReason = monnifyFailed
-      ? `Monnify transfer error: ${monnifyError}`
-      : `Monnify returned status: ${monnifyResult.status}`;
+    const failureReason = transferFailed
+      ? `Flutterwave transfer error: ${transferError}`
+      : `Flutterwave returned status: ${flutterwaveResult.status}`;
 
     await adminClient
       .from('withdrawals')

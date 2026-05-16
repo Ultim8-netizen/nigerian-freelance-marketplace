@@ -1,11 +1,11 @@
 // src/app/api/payments/verify/route.ts
 // Manual fallback verification for when webhooks are delayed.
 // Idempotent: calling this twice produces the same result as calling it once.
-// Accepts payment_ref (monnify_payment_ref) in the request body.
+// Accepts payment_ref (flutterwave_tx_ref) in the request body.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { MonnifyServerService } from '@/lib/monnify/server-service';
+import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,11 +21,11 @@ export async function POST(request: NextRequest) {
 
     const supabase = await createClient();
 
-    // ── Fetch transaction by monnify_payment_ref ──────────────────────────────
+    // ── Fetch transaction by flutterwave_tx_ref ───────────────────────────────
     const { data: transaction, error: txError } = await supabase
       .from('transactions')
-      .select('id, order_id, marketplace_order_id, status, amount, monnify_payment_ref')
-      .eq('monnify_payment_ref', payment_ref)
+      .select('id, order_id, marketplace_order_id, status, amount, flutterwave_tx_ref')
+      .eq('flutterwave_tx_ref', payment_ref)
       .single();
 
     if (txError || !transaction) {
@@ -52,15 +52,17 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Server-to-server re-verification (never trust client-supplied status) ─
-    const verified = await MonnifyServerService.verifyTransaction(payment_ref);
+    // verifyTransactionByRef is used because we only hold the tx_ref string here,
+    // not the numeric Flutterwave transaction ID.
+    const verified = await FlutterwaveServerService.verifyTransactionByRef(payment_ref);
 
-    if (verified.paymentStatus !== 'PAID') {
+    if (verified.paymentStatus !== 'successful') {
       // Mark the transaction failed so we don't re-verify endlessly
       await supabase
         .from('transactions')
         .update({
-          status:           'failed',
-          monnify_response: {
+          status:               'failed',
+          flutterwave_response: {
             paymentStatus: verified.paymentStatus,
             verifiedAt:    new Date().toISOString(),
             source:        'manual_verify',
@@ -81,14 +83,15 @@ export async function POST(request: NextRequest) {
     const { data: updatedTransaction, error: updateError } = await supabase
       .from('transactions')
       .update({
-        status:           'successful',
-        paid_at:          verified.paidOn ?? new Date().toISOString(),
-        monnify_response: {
-          paymentStatus:        verified.paymentStatus,
-          amountPaid:           verified.amountPaid,
-          transactionReference: verified.transactionReference,
-          verifiedAt:           new Date().toISOString(),
-          source:               'manual_verify',
+        status:               'successful',
+        paid_at:              verified.paidOn ?? new Date().toISOString(),
+        flutterwave_response: {
+          paymentStatus: verified.paymentStatus,
+          amountPaid:    verified.amountPaid,
+          transactionId: verified.transactionId,
+          flwRef:        verified.flwRef,
+          verifiedAt:    new Date().toISOString(),
+          source:        'manual_verify',
         },
       })
       .eq('id', transaction.id)

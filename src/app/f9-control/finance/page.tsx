@@ -1,10 +1,10 @@
 // src/app/f9-control/finance/page.tsx
 
-import { createClient }             from '@/lib/supabase/server';
-import { revalidatePath }           from 'next/cache';
-import { MonnifyServerService }     from '@/lib/monnify/server-service';
-import { createAdminClient }        from '@/lib/supabase/admin';
-import FinanceClient                from './FinanceClient';
+import { createClient }                 from '@/lib/supabase/server';
+import { revalidatePath }               from 'next/cache';
+import { FlutterwaveServerService }     from '@/lib/flutterwave/server-service';
+import { createAdminClient }            from '@/lib/supabase/admin';
+import FinanceClient                    from './FinanceClient';
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
 
@@ -13,12 +13,8 @@ import FinanceClient                from './FinanceClient';
  *
  * Flow:
  *   1. Set withdrawal status → 'approved'
- *   2. POST to /api/admin/withdrawals/execute to trigger the Monnify transfer
+ *   2. POST to /api/admin/withdrawals/execute to trigger the Flutterwave transfer
  *   3. Log the admin action
- *
- * The execute route is responsible for idempotency, role-checking the *route*
- * layer, and all Monnify interaction. approveWithdrawal's only job here is to
- * advance the status and hand off to the execute route.
  */
 async function approveWithdrawal(fd: FormData) {
   'use server';
@@ -27,7 +23,6 @@ async function approveWithdrawal(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  // Step 1 — advance status so the execute route sees 'approved'
   const { error: updateErr } = await supabase
     .from('withdrawals')
     .update({ status: 'approved', processed_at: new Date().toISOString() })
@@ -37,29 +32,21 @@ async function approveWithdrawal(fd: FormData) {
     throw new Error(`Failed to approve withdrawal: ${updateErr.message}`);
   }
 
-  // Step 2 — call the execute route to trigger the actual Monnify transfer.
-  // We pass the admin session cookie so the route can authenticate the caller.
-  // The execute route handles idempotency: if called twice it returns early.
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
 
   const executeRes = await fetch(`${baseUrl}/api/admin/withdrawals/execute`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ withdrawal_id: withdrawalId }),
-    // Forward cookies so the route can verify the admin session
+    method:      'POST',
+    headers:     { 'Content-Type': 'application/json' },
+    body:        JSON.stringify({ withdrawal_id: withdrawalId }),
     credentials: 'include',
   });
 
   const executeJson = await executeRes.json().catch(() => ({}));
 
   if (!executeRes.ok && !executeJson?.idempotent) {
-    // Transfer failed or route error — log and surface; withdrawal is already
-    // 'approved' in DB but execute route will have set it to 'failed' if
-    // Monnify rejected. Admin can retry from the failed state.
     console.error('[approveWithdrawal] execute route error:', executeJson);
   }
 
-  // Step 3 — log admin action regardless of transfer outcome
   await supabase.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'approve_withdrawal',
@@ -96,8 +83,6 @@ async function holdWithdrawal(fd: FormData) {
 
 /**
  * Manually release an escrow entry.
- * Calls the existing `release_escrow_to_wallet` RPC which requires
- * p_freelancer_id — resolved by joining the escrow's order_id to orders.freelancer_id.
  */
 async function releaseEscrow(fd: FormData) {
   'use server';
@@ -171,7 +156,6 @@ async function freezeEscrow(fd: FormData) {
 
 /**
  * Cancel/refund an escrow entry to the client.
- * Requires a non-empty `reason` from FormData.
  */
 async function cancelEscrow(fd: FormData) {
   'use server';
@@ -203,26 +187,20 @@ async function cancelEscrow(fd: FormData) {
 /**
  * Update a transaction's status manually, with full internal ledger reversal.
  *
- * Requires a non-empty `reason` from FormData.
+ * When `new_status` is 'refunded', three reversal paths are attempted:
  *
- * When `new_status` is 'refunded', three reversal paths are attempted in order
- * of applicability — exactly one will execute per transaction type:
+ *   PATH A — Gateway payment (flutterwave_tx_ref present):
+ *     Calls verifyTransactionByRef to obtain the numeric Flutterwave transaction
+ *     ID (required by the refund endpoint), then calls refundTransaction.
  *
- *   PATH A — Gateway payment (monnify_payment_ref present):
- *     Calls MonnifyServerService.refundTransaction to reverse the charge at
- *     the gateway level. No internal wallet mutation needed.
+ *   PATH B — Internal wallet_credit reversal:
+ *     Decrements wallets.balance by amount for recipient_user_id.
  *
- *   PATH B — Internal wallet_credit (recipient credited from platform funds):
- *     Reversal: decrement wallets.balance by amount for recipient_user_id.
- *     Uses createAdminClient() — wallets have no admin-session RLS write path.
- *     Guard: balance is floored at 0.
+ *   PATH C — Internal wallet_debit reversal:
+ *     Increments wallets.balance by amount for recipient_user_id.
  *
- *   PATH C — Internal wallet_debit (recipient was debited by platform):
- *     Reversal: increment wallets.balance by amount for recipient_user_id.
- *
- *   PATH D — All other types (escrow_payment, platform_fee, etc.):
- *     Status is marked 'refunded' for audit trail; manual balance correction
- *     via escrow release controls if required.
+ *   PATH D — All other types:
+ *     Status marked 'refunded' for audit trail only.
  */
 async function updateTransactionStatus(fd: FormData) {
   'use server';
@@ -239,7 +217,7 @@ async function updateTransactionStatus(fd: FormData) {
   if (newStatus === 'refunded') {
     const { data: tx, error: txFetchError } = await supabase
       .from('transactions')
-      .select('transaction_type, recipient_user_id, amount, monnify_payment_ref')
+      .select('transaction_type, recipient_user_id, amount, flutterwave_tx_ref')
       .eq('id', txId)
       .single();
 
@@ -247,9 +225,14 @@ async function updateTransactionStatus(fd: FormData) {
       throw new Error(`Failed to fetch transaction: ${txFetchError?.message ?? 'not found'}`);
     }
 
-    // ── PATH A: Gateway payment reversal via Monnify ──────────────────────
-    if (tx.monnify_payment_ref) {
-      await MonnifyServerService.refundTransaction(tx.monnify_payment_ref, tx.amount);
+    // ── PATH A: Gateway payment reversal via Flutterwave ──────────────────
+    // Flutterwave's refund endpoint requires the numeric transaction ID, not the
+    // tx_ref string. We call verifyTransactionByRef first to obtain it.
+    if (tx.flutterwave_tx_ref) {
+      const verified = await FlutterwaveServerService.verifyTransactionByRef(
+        tx.flutterwave_tx_ref,
+      );
+      await FlutterwaveServerService.refundTransaction(verified.transactionId, tx.amount);
 
     // ── PATH B: Internal wallet_credit reversal ───────────────────────────
     } else if (tx.transaction_type === 'wallet_credit' && tx.recipient_user_id) {
@@ -305,8 +288,7 @@ async function updateTransactionStatus(fd: FormData) {
 
     // ── PATH D: Non-automatable types ─────────────────────────────────────
     } else {
-      // Status is advanced to 'refunded' below for audit trail.
-      // Manual balance correction via escrow release controls if needed.
+      // Status advanced to 'refunded' below for audit trail.
     }
   }
 
@@ -358,8 +340,6 @@ async function toggleWithdrawalGate(fd: FormData) {
 
 /**
  * Set the withdrawal gate threshold.
- * Withdrawals above this amount are automatically held for manual admin review.
- * A threshold of 0 disables the gate.
  */
 async function setWithdrawalGateThreshold(fd: FormData) {
   'use server';
