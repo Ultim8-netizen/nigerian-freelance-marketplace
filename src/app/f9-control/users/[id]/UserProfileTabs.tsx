@@ -297,12 +297,15 @@ function NotePanel({ action, hiddenValues }: NotePanelProps) {
 // ─── Tab sections ─────────────────────────────────────────────────────────────
 
 function OverviewTab({ p }: { p: Tables<'profiles'> }) {
-  const suspendedUntil = (p as unknown as Record<string, unknown>).suspended_until as string | null | undefined;
+  const extra = p as unknown as Record<string, unknown>;
+  const suspendedUntil = extra.suspended_until as string | null | undefined;
+  const referralCode   = extra.referral_code   as string | null | undefined;
 
   const fields: [string, string | number | boolean | null | undefined][] = [
     ['Email',             p.email],
     ['Phone',             p.phone_number ?? '—'],
     ['Role',              p.user_type],
+    ['Referral Code',     referralCode ?? '—'],
     ['Location',          p.location ?? '—'],
     ['University',        p.university ?? '—'],
     ['Account status',    p.account_status],

@@ -1256,6 +1256,8 @@ export type Database = {
           phone_verified: boolean | null
           posting_suspended_until: string | null
           profile_image_url: string | null
+          referral_code: string | null
+          referred_by: string | null
           student_verified: boolean | null
           suspended_until: string | null
           suspension_reason: string | null
@@ -1288,6 +1290,8 @@ export type Database = {
           phone_verified?: boolean | null
           posting_suspended_until?: string | null
           profile_image_url?: string | null
+          referral_code?: string | null
+          referred_by?: string | null
           student_verified?: boolean | null
           suspended_until?: string | null
           suspension_reason?: string | null
@@ -1320,6 +1324,8 @@ export type Database = {
           phone_verified?: boolean | null
           posting_suspended_until?: string | null
           profile_image_url?: string | null
+          referral_code?: string | null
+          referred_by?: string | null
           student_verified?: boolean | null
           suspended_until?: string | null
           suspension_reason?: string | null
@@ -1332,7 +1338,15 @@ export type Database = {
           updated_at?: string | null
           user_type?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "profiles_referred_by_fkey"
+            columns: ["referred_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       proposals: {
         Row: {
@@ -1384,6 +1398,48 @@ export type Database = {
             columns: ["job_id"]
             isOneToOne: false
             referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      referrals: {
+        Row: {
+          created_at: string | null
+          id: string
+          referee_id: string
+          referrer_id: string
+          rewarded_at: string | null
+          status: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          referee_id: string
+          referrer_id: string
+          rewarded_at?: string | null
+          status?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          referee_id?: string
+          referrer_id?: string
+          rewarded_at?: string | null
+          status?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "referrals_referee_id_fkey"
+            columns: ["referee_id"]
+            isOneToOne: true
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "referrals_referrer_id_fkey"
+            columns: ["referrer_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
         ]
@@ -2137,6 +2193,10 @@ export type Database = {
         Returns: {
           id: string
         }[]
+      }
+      generate_referral_code: {
+        Args: { p_offset?: number; p_user_id: string }
+        Returns: string
       }
       get_cloudinary_usage_stats: {
         Args: never

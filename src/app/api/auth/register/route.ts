@@ -15,6 +15,10 @@
 // Both values are read once per request from the DB (with hardcoded fallbacks)
 // before the fire-and-forget is dispatched, so an admin can disable or tune the
 // rule without a code deployment.
+//
+// REFERRAL: If a valid referral_code is submitted, the referrer's profile id is
+// resolved and passed into auth metadata as referred_by so the
+// on_auth_user_created trigger can write it to profiles.referred_by.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware }           from '@/lib/api/enhanced-middleware';
@@ -57,10 +61,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 3b. Referral code validation
+    // If a code was supplied, resolve the referrer's profile id. An unrecognised
+    // code is rejected immediately so the user can correct it before the account
+    // is created. A missing code is silently skipped — referral is optional.
+    let referredById: string | null = null;
+
+    if (validatedData.referral_code) {
+      const { data: referrer } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('referral_code', validatedData.referral_code)
+        .single();
+
+      if (!referrer) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid referral code provided.' },
+          { status: 400 }
+        );
+      }
+
+      referredById = referrer.id;
+    }
+
     // 4. Create Auth User
     // All registration metadata is passed via options.data so the
     // on_auth_user_created trigger can read from raw_user_meta_data
     // and atomically create the profile + wallet in the same transaction.
+    // referred_by carries the referrer's profile id (null when no code was given)
+    // so the trigger can write it directly to profiles.referred_by.
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email:    validatedData.email,
       password: validatedData.password,
@@ -71,6 +100,7 @@ export async function POST(request: NextRequest) {
           user_type:    validatedData.user_type,
           university:   validatedData.university || null,
           location:     validatedData.location,
+          referred_by:  referredById,
         },
         emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/verify`,
       },
@@ -94,8 +124,9 @@ export async function POST(request: NextRequest) {
 
     // 5. Success Logging & Response
     logger.info('User registered successfully', {
-      userId:   newUserId,
-      userType: validatedData.user_type,
+      userId:      newUserId,
+      userType:    validatedData.user_type,
+      hasReferral: referredById !== null,
     });
 
     // 6. Post-registration shared-IP fraud check (fire-and-forget)
@@ -122,8 +153,7 @@ export async function POST(request: NextRequest) {
       CONFIG_KEYS.SHARED_IP_MIN_ACCOUNTS,
     ]);
 
-    // Treat any non-zero value of SHARED_IP_CHECK_ENABLED as enabled.
-    const sharedIpEnabled    = config[CONFIG_KEYS.SHARED_IP_CHECK_ENABLED] !== 0;
+    const sharedIpEnabled     = config[CONFIG_KEYS.SHARED_IP_CHECK_ENABLED] !== 0;
     const sharedIpMinAccounts = config[CONFIG_KEYS.SHARED_IP_MIN_ACCOUNTS];
 
     if (sharedIpEnabled) {

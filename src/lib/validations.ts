@@ -77,7 +77,7 @@ export const calculatePasswordStrength = (password: string) => {
 
   // Penalize common patterns
   const commonPatterns = ['12345', 'password', 'qwerty', 'abcde'];
-  const hasCommonPattern = commonPatterns.some(p => 
+  const hasCommonPattern = commonPatterns.some(p =>
     password.toLowerCase().includes(p)
   );
   if (hasCommonPattern) {
@@ -101,7 +101,7 @@ export const formatPhoneNumber = (input: string): {
   suggestion?: string;
 } => {
   const cleaned = input.replace(/\D/g, '');
-  
+
   // Check if starts with 0 (local format)
   if (cleaned.startsWith('0') && cleaned.length === 11) {
     return {
@@ -110,7 +110,7 @@ export const formatPhoneNumber = (input: string): {
       suggestion: 'Converted to international format'
     };
   }
-  
+
   // Check if starts with 234 (missing +)
   if (cleaned.startsWith('234') && cleaned.length === 13) {
     return {
@@ -143,12 +143,12 @@ const sanitizeString = (str: string): string => {
 /**
  * Smart name validator with helpful suggestions
  */
-export const validateFullName = (name: string): { 
-  isValid: boolean; 
-  suggestion?: string 
+export const validateFullName = (name: string): {
+  isValid: boolean;
+  suggestion?: string
 } => {
   const parts = name.trim().split(/\s+/);
-  
+
   if (parts.length < 2) {
     return {
       isValid: false,
@@ -221,7 +221,7 @@ export const registerSchema = z.object({
           message: 'Please use a permanent email address for account security'
         })
     ),
-  
+
   password: z
     .string()
     .min(PASSWORD_MIN_LENGTH, { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters` })
@@ -236,7 +236,7 @@ export const registerSchema = z.object({
     }, {
       message: 'Password is not strong enough. Try making it longer or more complex.'
     }),
-  
+
   full_name: z
     .string()
     .min(2, { error: 'Name must be at least 2 characters' })
@@ -248,7 +248,7 @@ export const registerSchema = z.object({
     }, {
       message: 'Please provide both first and last name',
     }),
-  
+
   phone_number: z
     .string()
     .regex(NIGERIAN_PHONE_REGEX, { error: 'Invalid Nigerian phone number (format: +234XXXXXXXXXX or 0XXXXXXXXXX)' })
@@ -256,21 +256,42 @@ export const registerSchema = z.object({
       // Auto-normalize to +234 format
       return phone.startsWith('0') ? `+234${phone.slice(1)}` : phone;
     }),
-  
+
   user_type: z.enum(['freelancer', 'client', 'both'], {
     message: 'Please select a valid user type',
   }),
-  
+
   university: z
     .string()
     .max(200, { error: 'University name is too long' })
     .transform(sanitizeString)
     .optional(),
-  
+
   location: z
     .string()
     .max(100, { error: 'Location is too long' })
     .transform(sanitizeString)
+    .optional(),
+
+  /**
+   * Referral code — optional, exactly 8 uppercase alphanumeric characters
+   * matching the format produced by generate_referral_code() in the DB trigger.
+   *
+   * Validation steps:
+   *   1. trim + toUpperCase so the user does not have to worry about casing.
+   *   2. refine: empty string passes (field left blank) OR matches [A-Z0-9]{8}.
+   *   3. transform: empty string → undefined so the API route's
+   *      `if (validatedData.referral_code)` guard fires correctly.
+   */
+  referral_code: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .refine(
+      (val) => val.length === 0 || /^[A-Z0-9]{8}$/.test(val),
+      { message: 'Referral code must be exactly 8 letters or numbers' }
+    )
+    .transform((val) => (val.length === 0 ? undefined : val))
     .optional(),
 });
 
@@ -283,11 +304,11 @@ export const loginSchema = z.object({
     .trim()
     .toLowerCase()
     .pipe(z.email({ error: 'Invalid email address' })),
-  
+
   password: z
     .string()
     .min(1, { error: 'Password is required' }),
-  
+
   remember_me: z.boolean().default(false),
 });
 
@@ -373,7 +394,7 @@ export const serviceSchema = z.object({
     }, {
       message: 'Use at least 3 words for a clear, searchable title'
     }),
-  
+
   description: z
     .string()
     .min(50, { error: 'Description must be at least 50 characters' })
@@ -386,41 +407,41 @@ export const serviceSchema = z.object({
     }, {
       message: 'Add more details (aim for 30+ words) to attract clients'
     }),
-  
+
   category: z
     .string()
     .min(1, { error: 'Category is required' })
     .max(100, { error: 'Category name is too long' }),
-  
+
   subcategory: z
     .string()
     .max(100, { error: 'Subcategory name is too long' })
     .optional(),
-  
+
   base_price: z
     .number()
     .int({ error: 'Price must be a whole number' })
     .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum price is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
     .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum price is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` }),
-  
+
   delivery_days: z
     .number()
     .int({ error: 'Delivery days must be a whole number' })
     .min(1, { error: 'Minimum delivery time is 1 day' })
     .max(90, { error: 'Maximum delivery time is 90 days' }),
-  
+
   revisions_included: z
     .number()
     .int({ error: 'Revisions must be a whole number' })
     .min(0, { error: 'Revisions cannot be negative' })
     .max(10, { error: 'Maximum 10 revisions allowed' }),
-  
+
   requirements: z
     .string()
     .max(2000, { error: 'Requirements text is too long' })
     .transform(sanitizeString)
     .optional(),
-  
+
   tags: z
     .array(z.string().max(50))
     .max(10, { error: 'Maximum 10 tags allowed' })
@@ -430,8 +451,6 @@ export const serviceSchema = z.object({
       message: 'Add at least 3 tags to improve discoverability'
     })
     .optional(),
-
-  // --- Fields previously missing from schema ---
 
   service_location: z
     .string()
@@ -469,7 +488,7 @@ export const jobSchema = z.object({
     .min(10, { error: 'Title must be at least 10 characters' })
     .max(200, { error: 'Title is too long' })
     .transform(sanitizeString),
-  
+
   description: z
     .string()
     .min(50, { error: 'Description must be at least 50 characters' })
@@ -481,34 +500,34 @@ export const jobSchema = z.object({
     }, {
       message: 'Consider adding clear deliverables and requirements to attract quality proposals'
     }),
-  
+
   category: z
     .string()
     .min(1, { error: 'Category is required' })
     .max(100, { error: 'Category name is too long' }),
-  
+
   budget_type: z.enum(['fixed', 'hourly', 'negotiable'], {
     message: 'Please select a valid budget type',
   }),
-  
+
   budget_min: z
     .number()
     .int({ error: 'Budget must be a whole number' })
     .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum budget is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
     .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum budget is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` })
     .optional(),
-  
+
   budget_max: z
     .number()
     .int({ error: 'Budget must be a whole number' })
     .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum budget is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
     .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum budget is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` })
     .optional(),
-  
+
   experience_level: z.enum(['beginner', 'intermediate', 'expert', 'any'], {
     message: 'Please select a valid experience level',
   }),
-  
+
   deadline: z
     .string()
     .datetime({ error: 'Invalid deadline format' })
@@ -533,7 +552,7 @@ export const jobSchema = z.object({
       },
       { message: 'Consider setting a deadline at least 2 days away to receive quality proposals' }
     ),
-  
+
   skills_required: z
     .array(z.string().max(50))
     .min(1, { error: 'At least one skill is required' })
@@ -564,7 +583,7 @@ export const proposalSchema = z.object({
   job_id: z
     .string()
     .uuid({ error: 'Invalid job ID format' }),
-  
+
   cover_letter: z
     .string()
     .min(100, { error: 'Cover letter must be at least 100 characters' })
@@ -585,13 +604,13 @@ export const proposalSchema = z.object({
     }, {
       message: 'Avoid generic phrases. Write a specific, personalized proposal.'
     }),
-  
+
   proposed_price: z
     .number()
     .int({ error: 'Price must be a whole number' })
     .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum price is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
     .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum price is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` }),
-  
+
   delivery_days: z
     .number()
     .int({ error: 'Delivery days must be a whole number' })
@@ -600,7 +619,7 @@ export const proposalSchema = z.object({
     .refine((days) => days >= 3, {
       message: 'Consider offering at least 3 days to ensure quality work'
     }),
-  
+
   portfolio_links: z
     .array(z.string().url({ error: 'Invalid URL format' }))
     .max(5, { error: 'Maximum 5 portfolio links allowed' })
@@ -619,38 +638,36 @@ export const withdrawalSchema = z.object({
     .int({ error: 'Amount must be a whole number' })
     .min(NAIRA_CONSTRAINTS.MIN_WITHDRAWAL, { error: `Minimum withdrawal is ₦${NAIRA_CONSTRAINTS.MIN_WITHDRAWAL.toLocaleString()}` })
     .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum withdrawal is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` }),
-  
+
   bank_name: z
     .string()
     .min(1, { error: 'Bank name is required' })
     .max(100, { error: 'Bank name is too long' })
     .transform(sanitizeString)
     .refine((bank) => {
-      // Suggest correct bank names
       const bankLower = bank.toLowerCase();
       return NIGERIAN_BANKS.some(b => bankLower.includes(b.toLowerCase().split(' ')[0]));
     }, {
       message: 'Please select a valid Nigerian bank from the list'
     }),
-  
+
   account_number: z
     .string()
     .refine(validateNigerianAccountNumber, {
       message: 'Account number must be exactly 10 digits',
     }),
-  
+
   account_name: z
     .string()
     .min(1, { error: 'Account name is required' })
     .max(100, { error: 'Account name is too long' })
     .transform(sanitizeString)
     .refine((name) => {
-      // Ensure account name looks legitimate
       return name.split(/\s+/).length >= 2;
     }, {
       message: 'Please provide the full account name as shown on your bank account'
     }),
-  
+
   narration: z
     .string()
     .max(200, { error: 'Narration is too long' })
@@ -669,13 +686,13 @@ export const reviewSchema = z.object({
   order_id: z
     .string()
     .uuid({ error: 'Invalid order ID format' }),
-  
+
   rating: z
     .number()
     .int({ error: 'Rating must be a whole number' })
     .min(1, { error: 'Minimum rating is 1' })
     .max(5, { error: 'Maximum rating is 5' }),
-  
+
   comment: z
     .string()
     .min(10, { error: 'Review must be at least 10 characters' })
@@ -688,7 +705,7 @@ export const reviewSchema = z.object({
       message: 'Please write at least 5 words to help others understand your experience'
     })
     .optional(),
-  
+
   would_recommend: z.boolean().optional(),
 }).refine((data) => {
   // Low ratings should have comments

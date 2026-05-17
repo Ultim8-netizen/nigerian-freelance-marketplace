@@ -6232,3 +6232,339 @@ EXCEPTION WHEN OTHERS THEN
   RETURN json_build_object('success', false, 'error', SQLERRM);
 END;
 $func$;
+
+
+-- 1. Add referral columns to profiles
+ALTER TABLE public.profiles 
+ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE,
+ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES public.profiles(id);
+
+-- 2. Create the Referrals tracking table
+CREATE TABLE IF NOT EXISTS public.referrals (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    referrer_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    referee_id UUID NOT NULL UNIQUE REFERENCES public.profiles(id) ON DELETE CASCADE,
+    status TEXT CHECK (status IN ('pending', 'rewarded', 'capped')) DEFAULT 'pending',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    rewarded_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_referrals_referrer ON public.referrals(referrer_id);
+CREATE INDEX idx_referrals_status ON public.referrals(status);
+
+-- 3. Update the handle_new_user trigger to generate codes and link referrals
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql
+AS $func$
+DECLARE
+  v_referral_code TEXT;
+  v_referred_by UUID;
+BEGIN
+  -- Generate a deterministic 8-character alphanumeric referral code based on the UUID
+  v_referral_code := UPPER(SUBSTRING(REPLACE(NEW.id::TEXT, '-', '') FROM 1 FOR 8));
+  
+  -- Safely cast referred_by from metadata if it exists
+  IF NEW.raw_user_meta_data->>'referred_by' IS NOT NULL THEN
+    v_referred_by := (NEW.raw_user_meta_data->>'referred_by')::UUID;
+  END IF;
+
+  -- Create profile
+  INSERT INTO public.profiles (
+    id, email, full_name, phone_number, user_type, university, location,
+    account_status, trust_score, trust_level, identity_verified, student_verified, liveness_verified,
+    referral_code, referred_by
+  ) VALUES (
+    NEW.id, NEW.email, NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'phone_number',
+    NEW.raw_user_meta_data->>'user_type', NEW.raw_user_meta_data->>'university', NEW.raw_user_meta_data->>'location',
+    'active', 0, 'new', false, false, false,
+    v_referral_code, v_referred_by
+  );
+
+  -- Create wallet for freelancers and 'both'
+  IF (NEW.raw_user_meta_data->>'user_type') IN ('freelancer', 'both') THEN
+    INSERT INTO public.wallets (user_id, balance, pending_clearance) VALUES (NEW.id, 0, 0);
+  END IF;
+
+  -- Log the referral relationship for the cron job to process later
+  IF v_referred_by IS NOT NULL THEN
+    INSERT INTO public.referrals (referrer_id, referee_id) VALUES (v_referred_by, NEW.id);
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+-- 4. Seed Platform Config (These will automatically appear in /f9-control/config!)
+INSERT INTO public.platform_config (key, value, enabled, description) VALUES
+  ('referral_program_enabled', 1, true, 'Toggle the referral program ON/OFF.'),
+  ('referral_reward_amount', 100, true, 'Amount (₦) paid to the referrer.'),
+  ('referral_threshold_amount', 5000, true, 'Aggregate transaction volume (₦) referee must reach.'),
+  ('referral_max_rewards', 15, true, 'Maximum number of successful referral payouts per user.')
+ON CONFLICT (key) DO NOTHING;
+
+
+-- migration_referral_system.sql
+-- Referral system: profiles columns, referrals table, code generation,
+-- and updated handle_new_user trigger.
+--
+-- Fixes applied vs original draft:
+--   1. Referral codes now use the full A-Z0-9 alphabet (36 chars) instead
+--      of hex-only [0-9A-F] — codes like A1B2C3D4 are now genuinely possible.
+--   2. Trigger has a one-level collision fallback using bytes 8-15 of the UUID
+--      so a unique_violation on referral_code never kills the registration.
+
+
+-- ─── 1. Profiles columns ─────────────────────────────────────────────────────
+
+ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE,
+  ADD COLUMN IF NOT EXISTS referred_by   UUID REFERENCES public.profiles(id);
+
+
+-- ─── 2. Referrals tracking table ─────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.referrals (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  referrer_id UUID        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  referee_id  UUID        NOT NULL UNIQUE REFERENCES public.profiles(id) ON DELETE CASCADE,
+  status      TEXT        CHECK (status IN ('pending', 'rewarded', 'capped')) DEFAULT 'pending',
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  rewarded_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON public.referrals(referrer_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_status   ON public.referrals(status);
+
+
+-- ─── 3. Referral code generator ──────────────────────────────────────────────
+-- Maps each of 8 UUID bytes through a 36-char alphabet (A-Z + 0-9).
+-- p_offset shifts which 8 bytes are used; the trigger passes 0 on first attempt
+-- and 8 on the collision-retry so the fallback is still deterministic.
+
+CREATE OR REPLACE FUNCTION public.generate_referral_code(
+  p_user_id UUID,
+  p_offset  INT DEFAULT 0
+)
+RETURNS TEXT
+SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_alphabet CONSTANT TEXT := 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  v_bytes    BYTEA;
+  v_code     TEXT := '';
+  v_i        INT;
+BEGIN
+  -- Decode the raw UUID bytes (16 bytes total)
+  v_bytes := decode(replace(p_user_id::TEXT, '-', ''), 'hex');
+
+  FOR v_i IN 0..7 LOOP
+    -- Wrap offset via modulo so both 0 and 8 stay within the 16-byte buffer
+    v_code := v_code
+      || SUBSTRING(
+           v_alphabet
+           FROM (get_byte(v_bytes, (v_i + p_offset) % 16) % 36) + 1
+           FOR 1
+         );
+  END LOOP;
+
+  RETURN v_code;
+END;
+$$;
+
+
+-- ─── 4. handle_new_user trigger ──────────────────────────────────────────────
+-- Changes vs original:
+--   • Calls generate_referral_code() instead of raw SUBSTRING/REPLACE hex slice.
+--   • Profile INSERT is wrapped in an EXCEPTION block; on unique_violation
+--     (collision on referral_code) it retries once with offset 8.
+
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql
+AS $func$
+DECLARE
+  v_referral_code TEXT;
+  v_referred_by   UUID;
+BEGIN
+  -- Generate full-alphabet code from first 8 UUID bytes
+  v_referral_code := generate_referral_code(NEW.id, 0);
+
+  -- Safely resolve referred_by from auth metadata
+  IF NEW.raw_user_meta_data->>'referred_by' IS NOT NULL THEN
+    v_referred_by := (NEW.raw_user_meta_data->>'referred_by')::UUID;
+  END IF;
+
+  -- Profile insert with one-level collision fallback.
+  -- A referral_code collision is exceedingly rare (~1 in 4 billion) but the
+  -- fallback uses bytes 8-15 of the same UUID so it remains deterministic
+  -- and still produces a full-alphabet code.
+  BEGIN
+    INSERT INTO public.profiles (
+      id, email, full_name, phone_number, user_type, university, location,
+      account_status, trust_score, trust_level,
+      identity_verified, student_verified, liveness_verified,
+      referral_code, referred_by
+    ) VALUES (
+      NEW.id,
+      NEW.email,
+      NEW.raw_user_meta_data->>'full_name',
+      NEW.raw_user_meta_data->>'phone_number',
+      NEW.raw_user_meta_data->>'user_type',
+      NEW.raw_user_meta_data->>'university',
+      NEW.raw_user_meta_data->>'location',
+      'active', 0, 'new', false, false, false,
+      v_referral_code,
+      v_referred_by
+    );
+  EXCEPTION WHEN unique_violation THEN
+    -- Retry with the second half of the UUID bytes
+    v_referral_code := generate_referral_code(NEW.id, 8);
+
+    INSERT INTO public.profiles (
+      id, email, full_name, phone_number, user_type, university, location,
+      account_status, trust_score, trust_level,
+      identity_verified, student_verified, liveness_verified,
+      referral_code, referred_by
+    ) VALUES (
+      NEW.id,
+      NEW.email,
+      NEW.raw_user_meta_data->>'full_name',
+      NEW.raw_user_meta_data->>'phone_number',
+      NEW.raw_user_meta_data->>'user_type',
+      NEW.raw_user_meta_data->>'university',
+      NEW.raw_user_meta_data->>'location',
+      'active', 0, 'new', false, false, false,
+      v_referral_code,
+      v_referred_by
+    );
+  END;
+
+  -- Wallet: only freelancers and 'both' users need one
+  IF (NEW.raw_user_meta_data->>'user_type') IN ('freelancer', 'both') THEN
+    INSERT INTO public.wallets (user_id, balance, pending_clearance)
+    VALUES (NEW.id, 0, 0);
+  END IF;
+
+  -- Log the referral relationship; the reward cron processes it later
+  IF v_referred_by IS NOT NULL THEN
+    INSERT INTO public.referrals (referrer_id, referee_id)
+    VALUES (v_referred_by, NEW.id);
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+
+-- ─── 5. Platform config seed ─────────────────────────────────────────────────
+
+INSERT INTO public.platform_config (key, value, enabled, description) VALUES
+  ('referral_program_enabled',  1,    true, 'Toggle the referral program ON/OFF.'),
+  ('referral_reward_amount',    100,  true, 'Amount (N) credited to the referrer per confirmed referral.'),
+  ('referral_threshold_amount', 5000, true, 'Aggregate transaction volume (N) the referee must reach before reward is disbursed.'),
+  ('referral_max_rewards',      15,   true, 'Maximum successful referral payouts per user (lifetime).')
+ON CONFLICT (key) DO NOTHING;
+
+
+-- 1. PATCH THE TRIGGER: Ensure referred_by actually exists to prevent FK crashes
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+SECURITY DEFINER SET search_path = public
+LANGUAGE plpgsql
+AS $func$
+DECLARE
+  v_referral_code TEXT;
+  v_referred_by   UUID;
+BEGIN
+  v_referral_code := generate_referral_code(NEW.id, 0);
+
+  -- SAFELY resolve referred_by: Only assign if the ID actually exists in profiles
+  IF NEW.raw_user_meta_data->>'referred_by' IS NOT NULL THEN
+    SELECT id INTO v_referred_by 
+    FROM public.profiles 
+    WHERE id = (NEW.raw_user_meta_data->>'referred_by')::UUID;
+  END IF;
+
+  BEGIN
+    INSERT INTO public.profiles (
+      id, email, full_name, phone_number, user_type, university, location,
+      account_status, trust_score, trust_level,
+      identity_verified, student_verified, liveness_verified,
+      referral_code, referred_by
+    ) VALUES (
+      NEW.id, NEW.email, NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'phone_number',
+      NEW.raw_user_meta_data->>'user_type', NEW.raw_user_meta_data->>'university', NEW.raw_user_meta_data->>'location',
+      'active', 0, 'new', false, false, false, v_referral_code, v_referred_by
+    );
+  EXCEPTION WHEN unique_violation THEN
+    v_referral_code := generate_referral_code(NEW.id, 8);
+    INSERT INTO public.profiles (
+      id, email, full_name, phone_number, user_type, university, location,
+      account_status, trust_score, trust_level,
+      identity_verified, student_verified, liveness_verified,
+      referral_code, referred_by
+    ) VALUES (
+      NEW.id, NEW.email, NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'phone_number',
+      NEW.raw_user_meta_data->>'user_type', NEW.raw_user_meta_data->>'university', NEW.raw_user_meta_data->>'location',
+      'active', 0, 'new', false, false, false, v_referral_code, v_referred_by
+    );
+  END;
+
+  IF (NEW.raw_user_meta_data->>'user_type') IN ('freelancer', 'both') THEN
+    INSERT INTO public.wallets (user_id, balance, pending_clearance) VALUES (NEW.id, 0, 0);
+  END IF;
+
+  IF v_referred_by IS NOT NULL THEN
+    INSERT INTO public.referrals (referrer_id, referee_id) VALUES (v_referred_by, NEW.id);
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+-- 2. CREATE ATOMIC REWARD RPC: Handles missing wallets and prevents double-spending
+CREATE OR REPLACE FUNCTION public.process_referral_reward(
+  p_referral_id UUID,
+  p_referrer_id UUID,
+  p_reward_amount NUMERIC
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  v_status TEXT;
+BEGIN
+  -- Lock the row to prevent concurrent cron ticks from double-processing
+  SELECT status INTO v_status FROM public.referrals WHERE id = p_referral_id FOR UPDATE;
+  
+  IF v_status != 'pending' THEN
+    RETURN FALSE; -- Already processed or capped
+  END IF;
+
+  -- UPSERT Wallet: If a 'client' referred someone, they won't have a wallet yet. This creates it.
+  INSERT INTO public.wallets (user_id, balance, pending_clearance, total_earned, total_withdrawn)
+  VALUES (p_referrer_id, p_reward_amount, 0, 0, 0)
+  ON CONFLICT (user_id) DO UPDATE 
+  SET balance = wallets.balance + p_reward_amount,
+      updated_at = NOW();
+
+  -- Mark referral as rewarded
+  UPDATE public.referrals 
+  SET status = 'rewarded', rewarded_at = NOW() 
+  WHERE id = p_referral_id;
+
+  -- Insert Audit Transaction
+  INSERT INTO public.transactions (
+    recipient_user_id, transaction_type, transaction_ref, amount, status
+  ) VALUES (
+    p_referrer_id, 'wallet_credit', 'REF-REWARD-' || SUBSTRING(p_referral_id::TEXT FROM 1 FOR 8), p_reward_amount, 'completed'
+  );
+
+  RETURN TRUE;
+END;
+$$;

@@ -69,6 +69,40 @@ export const CONFIG_KEYS = {
    * Admin panel path: Config → Fees → Marketplace Commission.
    */
   MARKETPLACE_FEE_PERCENT:            'marketplace_fee_percent',
+
+  /**
+   * On/Off toggle for the referral rewards program.
+   *
+   * Stored as a numeric boolean: 1 = enabled, 0 = disabled.
+   * Treat any non-zero value as enabled.
+   *
+   * Admin panel path: Config → Referrals → Enable Referral Program.
+   */
+  REFERRAL_PROGRAM_ENABLED:           'referral_program_enabled',
+
+  /**
+   * ₦ amount credited to a referrer's wallet when a successful referral
+   * conversion is confirmed (i.e. the referred user meets the threshold).
+   * Default: 100
+   * Admin panel path: Config → Referrals → Reward Amount.
+   */
+  REFERRAL_REWARD_AMOUNT:             'referral_reward_amount',
+
+  /**
+   * Minimum ₦ spend (or earnings) the referred user must accumulate before
+   * the referral is considered converted and the reward is disbursed.
+   * Default: 5000
+   * Admin panel path: Config → Referrals → Conversion Threshold.
+   */
+  REFERRAL_THRESHOLD_AMOUNT:          'referral_threshold_amount',
+
+  /**
+   * Maximum number of referral rewards a single user may earn across the
+   * lifetime of their account. 0 = unlimited.
+   * Default: 15
+   * Admin panel path: Config → Referrals → Max Rewards Per User.
+   */
+  REFERRAL_MAX_REWARDS:               'referral_max_rewards',
 } as const;
 
 export type ConfigKey = typeof CONFIG_KEYS[keyof typeof CONFIG_KEYS];
@@ -88,9 +122,14 @@ const DEFAULTS: Record<ConfigKey, number> = {
   [CONFIG_KEYS.WITHDRAWAL_GATE_THRESHOLD]:        0,   // 0 = gate disabled
   // Shared-IP fraud rule — on by default, flag on first overlap
   [CONFIG_KEYS.SHARED_IP_CHECK_ENABLED]:          1,   // 1 = enabled
-  [CONFIG_KEYS.SHARED_IP_MIN_ACCOUNTS]:           1,   // flag if ≥ 1 other account shares IP
+  [CONFIG_KEYS.SHARED_IP_MIN_ACCOUNTS]:           1,   // flag if >= 1 other account shares IP
   [CONFIG_KEYS.FREELANCE_FEE_PERCENT]:            10,
   [CONFIG_KEYS.MARKETPLACE_FEE_PERCENT]:          8,
+  // Referral program
+  [CONFIG_KEYS.REFERRAL_PROGRAM_ENABLED]:         1,   // 1 = enabled
+  [CONFIG_KEYS.REFERRAL_REWARD_AMOUNT]:           100, // ₦100 per confirmed referral
+  [CONFIG_KEYS.REFERRAL_THRESHOLD_AMOUNT]:        5000, // referred user must transact ₦5,000
+  [CONFIG_KEYS.REFERRAL_MAX_REWARDS]:             15,  // cap at 15 lifetime rewards per user
 };
 
 /**

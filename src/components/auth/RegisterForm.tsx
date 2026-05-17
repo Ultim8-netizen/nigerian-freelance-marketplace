@@ -45,7 +45,6 @@ export function RegisterForm() {
       const result = await response.json();
 
       if (!response.ok) {
-        // Provide detailed error message
         const errorMessage = result.error || 
           result.details?.[0]?.message || 
           `Registration failed: ${response.status} ${response.statusText}`;
@@ -53,17 +52,15 @@ export function RegisterForm() {
         throw new Error(errorMessage);
       }
 
-      // Success
       router.push('/login?registered=true');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Registration failed. Please try again.';
       
-      // Retry logic for network errors
       if (!isRetry && retryCount < maxRetries && errorMessage.includes('fetch')) {
         setRetryCount(prev => prev + 1);
         setTimeout(() => {
           onSubmit(data, true);
-        }, 1000 * (retryCount + 1)); // Exponential backoff
+        }, 1000 * (retryCount + 1));
         return;
       }
       
@@ -220,7 +217,7 @@ export function RegisterForm() {
           )}
         </div>
 
-        {/* User Type - FIXED DROPDOWN */}
+        {/* User Type */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
             I am a... *
@@ -278,6 +275,26 @@ export function RegisterForm() {
             <p className="text-red-500 text-sm mt-1 flex items-center gap-1">
               <AlertCircle className="w-3 h-3" />
               {errors.location.message}
+            </p>
+          )}
+        </div>
+
+        {/* Referral Code (Optional) */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Referral Code (Optional)
+          </label>
+          <Input
+            {...register('referral_code')}
+            type="text"
+            placeholder="e.g., A1B2C3D4"
+            disabled={isLoading}
+            className="bg-white text-gray-800 border-gray-300 placeholder:text-gray-400 uppercase"
+          />
+          {errors.referral_code && (
+            <p className="text-red-500 text-sm mt-1 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              {errors.referral_code.message}
             </p>
           )}
         </div>

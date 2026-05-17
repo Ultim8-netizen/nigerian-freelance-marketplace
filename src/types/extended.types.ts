@@ -21,12 +21,18 @@ type DatabaseProfile = Tables<'profiles'>;
  * The database generates these as generic strings/nullables, but we need
  * literal unions for type-safe consumption in components and API routes:
  *
- * - user_type:          'string' → 'client' | 'freelancer' | 'both' | 'admin'
- *                       'admin' is required by the admin API route which checks
- *                       profile.user_type !== 'admin'. Without it the check
- *                       would never narrow correctly.
- * - account_status:     'string' → 'active' | 'suspended' | 'banned'
+ * - user_type:            'string' → 'client' | 'freelancer' | 'both' | 'admin'
+ *                         'admin' is required by the admin API route which checks
+ *                         profile.user_type !== 'admin'. Without it the check
+ *                         would never narrow correctly.
+ * - account_status:       'string' → 'active' | 'suspended' | 'banned'
  * - onboarding_completed: 'boolean | null' → 'boolean'
+ * - referral_code:        unique shareable code generated for this user;
+ *                         already typed string | null in the DB schema,
+ *                         re-declared here for explicit component visibility.
+ * - referred_by:          referral_code of the account that referred this user;
+ *                         already typed string | null in the DB schema,
+ *                         re-declared here for explicit component visibility.
  */
 export type Profile = Omit<
   DatabaseProfile,
@@ -35,6 +41,8 @@ export type Profile = Omit<
   user_type: 'client' | 'freelancer' | 'both' | 'admin';
   account_status: 'active' | 'suspended' | 'banned';
   onboarding_completed: boolean;
+  referral_code?: string | null;
+  referred_by?: string | null;
 };
 
 /**

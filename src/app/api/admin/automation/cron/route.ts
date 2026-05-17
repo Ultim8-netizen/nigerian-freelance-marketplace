@@ -65,6 +65,37 @@
 //      idempotency across repeated cron runs.
 //      Requires migration: migrations/20260406_add_notification_dispatched_at.sql
 //
+// NEW: Rule 6 — Referral reward automation.
+//      Checks all pending referrals (status='pending', limit 50 per run).
+//      For each referral:
+//        1. Aggregates the referee's completed transaction volume across both
+//           freelance orders (orders.status='completed') and marketplace orders
+//           (marketplace_orders.status='delivered').
+//           IMPORTANT — marketplace volume uses two intentional constraints:
+//             a. 'subtotal' (not 'total_amount'): delivery fees are excluded
+//                from the GMV threshold calculation.
+//             b. status='delivered' only (not confirmed/processing/shipped):
+//                pre-fulfillment statuses are reversible — a buyer can cancel
+//                a confirmed or processing order and receive a full refund.
+//                Counting those statuses opens a trivial exploit where two
+//                users coordinate a fake purchase to trigger a referral payout
+//                and then cancel for a refund. Only 'delivered' is a terminal
+//                success state and represents realized, irreversible value.
+//        2. If aggregate volume >= REFERRAL_THRESHOLD_AMOUNT:
+//             a. Counts how many referrals the referrer has already had rewarded.
+//             b. If count >= REFERRAL_MAX_REWARDS → marks referral 'capped'.
+//             c. Otherwise → calls process_referral_reward() RPC, which
+//                atomically: credits the referrer's wallet, marks the referral
+//                'rewarded' with rewarded_at, and inserts a transactions audit
+//                row. On success, a milestone notification is inserted.
+//        3. Entire rule is skipped if REFERRAL_PROGRAM_ENABLED = 0 in
+//           platform_config.
+//      Requires: referrals table with columns (id, referrer_id, referee_id,
+//      status, rewarded_at); platform_config keys REFERRAL_PROGRAM_ENABLED,
+//      REFERRAL_REWARD_AMOUNT, REFERRAL_THRESHOLD_AMOUNT, REFERRAL_MAX_REWARDS;
+//      process_referral_reward(p_referral_id, p_referrer_id, p_reward_amount)
+//      SECURITY DEFINER function returning boolean.
+//
 // FIX (TOCTOU / RACE CONDITION — Rule 1 escrow UPDATE):
 //      The Supabase JS client resolves with { error: null, data: [] } when an
 //      UPDATE matches zero rows. The previous guard ( if (escrowUpdateError) )
@@ -104,6 +135,10 @@ export async function POST() {
     CONFIG_KEYS.DISPUTE_AUTO_RESOLVE_DAYS,
     CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS,
     CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS,
+    CONFIG_KEYS.REFERRAL_PROGRAM_ENABLED,
+    CONFIG_KEYS.REFERRAL_REWARD_AMOUNT,
+    CONFIG_KEYS.REFERRAL_THRESHOLD_AMOUNT,
+    CONFIG_KEYS.REFERRAL_MAX_REWARDS,
   ]);
 
   // ─── RULE 0: Lift expired timed suspensions ────────────────────────────────
@@ -705,6 +740,167 @@ export async function POST() {
     }
   } else if (!scheduleQueryError) {
     logs.push('[Rule 5] No scheduled notifications due for dispatch');
+  }
+
+  // ─── RULE 6: Process Referral Rewards ─────────────────────────────────────
+  //
+  // IDEMPOTENCY:
+  //   Only 'pending' referrals are fetched. The process_referral_reward RPC
+  //   marks each row 'rewarded' atomically, so it falls out of scope on the
+  //   next tick. A referral row cannot be double-rewarded.
+  //
+  // VOLUME CALCULATION:
+  //   Freelance:    orders WHERE (client_id OR freelancer_id) = referee AND
+  //                 status = 'completed'                              → amount
+  //   Marketplace:  marketplace_orders WHERE (buyer_id OR seller_id) = referee
+  //                 AND status = 'delivered'                          → subtotal
+  //
+  //   Two intentional constraints on the marketplace query:
+  //     a. 'subtotal' (not 'total_amount'): delivery fees are excluded from the
+  //        GMV threshold. A referee should not cross the threshold sooner simply
+  //        because they chose expensive shipping.
+  //     b. status = 'delivered' only (not confirmed/processing/shipped):
+  //        pre-fulfillment statuses are reversible — a buyer can cancel a
+  //        confirmed or processing order and receive a full refund. Counting
+  //        those statuses opens a trivial exploit:
+  //          1. User A refers User B.
+  //          2. User B places a ₦5,000 order → status = 'confirmed'.
+  //          3. Cron runs, sees ₦5,000 GMV, pays User A the referral reward.
+  //          4. User B cancels, receives a full refund.
+  //          5. Platform has paid out a reward for a transaction that never
+  //             settled, resulting in a net loss.
+  //        'delivered' is the only terminal success state for marketplace orders
+  //        and represents realized, irreversible value.
+  //
+  // CAP CHECK:
+  //   Counts existing 'rewarded' referrals for the referrer before calling the
+  //   RPC. If count >= REFERRAL_MAX_REWARDS the referral is marked 'capped'
+  //   directly — no RPC call is made.
+  //
+  // ATOMIC RPC:
+  //   process_referral_reward(p_referral_id, p_referrer_id, p_reward_amount)
+  //   is a SECURITY DEFINER function that in a single transaction:
+  //     1. Credits p_referrer_id's wallet balance.
+  //     2. Sets referrals.status = 'rewarded' and stamps rewarded_at.
+  //     3. Inserts a transactions audit row.
+  //   Returns TRUE on success, FALSE / raises on failure.
+  //   If the RPC returns false or errors, the referral remains 'pending' and
+  //   will be retried on the next cron tick.
+  //
+  // TYPE NOTE:
+  //   process_referral_reward is a SECURITY DEFINER function that exists in the
+  //   database but has not yet been added to the auto-generated database.types.ts
+  //   (which must never be edited manually). The cast to `any` on the supabase
+  //   client is the correct escape hatch — it is scoped to this single call and
+  //   does not affect the type safety of any other query in the file.
+
+  const referralEnabled = config[CONFIG_KEYS.REFERRAL_PROGRAM_ENABLED] !== 0;
+
+  if (referralEnabled) {
+    const rewardAmount    = config[CONFIG_KEYS.REFERRAL_REWARD_AMOUNT];
+    const thresholdAmount = config[CONFIG_KEYS.REFERRAL_THRESHOLD_AMOUNT];
+    const maxRewards      = config[CONFIG_KEYS.REFERRAL_MAX_REWARDS];
+
+    type PendingReferralRow = {
+      id:          string;
+      referrer_id: string;
+      referee_id:  string;
+    };
+
+    const { data: pendingReferrals, error: refError } = await supabase
+      .from('referrals')
+      .select('id, referrer_id, referee_id')
+      .eq('status', 'pending')
+      .limit(50) as { data: PendingReferralRow[] | null; error: unknown };
+
+    if (refError) {
+      console.error('[Rule 6] Error fetching pending referrals:', refError);
+    } else if (pendingReferrals && pendingReferrals.length > 0) {
+
+      for (const ref of pendingReferrals) {
+        // ── 1. Calculate Referee's Aggregate Volume ─────────────────────────
+
+        const { data: fOrders } = await supabase
+          .from('orders')
+          .select('amount')
+          .or(`client_id.eq.${ref.referee_id},freelancer_id.eq.${ref.referee_id}`)
+          .eq('status', 'completed');
+
+        // 'subtotal' excludes delivery fees from the GMV calculation.
+        // 'delivered' is the only terminal success state — see comment block
+        // above for why pre-fulfillment statuses are excluded.
+        const { data: mOrders } = await supabase
+          .from('marketplace_orders')
+          .select('subtotal')
+          .or(`buyer_id.eq.${ref.referee_id},seller_id.eq.${ref.referee_id}`)
+          .eq('status', 'delivered');
+
+        const freelanceTotal  = (fOrders || []).reduce((sum, o) => sum + (o.amount   || 0), 0);
+        const marketTotal     = (mOrders || []).reduce((sum, o) => sum + (o.subtotal || 0), 0);
+        const aggregateVolume = freelanceTotal + marketTotal;
+
+        if (aggregateVolume < thresholdAmount) {
+          // Referee has not yet crossed the threshold — nothing to do this tick.
+          continue;
+        }
+
+        // ── 2. Check Referrer's Reward Cap ──────────────────────────────────
+
+        const { count: rewardCount } = await supabase
+          .from('referrals')
+          .select('id', { count: 'exact', head: true })
+          .eq('referrer_id', ref.referrer_id)
+          .eq('status', 'rewarded');
+
+        if ((rewardCount || 0) >= maxRewards) {
+          await supabase
+            .from('referrals')
+            .update({ status: 'capped' })
+            .eq('id', ref.id);
+
+          logs.push(`[Rule 6] Referral ${ref.id} capped for referrer ${ref.referrer_id} (max ${maxRewards} rewards reached)`);
+          continue;
+        }
+
+        // ── 3. Issue Reward Atomically via RPC ──────────────────────────────
+        //
+        // process_referral_reward exists in the DB but is not yet registered in
+        // the auto-generated database.types.ts. Casting to `any` on the client
+        // is the correct, narrowly-scoped escape hatch — the generated types
+        // file must never be edited manually.
+        //
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data: success, error: rpcError } = await (supabase as any).rpc(
+          'process_referral_reward',
+          {
+            p_referral_id:   ref.id,
+            p_referrer_id:   ref.referrer_id,
+            p_reward_amount: rewardAmount,
+          }
+        ) as { data: boolean | null; error: unknown };
+
+        if (rpcError || !success) {
+          console.error(`[Rule 6] RPC failed for referral ${ref.id}:`, rpcError);
+          logs.push(`[Rule 6] FAILED RPC for referral ${ref.id} (referrer ${ref.referrer_id}) — will retry next tick`);
+          continue;
+        }
+
+        // ── 4. Notify Referrer ──────────────────────────────────────────────
+
+        await supabase.from('notifications').insert({
+          user_id: ref.referrer_id,
+          type:    'milestone',
+          title:   'Referral Bonus Unlocked! 🎉',
+          message: `A user you referred just hit their transaction milestone. ₦${rewardAmount.toLocaleString('en-NG')} has been credited to your wallet!`,
+        });
+
+        logs.push(`[Rule 6] Rewarded referrer ${ref.referrer_id} ₦${rewardAmount.toLocaleString('en-NG')} for referee ${ref.referee_id} (referral ${ref.id})`);
+      }
+    } else if (!refError) {
+      logs.push('[Rule 6] No pending referrals to process');
+    }
+  } else {
+    logs.push('[Rule 6] Referral program is currently disabled via platform_config.');
   }
 
   return NextResponse.json({ success: true, actions: logs });
