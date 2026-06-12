@@ -6568,3 +6568,383 @@ BEGIN
   RETURN TRUE;
 END;
 $$;
+
+-- ─── trust_score_events ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.trust_score_events (
+  id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id              uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  event_type           text        NOT NULL,
+  score_change         integer     NOT NULL,
+  previous_score       integer     NOT NULL DEFAULT 0,
+  new_score            integer     NOT NULL DEFAULT 0,
+  related_entity_type  text,
+  related_entity_id    uuid,
+  notes                text,
+  created_at           timestamptz NOT NULL DEFAULT now()
+);
+
+-- Covering index for the history route query (user_id + date DESC)
+CREATE INDEX IF NOT EXISTS trust_score_events_user_created_idx
+  ON public.trust_score_events (user_id, created_at DESC);
+
+-- RLS
+ALTER TABLE public.trust_score_events ENABLE ROW LEVEL SECURITY;
+
+-- Users read their own events only (history/route.ts uses createClient with session)
+CREATE POLICY "trust_score_events_select_own"
+  ON public.trust_score_events
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+-- No INSERT/UPDATE/DELETE policies — all writes are via add_trust_score_event()
+-- which is SECURITY DEFINER and bypasses RLS entirely.
+
+-- ─── add_trust_score_event (6-param, SECURITY DEFINER) ───────────────────────
+-- Called by: update-score/route.ts (supabase.rpc), order trigger, review trigger
+-- Row-level lock on profiles prevents concurrent race on trust_score.
+CREATE OR REPLACE FUNCTION public.add_trust_score_event(
+  p_user_id             uuid,
+  p_event_type          text,
+  p_score_change        integer,
+  p_related_entity_type text    DEFAULT NULL,
+  p_related_entity_id   uuid    DEFAULT NULL,
+  p_notes               text    DEFAULT NULL
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+DECLARE
+  v_current_score integer;
+  v_new_score     integer;
+BEGIN
+  -- Lock the profile row to prevent concurrent score updates
+  SELECT trust_score
+  INTO   v_current_score
+  FROM   public.profiles
+  WHERE  id = p_user_id
+  FOR    UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'add_trust_score_event: profile not found for user_id=%', p_user_id;
+  END IF;
+
+  -- Floor at 0 — trust score cannot go negative
+  v_new_score := GREATEST(0, v_current_score + p_score_change);
+
+  -- Record the event
+  INSERT INTO public.trust_score_events (
+    user_id,
+    event_type,
+    score_change,
+    previous_score,
+    new_score,
+    related_entity_type,
+    related_entity_id,
+    notes
+  ) VALUES (
+    p_user_id,
+    p_event_type,
+    p_score_change,
+    v_current_score,
+    v_new_score,
+    p_related_entity_type,
+    p_related_entity_id,
+    p_notes
+  );
+
+  -- Update profile score; trust_level is updated by the BEFORE trigger below
+  UPDATE public.profiles
+  SET    trust_score = v_new_score
+  WHERE  id = p_user_id;
+END;
+$func$;
+
+-- ─── update_profile_trust_level trigger ──────────────────────────────────────
+-- BEFORE UPDATE on profiles.trust_score
+-- Thresholds are canonical here; feature-gates.ts TIER constants must match.
+CREATE OR REPLACE FUNCTION public.update_profile_trust_level()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+DECLARE
+  v_level text;
+BEGIN
+  v_level := CASE
+    WHEN NEW.trust_score >= 90 THEN 'elite'
+    WHEN NEW.trust_score >= 70 THEN 'top_rated'
+    WHEN NEW.trust_score >= 40 THEN 'trusted'
+    WHEN NEW.trust_score >= 25 THEN 'verified'
+    ELSE                             'new'
+  END;
+
+  -- Only write if the level actually changes (avoids unnecessary row churn)
+  IF NEW.trust_level IS DISTINCT FROM v_level THEN
+    NEW.trust_level := v_level;
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+DROP TRIGGER IF EXISTS trg_update_trust_level ON public.profiles;
+CREATE TRIGGER trg_update_trust_level
+  BEFORE UPDATE OF trust_score ON public.profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION public.update_profile_trust_level();
+
+
+  -- ─── order_completion_trust_score trigger ────────────────────────────────────
+-- AFTER UPDATE on orders.status → 'completed'
+-- Adjust column names (freelancer_id, delivery_deadline, completed_at) if
+-- your orders table uses different names.
+CREATE OR REPLACE FUNCTION public.handle_order_completion_trust_score()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+BEGIN
+  -- Guard: only fire on transition TO 'completed'
+  IF OLD.status IS NOT DISTINCT FROM 'completed'
+     OR NEW.status <> 'completed' THEN
+    RETURN NEW;
+  END IF;
+
+  -- Base completion award (ORDER_COMPLETED: +2)
+  PERFORM public.add_trust_score_event(
+    NEW.freelancer_id,
+    'ORDER_COMPLETED',
+    2,
+    'order',
+    NEW.id,
+    'Order completed successfully'
+  );
+
+  -- On-time delivery award (ON_TIME_DELIVERY: +1)
+  -- Only fires when both deadline and completion timestamp are present
+  IF NEW.completed_at IS NOT NULL
+     AND NEW.delivery_deadline IS NOT NULL
+     AND NEW.completed_at <= NEW.delivery_deadline
+  THEN
+    PERFORM public.add_trust_score_event(
+      NEW.freelancer_id,
+      'ON_TIME_DELIVERY',
+      1,
+      'order',
+      NEW.id,
+      'Delivered on time'
+    );
+  END IF;
+
+  -- Cancellation penalty (ORDER_CANCELLATION handled separately on status → 'cancelled')
+
+  RETURN NEW;
+END;
+$func$;
+
+DROP TRIGGER IF EXISTS order_completion_trust_score ON public.orders;
+CREATE TRIGGER order_completion_trust_score
+  AFTER UPDATE OF status ON public.orders
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_order_completion_trust_score();
+
+
+-- ─── order_cancellation_trust_score trigger ───────────────────────────────────
+-- Deducts points when the freelancer cancels (not buyer-initiated cancels)
+CREATE OR REPLACE FUNCTION public.handle_order_cancellation_trust_score()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+BEGIN
+  IF OLD.status IS NOT DISTINCT FROM 'cancelled'
+     OR NEW.status <> 'cancelled' THEN
+    RETURN NEW;
+  END IF;
+
+  -- Only penalise if the freelancer cancelled (cancelled_by = 'freelancer')
+  -- If your schema does not have this column, remove the condition and
+  -- always penalise — adjust to match actual cancellation tracking.
+  IF NEW.cancelled_by = 'freelancer' THEN
+    PERFORM public.add_trust_score_event(
+      NEW.freelancer_id,
+      'ORDER_CANCELLATION',
+      -5,
+      'order',
+      NEW.id,
+      'Order cancelled by freelancer'
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+DROP TRIGGER IF EXISTS order_cancellation_trust_score ON public.orders;
+CREATE TRIGGER order_cancellation_trust_score
+  AFTER UPDATE OF status ON public.orders
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_order_cancellation_trust_score();
+
+
+  -- ─── review_trust_score trigger ───────────────────────────────────────────────
+-- AFTER INSERT on reviews
+-- Assumes: reviews.reviewee_id (who is being reviewed), reviews.rating (1–5 int)
+CREATE OR REPLACE FUNCTION public.handle_review_trust_score()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+DECLARE
+  v_event_type  text;
+  v_delta       integer;
+BEGIN
+  -- Map rating to event type and delta
+  -- 3-star is neutral — no trust change (matches trust-score.ts: no event defined for 3)
+  CASE NEW.rating
+    WHEN 5 THEN v_event_type := 'POSITIVE_REVIEW_5'; v_delta :=  4;
+    WHEN 4 THEN v_event_type := 'POSITIVE_REVIEW_4'; v_delta :=  3;
+    WHEN 2 THEN v_event_type := 'NEGATIVE_REVIEW_2'; v_delta := -5;
+    WHEN 1 THEN v_event_type := 'NEGATIVE_REVIEW_1'; v_delta := -5;
+    ELSE RETURN NEW; -- 3-star: no-op
+  END CASE;
+
+  PERFORM public.add_trust_score_event(
+    NEW.reviewee_id,
+    v_event_type,
+    v_delta,
+    'review',
+    NEW.id,
+    'Review received: ' || NEW.rating || ' star(s)'
+  );
+
+  RETURN NEW;
+END;
+$func$;
+
+DROP TRIGGER IF EXISTS review_trust_score ON public.reviews;
+CREATE TRIGGER review_trust_score
+  AFTER INSERT ON public.reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_review_trust_score();
+
+  -- ═══════════════════════════════════════════════════════════════════════════════
+-- F9 TRUST ENGINE — REMEDIATION SQL
+-- Run the entire block before deploying updated TypeScript files.
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+
+-- ─── 1. Drop duplicate RLS policy on trust_score_events ───────────────────────
+-- "Users can view own trust score history" already existed before Block 1 ran.
+-- trust_score_events_select_own is functionally identical — drop it.
+DROP POLICY IF EXISTS "trust_score_events_select_own" ON public.trust_score_events;
+
+
+-- ─── 2. Consolidate trust_level triggers ──────────────────────────────────────
+-- Two triggers were firing on UPDATE, one on INSERT — both computing trust_level
+-- with potentially different logic. Drop both and replace with one canonical trigger
+-- that covers INSERT and UPDATE using update_profile_trust_level() (correct thresholds).
+
+DROP TRIGGER IF EXISTS trg_update_trust_level    ON public.profiles;
+DROP TRIGGER IF EXISTS update_profile_trust_level ON public.profiles;
+
+CREATE TRIGGER trg_sync_trust_level
+  BEFORE INSERT OR UPDATE OF trust_score ON public.profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION public.update_profile_trust_level();
+
+
+-- ─── 3. Fix handle_order_completion_trust_score ───────────────────────────────
+-- Block 4 referenced delivery_deadline and completed_at — neither exists.
+-- Actual columns: delivery_date (deadline), delivered_at (when sent by freelancer).
+-- On-time bonus fires when delivered_at <= delivery_date at order completion.
+CREATE OR REPLACE FUNCTION public.handle_order_completion_trust_score()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+BEGIN
+  -- Guard: only fire on transition TO 'completed'
+  IF OLD.status IS NOT DISTINCT FROM 'completed'
+     OR NEW.status <> 'completed'
+  THEN
+    RETURN NEW;
+  END IF;
+
+  -- Base completion award
+  PERFORM public.add_trust_score_event(
+    NEW.freelancer_id,
+    'ORDER_COMPLETED',
+    2,
+    'order',
+    NEW.id,
+    'Order completed successfully'
+  );
+
+  -- On-time delivery bonus: freelancer submitted before the deadline
+  IF NEW.delivered_at IS NOT NULL
+     AND NEW.delivery_date IS NOT NULL
+     AND NEW.delivered_at <= NEW.delivery_date
+  THEN
+    PERFORM public.add_trust_score_event(
+      NEW.freelancer_id,
+      'ON_TIME_DELIVERY',
+      1,
+      'order',
+      NEW.id,
+      'Delivered on time'
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$func$;
+
+
+-- ─── 4. Fix handle_order_cancellation_trust_score ────────────────────────────
+-- Block 4 referenced NEW.cancelled_by which does not exist on orders.
+-- The function compiled (plpgsql defers column validation) but would throw at
+-- runtime. Replaced with a state-based guard: penalise freelancer only when the
+-- order was past pending_payment (i.e. work had been accepted and started).
+CREATE OR REPLACE FUNCTION public.handle_order_cancellation_trust_score()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $func$
+BEGIN
+  -- Guard: only fire on transition TO 'cancelled'
+  IF OLD.status IS NOT DISTINCT FROM 'cancelled'
+     OR NEW.status <> 'cancelled'
+  THEN
+    RETURN NEW;
+  END IF;
+
+  -- Client-cancelled before payment/acceptance is not the freelancer's fault
+  IF OLD.status = 'pending_payment' THEN
+    RETURN NEW;
+  END IF;
+
+  -- Order was in progress — penalise the freelancer
+  PERFORM public.add_trust_score_event(
+    NEW.freelancer_id,
+    'ORDER_CANCELLATION',
+    -5,
+    'order',
+    NEW.id,
+    'Order cancelled after acceptance'
+  );
+
+  RETURN NEW;
+END;
+$func$;
+
+
+

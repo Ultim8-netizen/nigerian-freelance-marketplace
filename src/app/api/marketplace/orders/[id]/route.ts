@@ -2,23 +2,11 @@
 // PRODUCTION-READY: Marketplace order operations with complete CRUD
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, RateLimiterType } from '@/lib/api/middleware';
+import { authenticatedApi } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
 import { sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
-
-// Separate rate limit check function
-async function checkRateLimit(type: string, userId: string) {
-  // Import dynamically to avoid circular dependencies
-  const { getRateLimitStatus } = await import('@/lib/api/middleware');
-  const status = await getRateLimitStatus(type as RateLimiterType, userId);
-  
-  return {
-    success: status.remaining > 0,
-    reset: status.reset.toISOString(),
-  };
-}
 
 const updateStatusSchema = z.object({
   status: z.enum(['confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']),
@@ -32,21 +20,13 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await requireAuth();
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const authResult = await authenticatedApi(request);
+    if (authResult.error) return authResult.error;
+    const user = authResult.user!;
 
     const orderId = sanitizeUuid(params.id);
     if (!orderId) {
       return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
-    }
-
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
     }
 
     const supabase = await createClient();
@@ -83,21 +63,13 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await requireAuth();
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const authResult = await authenticatedApi(request);
+    if (authResult.error) return authResult.error;
+    const user = authResult.user!;
 
     const orderId = sanitizeUuid(params.id);
     if (!orderId) {
       return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
-    }
-
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
     }
 
     const body = await request.json();
@@ -180,21 +152,13 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await requireAuth();
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const authResult = await authenticatedApi(request);
+    if (authResult.error) return authResult.error;
+    const user = authResult.user!;
 
     const orderId = sanitizeUuid(params.id);
     if (!orderId) {
       return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
-    }
-
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
     }
 
     const supabase = await createClient();
@@ -225,7 +189,7 @@ export async function DELETE(
 
     await supabase
       .from('marketplace_orders')
-      .update({ 
+      .update({
         status: 'cancelled',
         updated_at: new Date().toISOString()
       })

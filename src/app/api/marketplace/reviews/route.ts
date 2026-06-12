@@ -11,9 +11,12 @@
 // FIX: checkAndSuspendPostingOnConsecutiveLowRatings now fires dual-channel
 //      on new suspensions: bell notification (notifications.insert) + F9 inbox
 //      message (sendF9SystemMessage). Previously only the bell was sent.
+// FIX: requireAuth now imported from enhanced-middleware (canonical, takes
+//      (request, supabase) and returns { user?, error? } instead of throwing
+//      a NextResponse instance).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth }               from '@/lib/api/middleware';
+import { requireAuth }               from '@/lib/api/enhanced-middleware';
 import { checkRateLimit }            from '@/lib/rate-limit-upstash';
 import { createClient }              from '@/lib/supabase/server';
 import { createAdminClient }         from '@/lib/supabase/admin';
@@ -82,9 +85,11 @@ export async function GET(request: NextRequest) {
 // POST - Create review
 export async function POST(request: NextRequest) {
   try {
-    const authResult = await requireAuth();
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const supabase = await createClient();
+
+    const authResult = await requireAuth(request, supabase);
+    if (authResult.error) return authResult.error;
+    const user = authResult.user!;
 
     const rateLimitResult = await checkRateLimit('api', user.id);
     if (!rateLimitResult.success) {
@@ -106,7 +111,6 @@ export async function POST(request: NextRequest) {
     };
 
     const validated = createReviewSchema.parse(sanitized);
-    const supabase  = await createClient();
 
     // ── Fetch suspension thresholds from platform_config ─────────────────────
     // createAdminClient() (service role) is required — platform_config is

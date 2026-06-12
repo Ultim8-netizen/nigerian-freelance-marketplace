@@ -1,37 +1,30 @@
 // src/lib/trust/automation.ts
-// FIX: content.amount > 100000 and daysSinceCreation <= 7 were hardcoded.
-//      Both values are now read from platform_config via createAdminClient()
-//      (service role) which is required for admin-only RLS on platform_config.
-// FIX: prohibited_keywords config was also fetched with createClient() — a
-//      user-scoped client that silently returns no rows on admin-only RLS tables.
-//      All platform_config reads in this module now use the adminClient so the
-//      keyword filter actually executes.
 
-import { createAdminClient }                    from '@/lib/supabase/admin';
-import { getPlatformConfigs, CONFIG_KEYS }       from '@/lib/platform-config';
+import { createAdminClient }               from '@/lib/supabase/admin';
+import { getPlatformConfigs, CONFIG_KEYS }  from '@/lib/platform-config';
 
 export async function evaluateContentTriggers(
   userId:  string,
   content: { title: string; description: string; amount?: number }
 ): Promise<{ allowed: boolean; reason?: string; autoHold?: boolean }> {
-  // createAdminClient() (service role) is required for all platform_config reads
-  // in this function — platform_config has admin-only RLS and silently returns
-  // zero rows when accessed with a regular user-scoped createClient().
+  // createAdminClient() (service role) is required for all platform_config reads —
+  // platform_config has admin-only RLS and silently returns zero rows with a
+  // regular user-scoped createClient().
   const adminClient = createAdminClient();
 
-  // ── Fetch numeric thresholds in a single query ────────────────────────────
   const config = await getPlatformConfigs(adminClient, [
     CONFIG_KEYS.HIGH_VALUE_LISTING_THRESHOLD,
     CONFIG_KEYS.NEW_ACCOUNT_HOLD_DAYS,
   ]);
 
-  const highValueThreshold = config[CONFIG_KEYS.HIGH_VALUE_LISTING_THRESHOLD];
-  const newAccountHoldDays = config[CONFIG_KEYS.NEW_ACCOUNT_HOLD_DAYS];
+  // ?? fallbacks: if the config row is absent, disabled, or returns undefined,
+  // fall back to the DB-level defaults rather than producing NaN comparisons.
+  const highValueThreshold: number = config[CONFIG_KEYS.HIGH_VALUE_LISTING_THRESHOLD] ?? 100_000;
+  const newAccountHoldDays: number = config[CONFIG_KEYS.NEW_ACCOUNT_HOLD_DAYS] ?? 7;
 
   // ── 1. Prohibited keywords ────────────────────────────────────────────────
-  // string_value is a text column on platform_config used for non-numeric
-  // config; it lives outside the numeric getPlatformConfigs helper so it is
-  // fetched with a direct select using the same adminClient.
+  // string_value is NULL in platform_config today — the block safely no-ops.
+  // When keywords are added via the admin portal this path activates automatically.
   const { data: keywordsConfig } = await adminClient
     .from('platform_config')
     .select('string_value, enabled')
@@ -63,9 +56,6 @@ export async function evaluateContentTriggers(
   }
 
   // ── 2. High-value listing hold for new accounts ───────────────────────────
-  // Threshold and window are read from platform_config above; hardcoded values
-  // (100000 / 7) are never referenced — only the defaults in DEFAULTS serve as
-  // cold-start fallbacks if the config rows are absent or disabled.
   if (content.amount && content.amount > highValueThreshold) {
     const { data: profile } = await adminClient
       .from('profiles')

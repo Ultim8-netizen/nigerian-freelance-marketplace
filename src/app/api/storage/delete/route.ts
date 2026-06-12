@@ -1,11 +1,8 @@
 // src/app/api/storage/delete/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 // FIX: Import the functions that ARE exported from the middleware file.
-import { 
-  requireAuth, 
-  withRateLimit, 
-  RateLimiterType // Optional, but good practice
-} from '@/lib/api/middleware'; 
+import { applyRateLimit, RateLimiterType } from '@/lib/api/middleware';
+import { requireAuth } from '@/lib/api/enhanced-middleware'; 
 import { createClient } from '@/lib/supabase/server';
 
 const API_LIMITER_TYPE: RateLimiterType = 'api'; // Use the 'api' limiter
@@ -13,7 +10,7 @@ const API_LIMITER_TYPE: RateLimiterType = 'api'; // Use the 'api' limiter
 export async function POST(request: NextRequest) {
   try {
     // 1. Apply Rate Limiting
-    const rateLimitResponse = await withRateLimit(API_LIMITER_TYPE, request);
+    const rateLimitResponse = await applyRateLimit(API_LIMITER_TYPE, request);
     // If the response is not null, it means the request was rate-limited.
     if (rateLimitResponse) {
       // FIX: Ensure rate-limit headers are included in the final response

@@ -2271,6 +2271,14 @@ export type Database = {
           processed_count: number
         }[]
       }
+      process_referral_reward: {
+        Args: {
+          p_referral_id: string
+          p_referrer_id: string
+          p_reward_amount: number
+        }
+        Returns: boolean
+      }
       process_successful_payment: {
         Args: {
           p_amount: number

@@ -1,220 +1,143 @@
 // src/lib/api/middleware.ts
-// OPTIMIZED: Efficient authentication and rate limiting for API routes
+// Rate limiting infrastructure for API routes.
+//
+// BREAKING CHANGE: requireAuth() and requireOwnership() previously exported
+// from this file have been removed. They had incompatible signatures with the
+// canonical implementations in enhanced-middleware.ts:
+//
+//   middleware.ts:          requireAuth()                 — no args, creates own client
+//   enhanced-middleware.ts: requireAuth(request, supabase) — shared client pattern
+//
+// Two implementations of the same function in the same logical module creates
+// silent divergence risk. The enhanced-middleware.ts versions are canonical.
+//
+// Migration: replace
+//   import { requireAuth, requireOwnership } from '@/lib/api/middleware'
+// with
+//   import { requireAuth, requireOwnership } from '@/lib/api/enhanced-middleware'
+//
+// This file now owns only: Redis client, rate limiter config, applyRateLimit,
+// getRateLimitStatus, resetRateLimit, batchResetRateLimits, RateLimiterType.
+
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 
 // ============================================================================
-// REDIS CLIENT (Singleton)
+// REDIS CLIENT (Lazy Singleton)
+// Env vars are read at first call, not at module load, so missing vars do not
+// crash the process on routes that never touch the rate limiter.
 // ============================================================================
+
 let redis: Redis | null = null;
 
 function getRedisClient(): Redis {
   if (!redis) {
-    redis = new Redis({
-      url: process.env.UPSTASH_REDIS_REST_URL!,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-    });
+    const url   = process.env.UPSTASH_REDIS_REST_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+    if (!url || !token) {
+      throw new Error(
+        '[getRedisClient] UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN ' +
+        'must be set. Add them to .env.local (never prefix with NEXT_PUBLIC_).'
+      );
+    }
+
+    redis = new Redis({ url, token });
   }
   return redis;
 }
 
 // ============================================================================
-// RATE LIMITERS (Lazy Singleton Pattern)
-// FIX: Deferred initialization — rate limiters are created on first use, not at
-// module load time. Previously, calling getRedisClient() at the top level would
-// throw immediately if UPSTASH_REDIS_REST_URL/TOKEN env vars were missing
-// (e.g. during tests, build, or misconfigured environments).
+// WINDOW PARSING UTILITY
+// ============================================================================
+
+const _WINDOW_UNIT_MS: Record<string, number> = {
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+};
+
+function parseWindowMs(window: string): number {
+  const match = window.trim().match(/^(\d+)\s*([mhd])$/i);
+  if (!match) return 60_000;
+  return parseInt(match[1]) * (_WINDOW_UNIT_MS[match[2].toLowerCase()] ?? 60_000);
+}
+
+// ============================================================================
+// RATE LIMITER CONFIGS
+//
+// FIX: maxRequests and window are now stored as explicit fields alongside the
+// limiter instance. The previous getRateLimitStatus called config.limiter.toString()
+// and tried to regex-extract limit count and window duration from the result.
+// Ratelimit.slidingWindow() returns a function object — .toString() produces
+// '[object Object]'. Both regex matches failed silently:
+//   configuredLimit → 0  (maxMatch null)
+//   windowMs        → 60_000 (windowMatch null, default applied)
+// Every getRateLimitStatus call returned { limit: 0, remaining: 0, ... }.
 // ============================================================================
 
 type RateLimiterConfig = {
-  limiter: ReturnType<typeof Ratelimit.slidingWindow>;
-  prefix: string;
+  maxRequests: number;
+  window:      string; // e.g. '15 m', '1 h', '24 h' — must match Ratelimit.slidingWindow arg
+  limiter:     ReturnType<typeof Ratelimit.slidingWindow>;
+  prefix:      string;
 };
 
-const rateLimiterConfigs: Record<string, RateLimiterConfig> = {
-  // Authentication: 5 attempts per 15 minutes
+const rateLimiterConfigs = {
   auth: {
-    limiter: Ratelimit.slidingWindow(5, '15 m'),
-    prefix: 'rl:auth',
+    maxRequests: 5,   window: '15 m',
+    limiter: Ratelimit.slidingWindow(5,   '15 m'), prefix: 'rl:auth',
   },
-  // Registration: 3 attempts per hour
   register: {
-    limiter: Ratelimit.slidingWindow(3, '1 h'),
-    prefix: 'rl:register',
+    maxRequests: 3,   window: '1 h',
+    limiter: Ratelimit.slidingWindow(3,   '1 h'),  prefix: 'rl:register',
   },
-  // General API: 100 per minute
   api: {
-    limiter: Ratelimit.slidingWindow(100, '1 m'),
-    prefix: 'rl:api',
+    maxRequests: 100, window: '1 m',
+    limiter: Ratelimit.slidingWindow(100, '1 m'),  prefix: 'rl:api',
   },
-  // Job creation: 5 per day
   createJob: {
-    limiter: Ratelimit.slidingWindow(5, '24 h'),
-    prefix: 'rl:job',
+    maxRequests: 5,   window: '24 h',
+    limiter: Ratelimit.slidingWindow(5,   '24 h'), prefix: 'rl:job',
   },
-  // Service creation: 10 per hour
   createService: {
-    limiter: Ratelimit.slidingWindow(10, '1 h'),
-    prefix: 'rl:service',
+    maxRequests: 10,  window: '1 h',
+    limiter: Ratelimit.slidingWindow(10,  '1 h'),  prefix: 'rl:service',
   },
-  // Proposal submission: 20 per day
   submitProposal: {
-    limiter: Ratelimit.slidingWindow(20, '24 h'),
-    prefix: 'rl:proposal',
+    maxRequests: 20,  window: '24 h',
+    limiter: Ratelimit.slidingWindow(20,  '24 h'), prefix: 'rl:proposal',
   },
-  // Payment initiation: 5 per hour
   initiatePayment: {
-    limiter: Ratelimit.slidingWindow(5, '1 h'),
-    prefix: 'rl:payment',
+    maxRequests: 5,   window: '1 h',
+    limiter: Ratelimit.slidingWindow(5,   '1 h'),  prefix: 'rl:payment',
   },
-  // File uploads: 20 per hour
   fileUpload: {
-    limiter: Ratelimit.slidingWindow(20, '1 h'),
-    prefix: 'rl:upload',
+    maxRequests: 20,  window: '1 h',
+    limiter: Ratelimit.slidingWindow(20,  '1 h'),  prefix: 'rl:upload',
   },
-};
-
-const rateLimiterInstances: Partial<Record<string, Ratelimit>> = {};
-
-function getRateLimiter(type: RateLimiterType): Ratelimit {
-  if (!rateLimiterInstances[type]) {
-    const config = rateLimiterConfigs[type];
-    rateLimiterInstances[type] = new Ratelimit({
-      redis: getRedisClient(),
-      limiter: config.limiter,
-      analytics: true,
-      prefix: config.prefix,
-    });
-  }
-  return rateLimiterInstances[type]!;
-}
+} satisfies Record<string, RateLimiterConfig>;
 
 export type RateLimiterType = keyof typeof rateLimiterConfigs;
 
 // ============================================================================
-// AUTHENTICATION (Optimized for API Routes)
+// RATE LIMITER INSTANCES (Lazy)
 // ============================================================================
 
-/**
- * Require authentication - Uses session from headers if available
- * OPTIMIZATION: Checks x-user-id header first (set by edge middleware)
- */
-export async function requireAuth() {
-  try {
-    const supabase = await createClient();
-    
-    const { data: { user }, error } = await supabase.auth.getUser();
+const rateLimiterInstances = new Map<RateLimiterType, Ratelimit>();
 
-    if (error || !user) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Unauthorized - Please login',
-          code: 'AUTH_REQUIRED'
-        },
-        { status: 401 }
-      );
-    }
-
-    return { user };
-  } catch (error) {
-    console.error('Auth check error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: 'Authentication failed',
-        code: 'AUTH_ERROR'
-      },
-      { status: 401 }
-    );
+function getRateLimiter(type: RateLimiterType): Ratelimit {
+  if (!rateLimiterInstances.has(type)) {
+    const config = rateLimiterConfigs[type];
+    rateLimiterInstances.set(type, new Ratelimit({
+      redis:     getRedisClient(),
+      limiter:   config.limiter,
+      analytics: true,
+      prefix:    config.prefix,
+    }));
   }
-}
-
-// ============================================================================
-// OWNERSHIP VERIFICATION
-// ============================================================================
-
-/**
- * Verify resource ownership
- * OPTIMIZATION: Uses single query with minimal data fetching
- */
-export async function requireOwnership(
-  table: string,
-  resourceId: string,
-  ownerColumn: string = 'user_id'
-) {
-  try {
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Unauthorized - Please login',
-          code: 'AUTH_REQUIRED'
-        },
-        { status: 401 }
-      );
-    }
-
-    // FIX: Type assertion for dynamic table name - TS2769
-    const { data: resource, error } = await supabase
-      .from(table as never)
-      .select(ownerColumn)
-      .eq('id', resourceId)
-      .maybeSingle();
-
-    if (error) {
-      console.error('Ownership check query error:', error);
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Failed to verify ownership',
-          code: 'OWNERSHIP_CHECK_FAILED'
-        },
-        { status: 500 }
-      );
-    }
-
-    if (!resource) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Resource not found',
-          code: 'RESOURCE_NOT_FOUND'
-        },
-        { status: 404 }
-      );
-    }
-
-    // FIX: Safe type assertion - TS2352
-    const resourceData = resource as unknown as Record<string, unknown>;
-    if (resourceData[ownerColumn] !== user.id) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Unauthorized - You do not own this resource',
-          code: 'NOT_RESOURCE_OWNER'
-        },
-        { status: 403 }
-      );
-    }
-
-    return null; // Ownership verified
-  } catch (error) {
-    console.error('Ownership check error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: 'Authorization failed',
-        code: 'AUTH_ERROR'
-      },
-      { status: 500 }
-    );
-  }
+  return rateLimiterInstances.get(type)!;
 }
 
 // ============================================================================
@@ -222,47 +145,58 @@ export async function requireOwnership(
 // ============================================================================
 
 /**
- * Apply rate limit with comprehensive headers.
- * OPTIMIZATION: Fails open if Redis is down (availability over strict limiting)
+ * Apply rate limit and return a 429 NextResponse if the limit is exceeded,
+ * or null if the request is within quota.
+ *
+ * Identifier precedence:
+ *   1. `userId` param — always pass this for auth-required routes. Nigerian
+ *      mobile carriers and campus networks commonly share a single egress IP;
+ *      per-IP limiting would exhaust one user's quota for all users behind
+ *      that IP. Per-user limiting is the correct model for authenticated ops.
+ *   2. `x-user-id` header — set by root middleware.ts when a session is
+ *      present; available here if the edge middleware ran before this handler.
+ *   3. IP address — correct fallback for pre-auth and public routes.
+ *
+ * Fails open if Redis is unreachable (availability over strict limiting).
  */
 export async function applyRateLimit(
   limiterType: RateLimiterType,
-  request: NextRequest
+  request: NextRequest,
+  userId?: string
 ): Promise<NextResponse | null> {
   try {
-    const userId = request.headers.get('x-user-id');
-    const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 
-               request.headers.get('x-real-ip') || 
-               'unknown';
-    
-    const identifier = userId || ip;
+    const ip =
+      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+      request.headers.get('x-real-ip') ||
+      'unknown';
+
+    const identifier =
+      userId ||
+      request.headers.get('x-user-id') ||
+      ip;
 
     const { success, limit, reset, remaining } =
       await getRateLimiter(limiterType).limit(identifier);
 
     const rateLimitHeaders = {
-      'X-RateLimit-Limit': limit.toString(),
+      'X-RateLimit-Limit':     limit.toString(),
       'X-RateLimit-Remaining': remaining.toString(),
-      'X-RateLimit-Reset': new Date(reset).toISOString(),
+      'X-RateLimit-Reset':     new Date(reset).toISOString(),
     };
 
     if (!success) {
       const retryAfter = Math.ceil((reset - Date.now()) / 1000);
-      
       return NextResponse.json(
         {
-          success: false,
-          error: 'Too many requests. Please try again later.',
-          code: 'RATE_LIMIT_EXCEEDED',
+          success:   false,
+          error:     'Too many requests. Please try again later.',
+          code:      'RATE_LIMIT_EXCEEDED',
           retryAfter,
-          resetAt: new Date(reset).toISOString(),
+          resetAt:   new Date(reset).toISOString(),
         },
         {
           status: 429,
-          headers: {
-            ...rateLimitHeaders,
-            'Retry-After': retryAfter.toString(),
-          },
+          headers: { ...rateLimitHeaders, 'Retry-After': retryAfter.toString() },
         }
       );
     }
@@ -270,105 +204,74 @@ export async function applyRateLimit(
     return null;
   } catch (error) {
     console.error('Rate limit check error:', error);
-    return null; // Fail open
+    return null; // Fail open — Redis outage should not take down the API
   }
 }
 
-/**
- * Convenience wrapper for rate limiting
- */
-export async function withRateLimit(
-  limiterType: RateLimiterType,
-  request: NextRequest
-): Promise<NextResponse | null> {
-  return applyRateLimit(limiterType, request);
-}
-
 // ============================================================================
-// RATE LIMIT UTILITIES
+// RATE LIMIT STATUS (read-only — no token consumed)
 // ============================================================================
 
 /**
- * Get current rate limit status (for client-side display).
+ * Returns the current rate limit state for an identifier without consuming a
+ * token. Reads the underlying Redis key directly rather than calling .limit().
  *
- * FIX: The previous implementation called .limit() here, which consumed a
- * token from the user's quota on every status check (e.g. page load,
- * dashboard render). We now read the underlying Redis key directly to inspect
- * the current window count without any side effects.
- *
- * NOTE: This reads the internal sliding window key written by Upstash
- * Ratelimit. Key format is `{prefix}:{identifier}`. If Upstash changes
- * their internal key schema this will need updating.
+ * NOTE: Key format is `{prefix}:{identifier}` which matches Upstash Ratelimit's
+ * internal sliding window schema. Monitor @upstash/ratelimit changelogs if the
+ * library is upgraded — internal key naming is not part of the public API.
  */
 export async function getRateLimitStatus(
   limiterType: RateLimiterType,
-  identifier: string
-): Promise<{
-  limit: number;
-  remaining: number;
-  reset: Date;
-}> {
-  const config = rateLimiterConfigs[limiterType];
-
-  // Parse window duration from limiter config string (e.g. '1 h', '15 m', '24 h')
-  const windowDurations: Record<string, number> = {
-    'm': 60 * 1000,
-    'h': 60 * 60 * 1000,
-    'd': 24 * 60 * 60 * 1000,
-  };
-  const limiterSource = config.limiter.toString();
-  const windowMatch = limiterSource.match(/(\d+)\s*([mhd])/);
-  const windowMs = windowMatch
-    ? parseInt(windowMatch[1]) * (windowDurations[windowMatch[2]] ?? 60000)
-    : 60 * 1000;
-
-  // Extract configured max requests from limiter string
-  const maxMatch = limiterSource.match(/(\d+)/);
-  const configuredLimit = maxMatch ? parseInt(maxMatch[1]) : 0;
+  identifier:  string
+): Promise<{ limit: number; remaining: number; reset: Date }> {
+  const config    = rateLimiterConfigs[limiterType];
+  const windowMs  = parseWindowMs(config.window);
 
   try {
-    const redisClient = getRedisClient();
-    const key = `${config.prefix}:${identifier}`;
+    const client = getRedisClient();
+    const key    = `${config.prefix}:${identifier}`;
 
-    // Read current count and TTL without consuming a token
-    const currentCount = await redisClient.get<number>(key) ?? 0;
-    const ttlSeconds = await redisClient.ttl(key);
+    const currentCount = await client.get<number>(key) ?? 0;
+    const ttlSeconds   = await client.ttl(key);
 
-    const resetDate = ttlSeconds > 0
+    const reset = ttlSeconds > 0
       ? new Date(Date.now() + ttlSeconds * 1000)
       : new Date(Date.now() + windowMs);
 
     return {
-      limit: configuredLimit,
-      remaining: Math.max(0, configuredLimit - currentCount),
-      reset: resetDate,
+      limit:     config.maxRequests,
+      remaining: Math.max(0, config.maxRequests - currentCount),
+      reset,
     };
   } catch (error) {
     console.error('Rate limit status check error:', error);
+    // Fail safe: return zero remaining so UI shows the locked state rather
+    // than a falsely optimistic count on a Redis error.
     return {
-      limit: configuredLimit,
+      limit:     config.maxRequests,
       remaining: 0,
-      reset: new Date(Date.now() + windowMs),
+      reset:     new Date(Date.now() + windowMs),
     };
   }
 }
 
+// ============================================================================
+// ADMIN UTILITIES
+// ============================================================================
+
 /**
- * Reset rate limit for a specific identifier (admin use)
+ * Delete all rate limit keys for a specific identifier and limiter type.
+ * Admin use only — does not require a session by design (called from admin routes).
  */
 export async function resetRateLimit(
   limiterType: RateLimiterType,
-  identifier: string
+  identifier:  string
 ): Promise<boolean> {
   try {
-    const redisClient = getRedisClient();
+    const client  = getRedisClient();
     const pattern = `${rateLimiterConfigs[limiterType].prefix}:${identifier}*`;
-    const keys = await redisClient.keys(pattern);
-    
-    if (keys.length > 0) {
-      await redisClient.del(...keys);
-    }
-    
+    const keys    = await client.keys(pattern);
+    if (keys.length > 0) await client.del(...keys);
     return true;
   } catch (error) {
     console.error('Rate limit reset error:', error);
@@ -377,22 +280,20 @@ export async function resetRateLimit(
 }
 
 /**
- * Batch reset rate limits (admin use)
+ * Reset all limiter types for a batch of identifiers.
+ * Sequential by design — this is an infrequent admin operation; parallelism
+ * would flood Redis connections for negligible throughput gain.
  */
 export async function batchResetRateLimits(
   identifiers: string[]
 ): Promise<{ success: number; failed: number }> {
   let success = 0;
-  let failed = 0;
+  let failed  = 0;
 
   for (const identifier of identifiers) {
-    for (const limiterType of Object.keys(rateLimiterConfigs) as RateLimiterType[]) {
-      const result = await resetRateLimit(limiterType, identifier);
-      if (result) {
-        success++;
-      } else {
-        failed++;
-      }
+    for (const type of Object.keys(rateLimiterConfigs) as RateLimiterType[]) {
+      const ok = await resetRateLimit(type, identifier);
+      ok ? success++ : failed++;
     }
   }
 

@@ -1,14 +1,19 @@
 // src/components/verification/LivenessCapture.tsx
-/**
- * ✅ PRODUCTION-READY: Liveness Capture with Error Recovery & Timeout
- * 
- * IMPROVEMENTS:
- * - Added processing timeout (60s max)
- * - Added retry mechanism for MediaPipe initialization
- * - Better error messages
- * - Graceful degradation for camera access denial
- * - No payment references
- */
+//
+// FIXES applied:
+//  1. Export VerificationResult interface — consumed by LivenessVerificationCard
+//     to POST real face metrics to the submit API.
+//  2. LivenessCaptureProps.onSuccess now accepts VerificationResult instead
+//     of (videoId, challenges) — so all necessary API fields travel together.
+//  3. faceConfidence was hardcoded to 0.9. The submit route rejects < 0.7,
+//     but the hardcode meant the gate was permanently bypassed regardless
+//     of actual detection quality. Confidence is now derived from landmark
+//     coverage: FaceLandmarker returns up to 478 landmarks; we scale
+//     min((count/478)*0.95 + 0.05, 1.0) giving ~1.0 for a full face and
+//     proportionally less for partial detections.
+//  4. saveVerification now passes a full VerificationResult to onSuccess.
+//  5. leftIcon prop on Button (doesn't exist in shadcn Button) fixed to
+//     inline JSX pattern throughout the error UI.
 
 'use client';
 
@@ -22,7 +27,9 @@ import { Camera, X, CheckCircle, AlertCircle, Loader2, RotateCcw } from 'lucide-
 import { v4 as uuidv4 } from 'uuid';
 import type { FaceLandmarkerResult, NormalizedLandmark } from '@mediapipe/tasks-vision';
 
-interface Challenge {
+// ── Public types ─────────────────────────────────────────────────────────────
+
+export interface Challenge {
   type: ChallengeType;
   direction?: 'left' | 'right' | 'up' | 'down';
   count?: number;
@@ -31,63 +38,84 @@ interface Challenge {
   instruction: string;
 }
 
-interface LivenessCaptureProps {
-  onSuccess: (videoId: string, challenges: Challenge[]) => void;
-  onCancel: () => void;
+/**
+ * Passed to onSuccess so the coordinator (LivenessVerificationCard) has
+ * everything it needs to call /api/verification/liveness/submit without
+ * reading from IndexedDB.
+ */
+export interface VerificationResult {
+  videoId:             string;
+  challenges:          Challenge[];
+  faceDetected:        boolean;
+  allChallengesPassed: boolean;
+  faceConfidence:      number;
+  timestamp:           number;
 }
 
-// Constants
-const MAX_RETRY_ATTEMPTS = 3;
-const PROCESSING_TIMEOUT = 60000; // 60 seconds
-const MEDIAPIPE_INIT_TIMEOUT = 15000; // 15 seconds
+// ── Component props ───────────────────────────────────────────────────────────
+
+interface LivenessCaptureProps {
+  onSuccess: (result: VerificationResult) => void;
+  onCancel:  () => void;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const MAX_RETRY_ATTEMPTS   = 3;
+const PROCESSING_TIMEOUT   = 60_000; // ms
+const MEDIAPIPE_INIT_TIMEOUT = 15_000; // ms
+// Maximum landmarks FaceLandmarker returns for a single face.
+// Used to compute a meaningful confidence score from landmark coverage.
+const FACE_LANDMARKS_TOTAL = 478;
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
-  // Refs
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
-  const faceDetectorRef = useRef<FaceDetector | null>(null);
-  const challengeValidatorRef = useRef<ChallengeValidator | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
-  const processingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // ── Refs ────────────────────────────────────────────────────────────────────
+  const videoRef               = useRef<HTMLVideoElement>(null);
+  const canvasRef              = useRef<HTMLCanvasElement>(null);
+  const streamRef              = useRef<MediaStream | null>(null);
+  const mediaRecorderRef       = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef      = useRef<Blob[]>([]);
+  const faceDetectorRef        = useRef<FaceDetector | null>(null);
+  const challengeValidatorRef  = useRef<ChallengeValidator | null>(null);
+  const animationFrameRef      = useRef<number | null>(null);
+  const processingTimeoutRef   = useRef<NodeJS.Timeout | null>(null);
 
-  // State
-  const [isInitializing, setIsInitializing] = useState(true);
-  const [initRetryCount, setInitRetryCount] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [errorType, setErrorType] = useState<'camera' | 'mediapipe' | 'general' | null>(null);
-  const [faceDetected, setFaceDetected] = useState(false);
-  const [faceConfidence, setFaceConfidence] = useState(0);
-  const [challenges, setChallenges] = useState<Challenge[]>([]);
+  // ── State ───────────────────────────────────────────────────────────────────
+  const [isInitializing,   setIsInitializing]   = useState(true);
+  const [initRetryCount,   setInitRetryCount]   = useState(0);
+  const [error,            setError]            = useState<string | null>(null);
+  const [errorType,        setErrorType]        = useState<'camera' | 'mediapipe' | 'general' | null>(null);
+  const [faceDetected,     setFaceDetected]     = useState(false);
+  const [faceConfidence,   setFaceConfidence]   = useState(0);
+  const [challenges,       setChallenges]       = useState<Challenge[]>([]);
   const [currentChallengeIndex, setCurrentChallengeIndex] = useState(0);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [isRecording,      setIsRecording]      = useState(false);
+  const [isProcessing,     setIsProcessing]     = useState(false);
 
-  /**
-   * Generate random challenges
-   */
+  // ── Challenge generation ─────────────────────────────────────────────────
+
   const generateChallenges = useCallback((): Challenge[] => {
     const allChallenges: Challenge[] = [
       {
-        type: 'head_turn',
-        direction: Math.random() > 0.5 ? 'left' : 'right',
-        completed: false,
-        progress: 0,
-        instruction: '',
+        type:        'head_turn',
+        direction:   Math.random() > 0.5 ? 'left' : 'right',
+        completed:   false,
+        progress:    0,
+        instruction: '', // filled below
       },
       {
-        type: 'blink',
-        count: 2,
-        completed: false,
-        progress: 0,
+        type:        'blink',
+        count:       2,
+        completed:   false,
+        progress:    0,
         instruction: 'Blink 2 times',
       },
       {
-        type: 'smile',
-        completed: false,
-        progress: 0,
+        type:        'smile',
+        completed:   false,
+        progress:    0,
         instruction: 'Smile for the camera',
       },
     ];
@@ -96,56 +124,51 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     return allChallenges.sort(() => Math.random() - 0.5);
   }, []);
 
-  /**
-   * Initialize MediaPipe with retry logic
-   */
+  // ── MediaPipe init with retry ─────────────────────────────────────────────
+
   const initializeMediaPipe = useCallback(async (): Promise<boolean> => {
     try {
       console.log('🔧 Initializing MediaPipe (attempt', initRetryCount + 1, ')...');
-      
+
       const detector = new FaceDetector();
-      
-      // Add timeout to initialization
+
       const initPromise = detector.initialize();
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('MediaPipe initialization timeout')), MEDIAPIPE_INIT_TIMEOUT);
-      });
-      
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('MediaPipe initialization timeout')), MEDIAPIPE_INIT_TIMEOUT)
+      );
+
       await Promise.race([initPromise, timeoutPromise]);
-      
-      faceDetectorRef.current = detector;
-      challengeValidatorRef.current = new ChallengeValidator();
-      
+
+      faceDetectorRef.current        = detector;
+      challengeValidatorRef.current  = new ChallengeValidator();
+
       console.log('✅ MediaPipe initialized successfully');
       return true;
     } catch (err) {
       console.error('❌ MediaPipe initialization failed:', err);
-      
+
       if (initRetryCount < MAX_RETRY_ATTEMPTS - 1) {
-        setInitRetryCount(prev => prev + 1);
-        // Wait 2 seconds before retry
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        setInitRetryCount((prev) => prev + 1);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
         return initializeMediaPipe();
       }
-      
+
       throw err;
     }
   }, [initRetryCount]);
 
-  /**
-   * Draw face landmarks on canvas
-   */
+  // ── Canvas landmark rendering ─────────────────────────────────────────────
+
   const drawLandmarks = useCallback((landmarks: NormalizedLandmark[]) => {
     if (!canvasRef.current || !videoRef.current) return;
 
     const canvas = canvasRef.current;
-    const video = videoRef.current;
-    const ctx = canvas.getContext('2d');
+    const video  = videoRef.current;
+    const ctx    = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = video.videoWidth;
+    canvas.width  = video.videoWidth;
     canvas.height = video.videoHeight;
-
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     ctx.fillStyle = '#22c55e';
@@ -158,22 +181,21 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     });
 
     if (landmarks.length > 0) {
-      const xs = landmarks.map((l) => l.x * canvas.width);
-      const ys = landmarks.map((l) => l.y * canvas.height);
+      const xs   = landmarks.map((l) => l.x * canvas.width);
+      const ys   = landmarks.map((l) => l.y * canvas.height);
       const minX = Math.min(...xs);
       const maxX = Math.max(...xs);
       const minY = Math.min(...ys);
       const maxY = Math.max(...ys);
 
       ctx.strokeStyle = '#22c55e';
-      ctx.lineWidth = 3;
+      ctx.lineWidth   = 3;
       ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
     }
   }, []);
 
-  /**
-   * Finish verification
-   */
+  // ── Finish recording ──────────────────────────────────────────────────────
+
   const finishVerification = useCallback(() => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
@@ -181,68 +203,71 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     }
   }, [isRecording]);
 
-  /**
-   * Validate current challenge
-   */
-  const validateCurrentChallenge = useCallback((landmarks: NormalizedLandmark[]) => {
-    if (!challengeValidatorRef.current) return;
+  // ── Challenge validation per frame ────────────────────────────────────────
 
-    const currentChallenge = challenges[currentChallengeIndex];
-    if (!currentChallenge || currentChallenge.completed) return;
+  const validateCurrentChallenge = useCallback(
+    (landmarks: NormalizedLandmark[]) => {
+      if (!challengeValidatorRef.current) return;
 
-    let result: { passed: boolean; confidence: number } | null = null;
+      const currentChallenge = challenges[currentChallengeIndex];
+      if (!currentChallenge || currentChallenge.completed) return;
 
-    switch (currentChallenge.type) {
-      case 'head_turn':
-        result = challengeValidatorRef.current.validateHeadTurn(
-          landmarks,
-          currentChallenge.direction as 'left' | 'right'
-        );
-        break;
-      case 'blink':
-        result = challengeValidatorRef.current.validateBlink(
-          landmarks,
-          currentChallenge.count || 2
-        );
-        break;
-      case 'smile':
-        result = challengeValidatorRef.current.validateSmile(landmarks);
-        break;
-      case 'head_nod':
-        result = challengeValidatorRef.current.validateHeadNod(landmarks);
-        break;
-    }
+      let result: { passed: boolean; confidence: number } | null = null;
 
-    if (result) {
-      setChallenges((prev) =>
-        prev.map((c, i) =>
-          i === currentChallengeIndex
-            ? { ...c, progress: Math.min(result!.confidence, 1) }
-            : c
-        )
-      );
+      switch (currentChallenge.type) {
+        case 'head_turn':
+          result = challengeValidatorRef.current.validateHeadTurn(
+            landmarks,
+            currentChallenge.direction as 'left' | 'right'
+          );
+          break;
+        case 'blink':
+          result = challengeValidatorRef.current.validateBlink(
+            landmarks,
+            currentChallenge.count ?? 2
+          );
+          break;
+        case 'smile':
+          result = challengeValidatorRef.current.validateSmile(landmarks);
+          break;
+        case 'head_nod':
+          result = challengeValidatorRef.current.validateHeadNod(landmarks);
+          break;
+      }
 
-      if (result.passed && result.confidence >= 0.8) {
+      if (result) {
         setChallenges((prev) =>
           prev.map((c, i) =>
-            i === currentChallengeIndex ? { ...c, completed: true, progress: 1 } : c
+            i === currentChallengeIndex
+              ? { ...c, progress: Math.min(result!.confidence, 1) }
+              : c
           )
         );
 
-        setTimeout(() => {
-          if (currentChallengeIndex + 1 < challenges.length) {
-            setCurrentChallengeIndex((prev) => prev + 1);
-          } else {
-            finishVerification();
-          }
-        }, 500);
-      }
-    }
-  }, [challenges, currentChallengeIndex, finishVerification]);
+        if (result.passed && result.confidence >= 0.8) {
+          setChallenges((prev) =>
+            prev.map((c, i) =>
+              i === currentChallengeIndex
+                ? { ...c, completed: true, progress: 1 }
+                : c
+            )
+          );
 
-  /**
-   * Start face detection loop
-   */
+          setTimeout(() => {
+            if (currentChallengeIndex + 1 < challenges.length) {
+              setCurrentChallengeIndex((prev) => prev + 1);
+            } else {
+              finishVerification();
+            }
+          }, 500);
+        }
+      }
+    },
+    [challenges, currentChallengeIndex, finishVerification]
+  );
+
+  // ── Detection loop ────────────────────────────────────────────────────────
+
   const startDetectionLoop = useCallback(() => {
     const detect = async () => {
       if (!videoRef.current || !faceDetectorRef.current) {
@@ -251,15 +276,24 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       }
 
       try {
-        const result: FaceLandmarkerResult | null = await faceDetectorRef.current.detectFace(
-          videoRef.current
-        );
+        const result: FaceLandmarkerResult | null =
+          await faceDetectorRef.current.detectFace(videoRef.current);
 
-        if (result && result.faceLandmarks && result.faceLandmarks.length > 0) {
+        if (result?.faceLandmarks?.length) {
           const landmarks = result.faceLandmarks[0];
-          
+
           setFaceDetected(true);
-          const confidence = landmarks.length > 0 ? 0.9 : 0;
+
+          // ── FIX: realistic confidence from landmark coverage ──────────
+          // FaceLandmarker emits up to FACE_LANDMARKS_TOTAL (478) per face.
+          // Scale: full detection ≈ 1.0, proportionally less for partial.
+          // Capped at 1.0; minimum 0.05 when at least 1 landmark is found.
+          // The submit route's gate is faceConfidence >= 0.7, which requires
+          // roughly 280+ landmarks — enforcing a real detection threshold.
+          const confidence = Math.min(
+            (landmarks.length / FACE_LANDMARKS_TOTAL) * 0.95 + 0.05,
+            1.0
+          );
           setFaceConfidence(confidence);
 
           drawLandmarks(landmarks);
@@ -270,12 +304,10 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
         } else {
           setFaceDetected(false);
           setFaceConfidence(0);
-          
+
           if (canvasRef.current) {
             const ctx = canvasRef.current.getContext('2d');
-            if (ctx) {
-              ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-            }
+            ctx?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
           }
         }
       } catch (err) {
@@ -288,107 +320,93 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     detect();
   }, [isRecording, currentChallengeIndex, challenges.length, drawLandmarks, validateCurrentChallenge]);
 
-  /**
-   * Save verification with timeout
-   */
+  // ── Save to IndexedDB and invoke onSuccess ────────────────────────────────
+
   const saveVerification = useCallback(async () => {
     setIsProcessing(true);
 
-    // Set processing timeout
     processingTimeoutRef.current = setTimeout(() => {
       setError('Processing timed out. Please try again.');
       setIsProcessing(false);
     }, PROCESSING_TIMEOUT);
 
     try {
-      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-      const videoId = uuidv4();
+      const blob               = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+      const videoId            = uuidv4();
       const allChallengesPassed = challenges.every((c) => c.completed);
 
+      // Capture the current confidence snapshot (state value at save time).
+      // Because this callback closes over faceConfidence from the render
+      // where finishVerification ran, it reflects the last real detection.
+      const snapshotConfidence = faceConfidence;
+
       await livenessDB.saveVideo({
-        id: videoId,
+        id:         videoId,
         blob,
-        timestamp: Date.now(),
+        timestamp:  Date.now(),
         challenges: challenges.map((c) => ({
-          type: c.type,
+          type:      c.type,
           direction: c.direction,
-          count: c.count,
+          count:     c.count,
         })),
         metadata: {
-          faceDetected: true,
-          faceConfidence,
+          faceDetected:        true,
+          faceConfidence:      snapshotConfidence,
           allChallengesPassed,
         },
       });
 
-      // Clear timeout
       if (processingTimeoutRef.current) {
         clearTimeout(processingTimeoutRef.current);
       }
 
-      onSuccess(videoId, challenges);
+      // ── FIX: pass full VerificationResult — coordinator needs all fields ──
+      onSuccess({
+        videoId,
+        challenges,
+        faceDetected:        true,
+        allChallengesPassed,
+        faceConfidence:      snapshotConfidence,
+        timestamp:           Date.now(),
+      });
     } catch (err) {
       console.error('❌ Save error:', err);
-      
-      // Clear timeout
+
       if (processingTimeoutRef.current) {
         clearTimeout(processingTimeoutRef.current);
       }
-      
+
       setError('Failed to save verification. Please try again.');
       setIsProcessing(false);
     }
   }, [challenges, faceConfidence, onSuccess]);
 
-  /**
-   * Cleanup resources
-   */
+  // ── Cleanup ───────────────────────────────────────────────────────────────
+
   const cleanup = useCallback(() => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-
-    if (processingTimeoutRef.current) {
-      clearTimeout(processingTimeoutRef.current);
-    }
-
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-    }
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-    }
-
-    if (faceDetectorRef.current) {
-      faceDetectorRef.current.destroy();
-    }
+    if (animationFrameRef.current)  cancelAnimationFrame(animationFrameRef.current);
+    if (processingTimeoutRef.current) clearTimeout(processingTimeoutRef.current);
+    if (mediaRecorderRef.current && isRecording) mediaRecorderRef.current.stop();
+    if (streamRef.current)          streamRef.current.getTracks().forEach((t) => t.stop());
+    if (faceDetectorRef.current)    faceDetectorRef.current.destroy();
   }, [isRecording]);
 
-  /**
-   * Initialize camera and face detector
-   */
+  // ── Initialization effect ─────────────────────────────────────────────────
+
   useEffect(() => {
     let mounted = true;
 
     async function initialize() {
       try {
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 1. Request Camera Access
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         console.log('🎥 Requesting camera access...');
 
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: 'user',
-          },
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
           audio: false,
         });
 
         if (!mounted) {
-          stream.getTracks().forEach((track) => track.stop());
+          stream.getTracks().forEach((t) => t.stop());
           return;
         }
 
@@ -400,41 +418,34 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           console.log('✅ Video stream started');
         }
 
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 2. Initialize MediaPipe
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        const mediapipeSuccess = await initializeMediaPipe();
-        
-        if (!mediapipeSuccess) {
-          throw new Error('Failed to initialize face detection');
-        }
+        await initializeMediaPipe();
 
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 3. Generate Challenges
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         const newChallenges = generateChallenges();
         setChallenges(newChallenges);
 
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 4. Cleanup Old Videos
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         await livenessDB.deleteOldVideos(1);
 
         setIsInitializing(false);
         startDetectionLoop();
       } catch (err) {
-        console.error('❌ Initialization error:', err);
-        
         if (!mounted) return;
 
-        // Determine error type
+        console.error('❌ Initialization error:', err);
+
         if (err instanceof Error) {
           if (err.message.includes('Permission denied') || err.name === 'NotAllowedError') {
             setErrorType('camera');
-            setError('Camera access denied. Please allow camera access in your browser settings and refresh the page.');
-          } else if (err.message.includes('MediaPipe') || err.message.includes('timeout')) {
+            setError(
+              'Camera access denied. Please allow camera access in your browser settings and refresh the page.'
+            );
+          } else if (
+            err.message.includes('MediaPipe') ||
+            err.message.includes('timeout')
+          ) {
             setErrorType('mediapipe');
-            setError('Failed to initialize face detection. This might be a network issue. Please check your connection and try again.');
+            setError(
+              'Failed to initialize face detection. This might be a network issue. Please check your connection and try again.'
+            );
           } else {
             setErrorType('general');
             setError('Something went wrong during initialization. Please refresh and try again.');
@@ -443,7 +454,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           setErrorType('general');
           setError('Failed to start verification. Please try again.');
         }
-        
+
         setIsInitializing(false);
       }
     }
@@ -454,11 +465,11 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       mounted = false;
       cleanup();
     };
-  }, [generateChallenges, initializeMediaPipe, startDetectionLoop, cleanup]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  /**
-   * Start verification
-   */
+  // ── Start recording ───────────────────────────────────────────────────────
+
   const startVerification = useCallback(async () => {
     if (!videoRef.current || !streamRef.current || !faceDetected) {
       setError('Please ensure your face is visible in the frame');
@@ -475,9 +486,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
       recordedChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
-        }
+        if (event.data.size > 0) recordedChunksRef.current.push(event.data);
       };
 
       mediaRecorder.onstop = async () => {
@@ -493,9 +502,8 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     }
   }, [faceDetected, saveVerification]);
 
-  /**
-   * Retry initialization
-   */
+  // ── Retry ─────────────────────────────────────────────────────────────────
+
   const handleRetry = useCallback(() => {
     setError(null);
     setErrorType(null);
@@ -504,26 +512,32 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     window.location.reload();
   }, []);
 
-  // Error UI
+  // ── Error UI ──────────────────────────────────────────────────────────────
+
   if (error) {
     return (
       <Card className="p-6 text-center">
         <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
         <h3 className="text-lg font-semibold mb-2">
-          {errorType === 'camera' ? 'Camera Access Required' : 
-           errorType === 'mediapipe' ? 'Initialization Failed' : 
-           'Something Went Wrong'}
+          {errorType === 'camera'
+            ? 'Camera Access Required'
+            : errorType === 'mediapipe'
+            ? 'Initialization Failed'
+            : 'Something Went Wrong'}
         </h3>
         <p className="text-sm text-gray-600 mb-4">{error}</p>
+
+        {/* FIX: leftIcon prop does not exist on Button — icon inlined as child */}
         <div className="flex gap-2 justify-center">
-          <Button onClick={handleRetry} leftIcon={<RotateCcw className="w-4 h-4" />}>
+          <Button onClick={handleRetry}>
+            <RotateCcw className="w-4 h-4 mr-2" />
             Retry
           </Button>
           <Button variant="outline" onClick={onCancel}>
             Cancel
           </Button>
         </div>
-        
+
         {errorType === 'camera' && (
           <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-left">
             <p className="font-semibold mb-2">How to enable camera:</p>
@@ -538,7 +552,8 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
     );
   }
 
-  // Main UI
+  // ── Main UI ───────────────────────────────────────────────────────────────
+
   return (
     <Card className="p-6">
       <div className="relative mb-6 bg-black rounded-lg overflow-hidden aspect-video">
@@ -554,6 +569,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           className="absolute inset-0 w-full h-full pointer-events-none"
         />
 
+        {/* Face detection indicator */}
         <div className="absolute top-4 right-4 z-10">
           {faceDetected ? (
             <div className="bg-green-500 text-white px-3 py-1.5 rounded-full text-sm flex items-center gap-2 shadow-lg">
@@ -568,6 +584,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           )}
         </div>
 
+        {/* Active challenge instruction */}
         {isRecording && currentChallengeIndex < challenges.length && (
           <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10 w-11/12 max-w-md">
             <div className="bg-white/95 backdrop-blur-sm px-6 py-4 rounded-xl shadow-xl">
@@ -586,6 +603,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
           </div>
         )}
 
+        {/* Processing overlay */}
         {isProcessing && (
           <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
             <div className="text-center text-white">
@@ -597,6 +615,7 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
         )}
       </div>
 
+      {/* Challenge progress bar */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
           <p className="text-sm font-medium text-gray-700">
@@ -630,20 +649,20 @@ export function LivenessCapture({ onSuccess, onCancel }: LivenessCaptureProps) {
         </div>
       </div>
 
+      {/* Instructions panel (shown before recording) */}
       {!isRecording && !isInitializing && (
         <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <p className="text-sm text-blue-800 font-medium mb-2">
-            📋 Verification Instructions:
-          </p>
+          <p className="text-sm text-blue-800 font-medium mb-2">📋 Verification Instructions:</p>
           <ul className="text-sm text-blue-700 space-y-1">
             <li>• Make sure your face is clearly visible</li>
             <li>• Ensure good lighting</li>
             <li>• Follow each challenge instruction carefully</li>
-            <li>• This is 100% free - no payment required</li>
+            <li>• This is 100% free — no payment required</li>
           </ul>
         </div>
       )}
 
+      {/* Action buttons */}
       <div className="flex gap-3">
         {!isRecording && !isProcessing && (
           <>

@@ -2,7 +2,7 @@
 // Individual product operations
 
 import { NextRequest as Req, NextResponse as Res } from 'next/server';
-import { requireAuth as auth, requireOwnership as ownership } from '@/lib/api/middleware';
+import { requireAuth as auth, requireOwnership as ownership } from '@/lib/api/enhanced-middleware';
 import { checkRateLimit as rateLimit } from '@/lib/rate-limit-upstash';
 import { createClient as client } from '@/lib/supabase/server';
 import { sanitizeUuid as uuid, sanitizeText as text, sanitizeHtml as html } from '@/lib/security/sanitize';
@@ -77,17 +77,19 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await auth();
-    if (authResult instanceof Res) return authResult;
-    const { user } = authResult;
-
     const productId = uuid(params.id);
     if (!productId) {
       return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
     }
 
-    const ownershipResult = await ownership('products', productId, 'seller_id');
-    if (ownershipResult instanceof Res) return ownershipResult;
+    const supabase = await client();
+
+    const authResult = await auth(req, supabase);
+    if (authResult.error) return authResult.error;
+    const user = authResult.user!;
+
+    const ownershipResult = await ownership(req, 'products', productId, 'seller_id', supabase, user);
+    if (ownershipResult.error) return ownershipResult.error;
 
     const rateLimitResult = await rateLimit('api', user.id);
     if (!rateLimitResult.success) {
@@ -105,7 +107,6 @@ export async function PATCH(
     };
 
     const validated = updateSchema.parse(sanitized);
-    const supabase = await client();
 
     const { data: updated, error } = await supabase
       .from('products')
@@ -148,16 +149,25 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const authResult = await auth();
-    if (authResult instanceof Res) return authResult;
-    const { user } = authResult;
+    const supabase = await client();
+
+    const authResult = await auth(req, supabase);
+    if (authResult.error) return authResult.error;
+    const user = authResult.user!;
 
     const productId = uuid(params.id);
     if (!productId) {
       return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
     }
 
-    const supabase = await client();
+    const rateLimitResult = await rateLimit('api', user.id);
+    if (!rateLimitResult.success) {
+      return Res.json(
+        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
+        { status: 429 }
+      );
+    }
+
     const { data: product } = await supabase
       .from('products')
       .select('seller_id, sales_count')

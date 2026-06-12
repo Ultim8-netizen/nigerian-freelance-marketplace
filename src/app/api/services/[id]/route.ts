@@ -1,8 +1,12 @@
 // src/app/api/services/[id]/route.ts
-// PRODUCTION-READY: Individual service operations with full security
+// MERGED:
+// 1. Async params — Next.js 15 requires `await params` on all handlers.
+// 2. PATCH/DELETE now use applyMiddleware for auth + rate limiting.
+// 3. Fire-and-forget view-count increment uses `void` (project standard).
+// 4. Ownership checks retained via requireOwnership (original pattern).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, requireOwnership } from '@/lib/api/middleware';
+import { applyMiddleware, requireOwnership } from '@/lib/api/enhanced-middleware';
 import { checkRateLimit } from '@/lib/rate-limit-upstash';
 import { createClient } from '@/lib/supabase/server';
 import { serviceSchema } from '@/lib/validations';
@@ -10,13 +14,16 @@ import { sanitizeHtml, sanitizeText, sanitizeUuid } from '@/lib/security/sanitiz
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
-// GET - Get service details
+// ─── GET ─────────────────────────────────────────────────────────────────────
+
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
-) {
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
   try {
-    const serviceId = sanitizeUuid(params.id);
+    const { id } = await params;
+
+    const serviceId = sanitizeUuid(id);
     if (!serviceId) {
       return NextResponse.json(
         { success: false, error: 'Invalid service ID' },
@@ -25,7 +32,7 @@ export async function GET(
     }
 
     // Rate limiting for reads (more permissive)
-    const ip = request.headers.get('x-forwarded-for') || 'unknown';
+    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
     const rateLimitResult = await checkRateLimit('api', ip);
     if (!rateLimitResult.success) {
       return NextResponse.json(
@@ -79,11 +86,10 @@ export async function GET(
     const viewsCount = service.views_count ?? 0;
 
     // Increment view count (fire and forget)
-    supabase
+    void supabase
       .from('services')
       .update({ views_count: viewsCount + 1 })
-      .eq('id', serviceId)
-      .then(() => {});
+      .eq('id', serviceId);
 
     logger.info('Service viewed', { serviceId, viewCount: viewsCount + 1 });
 
@@ -100,19 +106,17 @@ export async function GET(
   }
 }
 
-// PATCH - Update service (owner only)
+// ─── PATCH ────────────────────────────────────────────────────────────────────
+
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
-) {
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
   try {
-    // 1. Authentication
-    const authResult = await requireAuth();
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    // 0. Resolve async params and validate service ID
+    const { id } = await params;
 
-    // 2. Validate service ID
-    const serviceId = sanitizeUuid(params.id);
+    const serviceId = sanitizeUuid(id);
     if (!serviceId) {
       return NextResponse.json(
         { success: false, error: 'Invalid service ID' },
@@ -120,24 +124,33 @@ export async function PATCH(
       );
     }
 
-    // 3. Ownership verification
-    const ownershipResult = await requireOwnership(
-      'services',
-      serviceId,
-      'freelancer_id'
-    );
-    if (ownershipResult instanceof NextResponse) return ownershipResult;
+    const supabase = await createClient();
 
-    // 4. Rate limiting
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
+    // 1. Authentication + rate limiting
+    const { user, error: authError } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
+    if (authError) return authError;
+    if (!user) {
       return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
       );
     }
 
-    // 5. Parse and sanitize updates
+    // 2. Ownership verification
+    const ownershipResult = await requireOwnership(
+      request,
+      'services',
+      serviceId,
+      'freelancer_id',
+      supabase,
+      user
+    );
+    if (ownershipResult.error) return ownershipResult.error;
+
+    // 3. Parse and sanitize updates
     const body = await request.json();
 
     const sanitizedBody = {
@@ -146,15 +159,13 @@ export async function PATCH(
       description: body.description ? sanitizeHtml(body.description) : undefined,
       category: body.category ? sanitizeText(body.category) : undefined,
       requirements: body.requirements ? sanitizeHtml(body.requirements) : undefined,
-      tags: body.tags?.map((tag: string) => sanitizeText(tag)) || undefined,
+      tags: body.tags?.map((tag: string) => sanitizeText(tag)) ?? undefined,
     };
 
-    // 6. Validate with partial schema
+    // 4. Validate with partial schema
     const validatedData = serviceSchema.partial().parse(sanitizedBody);
 
-    const supabase = await createClient();
-
-    // 7. Update service
+    // 5. Update service
     const { data: updatedService, error } = await supabase
       .from('services')
       .update({
@@ -180,7 +191,7 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.issues[0]?.message || 'Validation failed' },
+        { success: false, error: error.issues[0]?.message ?? 'Validation failed' },
         { status: 400 }
       );
     }
@@ -193,19 +204,32 @@ export async function PATCH(
   }
 }
 
-// DELETE - Delete service (owner only)
+// ─── DELETE ───────────────────────────────────────────────────────────────────
+
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
-) {
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
   try {
-    // 1. Authentication
-    const authResult = await requireAuth();
-    if (authResult instanceof NextResponse) return authResult;
-    const { user } = authResult;
+    const supabase = await createClient();
 
-    // 2. Validate service ID
-    const serviceId = sanitizeUuid(params.id);
+    // 1. Authentication + rate limiting
+    const { user, error: authError } = await applyMiddleware(request, {
+      auth: 'required',
+      rateLimit: 'api',
+    });
+    if (authError) return authError;
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // 2. Resolve async params and validate service ID
+    const { id } = await params;
+
+    const serviceId = sanitizeUuid(id);
     if (!serviceId) {
       return NextResponse.json(
         { success: false, error: 'Invalid service ID' },
@@ -213,21 +237,21 @@ export async function DELETE(
       );
     }
 
-    // 3. Rate limiting
-    const rateLimitResult = await checkRateLimit('api', user.id);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Too many requests', resetAt: rateLimitResult.reset },
-        { status: 429 }
-      );
-    }
+    // 3. Ownership verification
+    const ownershipResult = await requireOwnership(
+      request,
+      'services',
+      serviceId,
+      'freelancer_id',
+      supabase,
+      user
+    );
+    if (ownershipResult.error) return ownershipResult.error;
 
-    const supabase = await createClient();
-
-    // 4. Verify ownership and get service details
+    // 4. Get orders_count to decide soft vs hard delete
     const { data: service } = await supabase
       .from('services')
-      .select('freelancer_id, orders_count')
+      .select('orders_count')
       .eq('id', serviceId)
       .single();
 
@@ -235,14 +259,6 @@ export async function DELETE(
       return NextResponse.json(
         { success: false, error: 'Service not found' },
         { status: 404 }
-      );
-    }
-
-    if (service.freelancer_id !== user.id) {
-      logger.warn('Unauthorized delete attempt', { serviceId, userId: user.id });
-      return NextResponse.json(
-        { success: false, error: 'You can only delete your own services' },
-        { status: 403 }
       );
     }
 
