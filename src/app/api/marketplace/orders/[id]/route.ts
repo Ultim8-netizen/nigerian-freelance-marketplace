@@ -1,9 +1,17 @@
 // src/app/api/marketplace/orders/[id]/route.ts
 // PRODUCTION-READY: Marketplace order operations with complete CRUD
+//
+// FIX: params is a Promise in Next.js 15 — now typed and awaited in
+//      GET/PATCH/DELETE.
+// FIX: notifications INSERT has no RLS policy permitting it for a
+//      user-scoped client (notifications table has SELECT/UPDATE policies
+//      only — no INSERT policy, so RLS denies by default). All
+//      notification inserts here now use createAdminClient() (service role).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticatedApi } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
@@ -17,14 +25,15 @@ const updateStatusSchema = z.object({
 // GET - Get order details
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const authResult = await authenticatedApi(request);
     if (authResult.error) return authResult.error;
     const user = authResult.user!;
 
-    const orderId = sanitizeUuid(params.id);
+    const { id } = await params;
+    const orderId = sanitizeUuid(id);
     if (!orderId) {
       return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
     }
@@ -60,14 +69,15 @@ export async function GET(
 // PATCH - Update order status (seller only)
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const authResult = await authenticatedApi(request);
     if (authResult.error) return authResult.error;
     const user = authResult.user!;
 
-    const orderId = sanitizeUuid(params.id);
+    const { id } = await params;
+    const orderId = sanitizeUuid(id);
     if (!orderId) {
       return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
     }
@@ -118,7 +128,10 @@ export async function PATCH(
       refunded: 'Your order has been refunded',
     };
 
-    await supabase.from('notifications').insert({
+    // FIX: notifications has no INSERT RLS policy for user-scoped clients.
+    // Use the service-role client so the insert is not silently dropped.
+    const adminClient = createAdminClient();
+    await adminClient.from('notifications').insert({
       user_id: order.buyer_id,
       type: 'order_status_update',
       title: 'Order Update',
@@ -149,14 +162,15 @@ export async function PATCH(
 // DELETE - Cancel order (buyer only, before processing)
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const authResult = await authenticatedApi(request);
     if (authResult.error) return authResult.error;
     const user = authResult.user!;
 
-    const orderId = sanitizeUuid(params.id);
+    const { id } = await params;
+    const orderId = sanitizeUuid(id);
     if (!orderId) {
       return NextResponse.json({ success: false, error: 'Invalid order ID' }, { status: 400 });
     }
@@ -195,8 +209,9 @@ export async function DELETE(
       })
       .eq('id', orderId);
 
-    // Notify seller
-    await supabase.from('notifications').insert({
+    // FIX: notifications has no INSERT RLS policy for user-scoped clients.
+    const adminClient = createAdminClient();
+    await adminClient.from('notifications').insert({
       user_id: order.seller_id,
       type: 'order_cancelled',
       title: 'Order Cancelled',

@@ -3,6 +3,19 @@
 // src/components/marketplace/CreateProductForm.tsx
 // UPDATED: Replaced mock timeout with real Cloudinary image upload + fetch('/api/marketplace/products').
 //          Added restriction state + ContestButton rendering for 403 Trust Gate responses.
+// FIX: category list now comes from the shared PRODUCT_CATEGORIES constant
+//      (src/lib/marketplace/categories.ts) and is sent verbatim — previously
+//      this form slugified its own divergent category list
+//      ('electronics-gadgets', etc.) which never matched the plain-label
+//      values ('Electronics', 'Books & Stationery', etc.) that Filters.tsx
+//      and search/route.ts filter on, making category filtering a permanent
+//      no-op for every listing created through this form.
+// FIX: condition options changed from 'new' | 'used' | 'refurbished' to
+//      'new' | 'like_new' | 'used' — matches the Product type and the Zod
+//      schemas in products/route.ts and products/[id]/route.ts. The DB has
+//      no CHECK constraint on products.condition, so 'refurbished' was being
+//      silently accepted at the form layer but rejected with a 400 by the
+//      API's Zod validation.
 
 import React, { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -15,13 +28,14 @@ import { PlusCircle, Image as ImageIcon, Send, Loader2, Trash2, AlertCircle } fr
 import { toast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
 import { ContestButton } from '@/components/admin/ContestButton';
+import { PRODUCT_CATEGORIES } from '@/lib/marketplace/categories';
 
 interface FormData {
   title: string;
   description: string;
   price: number | '';
   category: string;
-  condition: 'new' | 'used' | 'refurbished' | '';
+  condition: 'new' | 'like_new' | 'used' | '';
   location: string;
   images: File[];
 }
@@ -41,17 +55,6 @@ export function CreateProductForm() {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [restriction, setRestriction] = useState<{ type: string; reason: string } | null>(null);
-
-  const categories = [
-    'Electronics & Gadgets',
-    'Fashion & Apparel',
-    'Books & Stationery',
-    'Food & Beverages (Packaged)',
-    'Home & Kitchen',
-    'Art & Handmade',
-    'Services (Physical)',
-    'Other',
-  ];
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { id, value } = e.target;
@@ -147,6 +150,8 @@ export function CreateProductForm() {
       }
 
       // 2. PREPARE PAYLOAD WITH STRING URLS
+      // category is sent verbatim from PRODUCT_CATEGORIES — must match the
+      // plain-label values that Filters.tsx / search/route.ts filter on.
       const payload = {
         title: formData.title,
         description: formData.description,
@@ -291,7 +296,7 @@ export function CreateProductForm() {
                 <Label htmlFor="condition" className="text-gray-700">Condition *</Label>
                 <Select
                   value={formData.condition}
-                  onValueChange={(val: 'new' | 'used' | 'refurbished') =>
+                  onValueChange={(val: 'new' | 'like_new' | 'used') =>
                     handleSelectChange('condition', val)
                   }
                 >
@@ -300,8 +305,8 @@ export function CreateProductForm() {
                   </SelectTrigger>
                   <SelectContent className="bg-white">
                     <SelectItem value="new">Brand New</SelectItem>
+                    <SelectItem value="like_new">Like New</SelectItem>
                     <SelectItem value="used">Used (Good Condition)</SelectItem>
-                    <SelectItem value="refurbished">Refurbished</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -316,11 +321,8 @@ export function CreateProductForm() {
                     <SelectValue placeholder="Select category" />
                   </SelectTrigger>
                   <SelectContent className="bg-white">
-                    {categories.map(cat => (
-                      <SelectItem
-                        key={cat}
-                        value={cat.toLowerCase().replace(/[^a-z0-9]/g, '-')}
-                      >
+                    {PRODUCT_CATEGORIES.map(cat => (
+                      <SelectItem key={cat} value={cat}>
                         {cat}
                       </SelectItem>
                     ))}

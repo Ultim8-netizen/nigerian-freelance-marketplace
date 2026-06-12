@@ -17,8 +17,11 @@ export function ProductCard({ product }: ProductCardProps) {
     <Link href={`/marketplace/products/${product.id}`}>
       <Card className="overflow-hidden hover:shadow-lg transition-shadow">
         <div className="relative h-48 bg-gray-200">
+          {/* FIX: images is string[] | null per schema — guard against
+              null/empty arrays, matching the pattern used in
+              ProductDetailPage's "More from Seller" grid. */}
           <Image
-            src={product.images[0]}
+            src={product.images?.[0] ?? ''}
             alt={product.title}
             fill
             className="object-cover"

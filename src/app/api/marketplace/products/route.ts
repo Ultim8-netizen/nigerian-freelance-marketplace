@@ -6,10 +6,17 @@
 //      - autoHold=true → inserted with is_active:false, flagged for admin review.
 // FIX: requirePostingActive guard added — blocks new listing creation when
 //      profiles.posting_suspended_until is set and in the future.
+// FIX: `location` (products.location, character varying, nullable) is now
+//      accepted, sanitized, and persisted — previously sent by
+//      CreateProductForm but stripped by Zod and silently dropped.
+// FIX: notifications has no INSERT RLS policy for user-scoped clients —
+//      both notification inserts (listing_rejected, listing_held) now use
+//      createAdminClient() (service role).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware, requirePostingActive } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { sanitizeText, sanitizeHtml, sanitizeUrl } from '@/lib/security/sanitize';
 import { containsSqlInjection } from '@/lib/security/sql-injection-check';
 import { logger } from '@/lib/logger';
@@ -25,6 +32,7 @@ const productSchema = z.object({
   images:           z.array(z.string()).min(1).max(8),
   condition:        z.enum(['new', 'like_new', 'used']),
   delivery_options: z.array(z.string()).min(1),
+  location:         z.string().max(200).optional(),
 });
 
 // ─── GET — Browse products ────────────────────────────────────────────────────
@@ -134,6 +142,10 @@ export async function POST(request: NextRequest) {
     // Single client instance reused for all DB operations in this handler
     const supabase = await createClient();
 
+    // Service-role client — required for notification inserts (notifications
+    // has no INSERT RLS policy for user-scoped clients).
+    const adminClient = createAdminClient();
+
     // ── Gate 0: Posting suspension ────────────────────────────────────────
     // Checks profiles.posting_suspended_until. Returns 403 with resumesAt
     // if the seller is within an active 72-hour suspension window from
@@ -150,6 +162,7 @@ export async function POST(request: NextRequest) {
       category:         sanitizeText(body.category    || ''),
       images:           body.images?.map((url: string) => sanitizeUrl(url)).filter(Boolean) || [],
       delivery_options: body.delivery_options?.map((opt: string) => sanitizeText(opt)) || [],
+      location:         body.location ? sanitizeText(body.location) : undefined,
     };
 
     const validated = productSchema.parse(sanitizedBody);
@@ -195,7 +208,8 @@ export async function POST(request: NextRequest) {
         reason: contentCheck.reason,
       });
 
-      await supabase.from('notifications').insert({
+      // FIX: notifications has no INSERT RLS policy for user-scoped clients.
+      await adminClient.from('notifications').insert({
         user_id: user.id,
         type:    'listing_rejected',
         title:   'Listing Rejected',
@@ -233,7 +247,8 @@ export async function POST(request: NextRequest) {
 
     // Notify the seller when their listing is held for review
     if (contentCheck.autoHold) {
-      await supabase.from('notifications').insert({
+      // FIX: notifications has no INSERT RLS policy for user-scoped clients.
+      await adminClient.from('notifications').insert({
         user_id: user.id,
         type:    'listing_held',
         title:   'Listing Pending Review',

@@ -1,13 +1,27 @@
 // src/app/api/marketplace/search/route.ts
 // Enhanced search with filters, sorting, and recommendations
+//
+// FIX: applyMiddleware(auth:'optional', rateLimit:'api') added — this route
+//      previously had zero auth/rate-limiting, unlike products/route.ts GET.
+// FIX: `q` is now checked with containsSqlInjection before being interpolated
+//      into the .or() filter string (products/route.ts already did this for
+//      its `search` param; this route built an equivalent .or() expression
+//      with no check at all).
+// FIX: seller join now uses `!inner` so `.ilike('seller.location', ...)`
+//      actually filters rows — PostgREST only applies filters on embedded
+//      resources when the embed is an inner join. Every product has a
+//      seller (products.seller_id is NOT NULL with an FK to profiles), so
+//      this does not exclude any rows when `state` is not provided.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
+import { containsSqlInjection } from '@/lib/security/sql-injection-check';
+import { logger } from '@/lib/logger';
 import type { Product } from '@/types';
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
     const { searchParams } = new URL(request.url);
 
     const query = searchParams.get('q') || '';
@@ -20,12 +34,31 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1');
     const perPage = 24;
 
+    if (query && containsSqlInjection(query)) {
+      logger.warn('SQL injection attempt in marketplace search', {
+        query,
+        ip: request.headers.get('x-forwarded-for'),
+      });
+      return NextResponse.json(
+        { success: false, error: 'Invalid search query' },
+        { status: 400 }
+      );
+    }
+
+    const { error: middlewareError } = await applyMiddleware(request, {
+      auth:      'optional',
+      rateLimit: 'api',
+    });
+    if (middlewareError) return middlewareError;
+
+    const supabase = await createClient();
+
     // Build query
     let dbQuery = supabase
       .from('products')
       .select(`
         *,
-        seller:profiles!products_seller_id_fkey(
+        seller:profiles!products_seller_id_fkey!inner(
           id,
           full_name,
           profile_image_url,

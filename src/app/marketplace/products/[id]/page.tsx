@@ -1,4 +1,5 @@
 // src/app/marketplace/products/[id]/page.tsx
+// FIX: params is a Promise in Next.js 15 — now typed and awaited.
 
 import { createClient } from '@/lib/supabase/server';
 import Image from 'next/image';
@@ -18,8 +19,10 @@ import { BuyNowButton } from '@/components/marketplace/BuyNowButton';
 export default async function ProductDetailPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
+  const { id } = await params;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
@@ -39,7 +42,7 @@ export default async function ProductDetailPage({
         location
       )
     `)
-    .eq('id', params.id)
+    .eq('id', id)
     .single();
 
   if (error || !product) {
@@ -63,7 +66,7 @@ export default async function ProductDetailPage({
         .select('id, title, price, images, condition')
         .eq('seller_id', product.seller_id)
         .eq('is_active', true)
-        .neq('id', params.id)
+        .neq('id', id)
         .limit(4)
         .then(({ data }) => data)
     : null;
@@ -78,7 +81,7 @@ export default async function ProductDetailPage({
         profile_image_url
       )
     `)
-    .eq('product_id', params.id)
+    .eq('product_id', id)
     .order('created_at', { ascending: false })
     .limit(5);
 

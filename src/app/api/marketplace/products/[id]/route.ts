@@ -1,5 +1,8 @@
 // src/app/api/marketplace/products/[id]/route.ts
 // Individual product operations
+//
+// FIX: params is a Promise in Next.js 15 — now typed and awaited in
+//      GET/PATCH/DELETE.
 
 import { NextRequest as Req, NextResponse as Res } from 'next/server';
 import { requireAuth as auth, requireOwnership as ownership } from '@/lib/api/enhanced-middleware';
@@ -21,10 +24,11 @@ const updateSchema = Z.object({
 // GET - Get product details
 export async function GET(
   req: Req,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const productId = uuid(params.id);
+    const { id } = await params;
+    const productId = uuid(id);
     if (!productId) {
       return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
     }
@@ -74,10 +78,11 @@ export async function GET(
 // PATCH - Update product
 export async function PATCH(
   req: Req,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const productId = uuid(params.id);
+    const { id } = await params;
+    const productId = uuid(id);
     if (!productId) {
       return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
     }
@@ -146,7 +151,7 @@ export async function PATCH(
 // DELETE - Delete product
 export async function DELETE(
   req: Req,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const supabase = await client();
@@ -155,7 +160,8 @@ export async function DELETE(
     if (authResult.error) return authResult.error;
     const user = authResult.user!;
 
-    const productId = uuid(params.id);
+    const { id } = await params;
+    const productId = uuid(id);
     if (!productId) {
       return Res.json({ success: false, error: 'Invalid product ID' }, { status: 400 });
     }

@@ -14,6 +14,16 @@
 // FIX: requireAuth now imported from enhanced-middleware (canonical, takes
 //      (request, supabase) and returns { user?, error? } instead of throwing
 //      a NextResponse instance).
+// FIX: updateProductRating, updateSellerRating, and
+//      checkAndSuspendPostingOnConsecutiveLowRatings now take an explicit
+//      adminClient (service role) and use it for all writes to `products`
+//      and `profiles`. The reviewer's user-scoped client cannot satisfy
+//      the RLS UPDATE policies on those tables (products: auth.uid() =
+//      seller_id; profiles: auth.uid() = id) — under the previous
+//      user-scoped client these writes were silently failing, so product
+//      ratings, seller ratings, and posting suspensions never persisted.
+// FIX: the "new_review" notification insert now uses adminClient —
+//      notifications has no INSERT RLS policy for user-scoped clients.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth }               from '@/lib/api/enhanced-middleware';
@@ -112,9 +122,11 @@ export async function POST(request: NextRequest) {
 
     const validated = createReviewSchema.parse(sanitized);
 
-    // ── Fetch suspension thresholds from platform_config ─────────────────────
-    // createAdminClient() (service role) is required — platform_config is
-    // admin-only RLS. Falls back to defaults (3 reviews / 72h) on any error.
+    // ── Service-role client ───────────────────────────────────────────────
+    // Required for: platform_config reads (admin-only RLS), and for all
+    // writes to `products`/`profiles`/`notifications` performed on behalf
+    // of the seller below (the reviewer's session cannot satisfy those
+    // tables' RLS UPDATE/INSERT policies).
     const adminClient = createAdminClient();
     const config = await getPlatformConfigs(adminClient, [
       CONFIG_KEYS.CONSECUTIVE_LOW_RATING_THRESHOLD,
@@ -180,13 +192,17 @@ export async function POST(request: NextRequest) {
     if (error) throw error;
 
     // ── Post-insert side-effects (non-blocking) ──────────────────────────────
+    // FIX: writes target products/profiles owned by the seller, not the
+    // reviewer — pass adminClient (service role) to bypass RLS for these
+    // specific writes.
     await Promise.all([
-      updateProductRating(supabase, validated.product_id),
-      updateSellerRating(supabase, validated.seller_id),
+      updateProductRating(supabase, adminClient, validated.product_id),
+      updateSellerRating(supabase, adminClient, validated.seller_id),
     ]);
 
     // Notify seller of new review
-    await supabase.from('notifications').insert({
+    // FIX: notifications has no INSERT RLS policy for user-scoped clients.
+    await adminClient.from('notifications').insert({
       user_id: validated.seller_id,
       type:    'new_review',
       title:   'New Review Received',
@@ -197,6 +213,7 @@ export async function POST(request: NextRequest) {
     // ── Consecutive low-rating check → configurable posting suspension ───────
     await checkAndSuspendPostingOnConsecutiveLowRatings(
       supabase,
+      adminClient,
       validated.seller_id,
       consecutiveThreshold,
       postingSuspensionHours,
@@ -234,10 +251,23 @@ export async function POST(request: NextRequest) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Recalculate and persist the product's average rating and review count. */
-async function updateProductRating(supabase: SupabaseClient, productId: string) {
+/**
+ * Recalculate and persist the product's average rating and review count.
+ *
+ * @param readClient  Used for the SELECT (marketplace_reviews SELECT policy
+ *                     is "Anyone can view reviews" — the reviewer's session
+ *                     is sufficient).
+ * @param adminClient Used for the UPDATE — products UPDATE RLS policy is
+ *                     `auth.uid() = seller_id`, which the reviewer never
+ *                     satisfies.
+ */
+async function updateProductRating(
+  readClient:  SupabaseClient,
+  adminClient: SupabaseClient,
+  productId:   string,
+) {
   try {
-    const { data: reviews } = await supabase
+    const { data: reviews } = await readClient
       .from('marketplace_reviews')
       .select('rating')
       .eq('product_id', productId);
@@ -245,23 +275,39 @@ async function updateProductRating(supabase: SupabaseClient, productId: string) 
     if (reviews && reviews.length > 0) {
       const avgRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
 
-      await supabase
+      const { error } = await adminClient
         .from('products')
         .update({
           rating:        Math.round(avgRating * 10) / 10,
           reviews_count: reviews.length,
         })
         .eq('id', productId);
+
+      if (error) {
+        logger.error('Failed to persist product rating update', error, { productId });
+      }
     }
   } catch (err) {
     logger.error('Failed to update product rating', err as Error, { productId });
   }
 }
 
-/** Recalculate and persist the seller's marketplace average rating and review count. */
-async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
+/**
+ * Recalculate and persist the seller's marketplace average rating and review count.
+ *
+ * @param readClient  Used for the SELECT (marketplace_reviews SELECT policy
+ *                     is "Anyone can view reviews").
+ * @param adminClient Used for the UPDATE — profiles UPDATE RLS policy is
+ *                     `auth.uid() = id`, which the reviewer never satisfies
+ *                     for the seller's profile.
+ */
+async function updateSellerRating(
+  readClient:  SupabaseClient,
+  adminClient: SupabaseClient,
+  sellerId:    string,
+) {
   try {
-    const { data: reviews } = await supabase
+    const { data: reviews } = await readClient
       .from('marketplace_reviews')
       .select('rating')
       .eq('seller_id', sellerId);
@@ -269,13 +315,17 @@ async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
     if (reviews && reviews.length > 0) {
       const avgRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
 
-      await supabase
+      const { error } = await adminClient
         .from('profiles')
         .update({
           marketplace_rating:        Math.round(avgRating * 10) / 10,
           marketplace_reviews_count: reviews.length,
         })
         .eq('id', sellerId);
+
+      if (error) {
+        logger.error('Failed to persist seller rating update', error, { sellerId });
+      }
     }
   } catch (err) {
     logger.error('Failed to update seller rating', err as Error, { sellerId });
@@ -293,8 +343,15 @@ async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
  * - Fewer than consecutiveThreshold reviews exist (insufficient signal)
  * - Suspension window is already active (extends to fresh window on re-trigger)
  *
- * @param supabase            User-scoped client (profiles + marketplace_reviews
- *                            are accessible without service role).
+ * @param readClient          User-scoped client. Sufficient for SELECTs
+ *                            (marketplace_reviews: "Anyone can view reviews";
+ *                            profiles: "Public profiles viewable by all").
+ * @param adminClient         Service-role client. Required for the
+ *                            profiles.posting_suspended_until UPDATE
+ *                            (profiles UPDATE RLS policy is `auth.uid() = id`,
+ *                            which the reviewer never satisfies) and for the
+ *                            notifications INSERT (no INSERT RLS policy
+ *                            exists on notifications for user-scoped clients).
  * @param sellerId            Target seller profile ID.
  * @param consecutiveThreshold Number of consecutive 1-star reviews required to
  *                            trigger suspension (from platform_config).
@@ -302,13 +359,14 @@ async function updateSellerRating(supabase: SupabaseClient, sellerId: string) {
  *                            (from platform_config).
  */
 async function checkAndSuspendPostingOnConsecutiveLowRatings(
-  supabase:             SupabaseClient,
+  readClient:           SupabaseClient,
+  adminClient:          SupabaseClient,
   sellerId:             string,
   consecutiveThreshold: number,
   suspensionHours:      number,
 ) {
   try {
-    const { data: recentReviews, error: reviewsError } = await supabase
+    const { data: recentReviews, error: reviewsError } = await readClient
       .from('marketplace_reviews')
       .select('rating')
       .eq('seller_id', sellerId)
@@ -332,7 +390,7 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
 
     // Fetch current suspension state to determine whether this is a new
     // suspension or a window extension (controls notification gating below)
-    const { data: profile, error: profileError } = await supabase
+    const { data: profile, error: profileError } = await readClient
       .from('profiles')
       .select('posting_suspended_until')
       .eq('id', sellerId)
@@ -357,7 +415,7 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       now.getTime() + suspensionHours * 60 * 60 * 1000
     ).toISOString();
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await adminClient
       .from('profiles')
       .update({ posting_suspended_until: suspendedUntil })
       .eq('id', sellerId);
@@ -381,13 +439,13 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
         'Contact support if you believe this is in error.';
 
       await Promise.all([
-        supabase.from('notifications').insert({
+        adminClient.from('notifications').insert({
           user_id: sellerId,
           type:    'posting_suspended',
           title:   `Posting Privileges Suspended (${suspensionHours} Hours)`,
           message: advisoryMessage,
         }),
-        sendF9SystemMessage(supabase, sellerId, advisoryMessage),
+        sendF9SystemMessage(adminClient, sellerId, advisoryMessage),
       ]);
     }
 

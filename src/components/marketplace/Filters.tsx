@@ -7,20 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { DollarSign, Filter, MapPin, Package, X } from 'lucide-react';
 import { NIGERIAN_STATES } from '@/types/location.types';
-
-const PRODUCT_CATEGORIES = [
-  'Electronics',
-  'Fashion',
-  'Textbooks',
-  'Books & Stationery',
-  'Home & Kitchen',
-  'Furniture',
-  'Sports & Outdoors',
-  'Beauty & Health',
-  'Food & Drinks',
-  'Services',
-  'Other',
-];
+import { PRODUCT_CATEGORIES } from '@/lib/marketplace/categories';
 
 const CONDITION_OPTIONS = [
   { value: 'new', label: 'New' },

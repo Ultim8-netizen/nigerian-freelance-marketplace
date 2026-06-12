@@ -1,5 +1,10 @@
 // src/app/api/marketplace/orders/route.ts
 // Complete marketplace order management with dynamic platform fee
+//
+// FIX: notifications has no INSERT RLS policy for user-scoped clients
+//      (notifications table policies are SELECT/UPDATE-only). The seller
+//      notification on order creation now uses the existing adminClient
+//      (service role) instead of the user-scoped supabase client.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -96,8 +101,9 @@ export async function POST(request: NextRequest) {
     const body      = await request.json();
     const validated = createOrderSchema.parse(body);
 
-    // Admin client required for platform_config (RLS blocks public SELECT)
-    // and for the platform_revenue insert.
+    // Admin client required for platform_config (RLS blocks public SELECT),
+    // for the platform_revenue insert, and for the notifications insert
+    // (notifications table has no INSERT policy for user-scoped clients).
     const adminClient = createAdminClient();
     const supabase    = await createClient();
 
@@ -184,7 +190,9 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 6. Notify seller (fire-and-forget) ────────────────────────────────
-    void supabase.from('notifications').insert({
+    // FIX: notifications has no INSERT RLS policy for user-scoped clients —
+    // use adminClient (service role) so this insert is not silently dropped.
+    void adminClient.from('notifications').insert({
       user_id: product.seller_id,
       type:    'new_marketplace_order',
       title:   'New Order Received',
