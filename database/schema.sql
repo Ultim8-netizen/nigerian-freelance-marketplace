@@ -6948,3 +6948,19 @@ $func$;
 
 
 
+-- ── RLS: missing INSERT policy (order creation via createClient() is currently blocked) ──
+CREATE POLICY "Clients can create their orders"
+  ON public.orders
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (client_id = auth.uid());
+
+-- ── RLS: missing UPDATE policy (deliver, revision, cancel via createClient() currently blocked) ──
+CREATE POLICY "Order participants can update their orders"
+  ON public.orders
+  FOR UPDATE
+  TO authenticated
+  USING (client_id = auth.uid() OR freelancer_id = auth.uid());
+
+
+  

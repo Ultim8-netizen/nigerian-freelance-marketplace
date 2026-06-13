@@ -1,8 +1,6 @@
 // src/app/(dashboard)/freelancer/services/page.tsx
-// FIXED:
-// 1. "No Services Yet" text: was text-gray-600 (faint on white) → now text-gray-700 dark:text-gray-300
-// 2. All card text uses explicit dark-mode-aware color classes
-// 3. Description text contrast improved throughout
+// FIXED: Orphaned Trash2 Button (no handler, no route) replaced with
+//        DeleteServiceButton client component that calls DELETE /api/services/:id.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -11,7 +9,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency } from '@/lib/utils';
 import Link from 'next/link';
-import { Plus, Eye, ShoppingCart, Edit2, Trash2 } from 'lucide-react';
+import { DeleteServiceButton } from '@/components/services/DeleteServiceButton';
+import { Plus, Eye, ShoppingCart, Edit2 } from 'lucide-react';
 
 export default async function FreelancerServicesPage() {
   const supabase = await createClient();
@@ -19,9 +18,7 @@ export default async function FreelancerServicesPage() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user) {
-    redirect('/login');
-  }
+  if (!user) redirect('/login');
 
   const { data: services } = await supabase
     .from('services')
@@ -33,9 +30,7 @@ export default async function FreelancerServicesPage() {
     <div className="container mx-auto px-4 py-8">
       <div className="flex justify-between items-center mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-1">
-            My Services
-          </h1>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-1">My Services</h1>
           <p className="text-gray-600 dark:text-gray-400">
             Create and manage your service offerings
           </p>
@@ -116,19 +111,13 @@ export default async function FreelancerServicesPage() {
                     <Edit2 className="w-4 h-4" />
                   </Button>
                 </Link>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="px-2 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
+                {/* FIXED: was a plain button with no handler — now calls DELETE /api/services/:id */}
+                <DeleteServiceButton serviceId={service.id} />
               </div>
             </Card>
           ))}
         </div>
       ) : (
-        /* FIXED: Text contrast — was barely readable grey on white */
         <Card className="p-12 text-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
           <div className="max-w-md mx-auto">
             <div className="w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -137,10 +126,8 @@ export default async function FreelancerServicesPage() {
             <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
               No Services Yet
             </h3>
-            {/* FIXED: was text-gray-600 which is nearly invisible on white — now readable */}
             <p className="text-gray-700 dark:text-gray-300 mb-6">
-              Start earning by creating your first service. Describe what you offer and set
-              your price.
+              Start earning by creating your first service. Describe what you offer and set your price.
             </p>
             <Link href="/freelancer/services/new">
               <Button>Create Your First Service</Button>

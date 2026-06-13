@@ -1,16 +1,19 @@
 // src/app/jobs/[id]/page.tsx
-// NEW FILE: Job detail page.
-// This page: shows job details, handles proposal submission via server action.
-// Auth: redirects to login if not authenticated.
+// FIXED:
+//   1. params + searchParams are now Promise types (Next.js 15 async params)
+//   2. Broken server action removed entirely — replaced with ProposalSubmitForm
+//      client component that calls POST /api/proposals with full validation,
+//      duplicate check, rate limiting, and notification (all in the API route)
+//   3. revalidatePath import removed (no longer needed)
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect, notFound } from 'next/navigation';
-import { revalidatePath } from 'next/cache';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatCurrency, formatRelativeTime } from '@/lib/utils';
 import Link from 'next/link';
+import { ProposalSubmitForm } from '@/components/proposals/ProposalSubmitForm';
 import {
   MapPin,
   Clock,
@@ -19,95 +22,50 @@ import {
   Briefcase,
   CheckCircle,
   ArrowLeft,
-  Send,
 } from 'lucide-react';
-
-// Server action for proposal submission
-async function submitProposal(jobId: string, formData: FormData) {
-  'use server';
-
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirect('/login');
-  }
-
-  const proposed_price = parseFloat(formData.get('proposed_price') as string);
-  const delivery_days = parseInt(formData.get('delivery_days') as string, 10);
-  const cover_letter = (formData.get('cover_letter') as string)?.trim();
-
-  if (!proposed_price || !delivery_days || !cover_letter) {
-    // In production, return proper error state. For now, redirect back.
-    redirect(`/jobs/${jobId}?error=missing_fields`);
-  }
-
-  const { error } = await supabase.from('proposals').insert({
-    job_id: jobId,
-    freelancer_id: user.id,
-    proposed_price,
-    delivery_days,
-    cover_letter,
-    status: 'pending',
-  });
-
-  if (error) {
-    console.error('Proposal submission error:', error);
-    redirect(`/jobs/${jobId}?error=submission_failed`);
-  }
-
-  revalidatePath(`/jobs/${jobId}`);
-  redirect(`/jobs/${jobId}?success=proposal_submitted`);
-}
 
 export default async function JobDetailPage({
   params,
   searchParams,
 }: {
-  params: { id: string };
-  searchParams: { error?: string; success?: string };
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ error?: string; success?: string }>;
 }) {
+  const { id }                          = await params;
+  const { error: qError, success: qSuccess } = await searchParams;
+
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect(`/login?redirect=/jobs/${params.id}`);
+    redirect(`/login?redirect=/jobs/${id}`);
   }
 
-  // Fetch job with client profile
   const { data: job, error } = await supabase
     .from('jobs')
-    .select(
-      `
+    .select(`
       *,
       client:profiles!jobs_client_id_fkey(
-        id, full_name, location, client_rating, profile_image_url, created_at, identity_verified
+        id, full_name, location, client_rating,
+        profile_image_url, created_at, identity_verified
       )
-    `
-    )
-    .eq('id', params.id)
+    `)
+    .eq('id', id)
     .single();
 
-  if (error || !job) {
-    notFound();
-  }
+  if (error || !job) notFound();
 
-  // Check if user already submitted a proposal for this job
   const { data: existingProposal } = await supabase
     .from('proposals')
     .select('id, status, proposed_price, delivery_days, created_at')
-    .eq('job_id', params.id)
+    .eq('job_id', id)
     .eq('freelancer_id', user.id)
     .maybeSingle();
 
-  // Check if current user is the job owner (clients shouldn't submit proposals)
   const isJobOwner = user.id === job.client_id;
 
-  // Get user profile to check role
   const { data: profile } = await supabase
     .from('profiles')
     .select('user_type')
@@ -117,25 +75,20 @@ export default async function JobDetailPage({
   const isFreelancer =
     profile?.user_type === 'freelancer' || profile?.user_type === 'both';
 
-  const submitProposalWithId = submitProposal.bind(null, params.id);
-
   const budgetDisplay = () => {
-    if (job.budget_type === 'fixed' && job.budget_min) {
+    if (job.budget_type === 'fixed' && job.budget_min)
       return formatCurrency(job.budget_min);
-    }
-    if (job.budget_type === 'hourly' && job.budget_min) {
+    if (job.budget_type === 'hourly' && job.budget_min)
       return `${formatCurrency(job.budget_min)}/hr`;
-    }
-    if (job.budget_min && job.budget_max) {
+    if (job.budget_min && job.budget_max)
       return `${formatCurrency(job.budget_min)} – ${formatCurrency(job.budget_max)}`;
-    }
     return 'Negotiable';
   };
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       <div className="container mx-auto px-4 py-8 max-w-5xl">
-        {/* Back link */}
+        {/* Back */}
         <Link
           href="/freelancer/jobs"
           className="inline-flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 mb-6 transition-colors"
@@ -144,19 +97,19 @@ export default async function JobDetailPage({
           Back to Job Listings
         </Link>
 
-        {/* Feedback banners */}
-        {searchParams.success === 'proposal_submitted' && (
+        {/* Legacy query-param banners (kept for backwards compat) */}
+        {qSuccess === 'proposal_submitted' && (
           <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg flex items-center gap-3">
             <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 shrink-0" />
             <p className="text-green-800 dark:text-green-200 font-medium">
-              Proposal submitted successfully! The client will review it shortly.
+              Proposal submitted successfully!
             </p>
           </div>
         )}
-        {searchParams.error && (
+        {qError && (
           <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
             <p className="text-red-800 dark:text-red-200 font-medium">
-              {searchParams.error === 'missing_fields'
+              {qError === 'missing_fields'
                 ? 'Please fill in all required fields.'
                 : 'Submission failed. Please try again.'}
             </p>
@@ -164,7 +117,7 @@ export default async function JobDetailPage({
         )}
 
         <div className="grid lg:grid-cols-3 gap-8">
-          {/* ── Left column: Job details ── */}
+          {/* ── Left: job details ── */}
           <div className="lg:col-span-2 space-y-6">
             <Card className="p-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
               {/* Title + status */}
@@ -180,7 +133,7 @@ export default async function JobDetailPage({
                 </Badge>
               </div>
 
-              {/* Key stats row */}
+              {/* Key stats */}
               <div className="flex flex-wrap gap-5 text-sm mb-6 pb-6 border-b border-gray-100 dark:border-gray-700">
                 <div className="flex items-center gap-1.5 text-gray-700 dark:text-gray-300">
                   <DollarSign className="w-4 h-4 text-green-600 dark:text-green-400" />
@@ -226,14 +179,14 @@ export default async function JobDetailPage({
                 </p>
               </div>
 
-              {/* Required skills */}
-              {job.required_skills && job.required_skills.length > 0 && (
+              {/* Required skills — FIXED: skills_required (was required_skills) */}
+              {job.skills_required && job.skills_required.length > 0 && (
                 <div>
                   <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">
                     Required Skills
                   </h2>
                   <div className="flex flex-wrap gap-2">
-                    {job.required_skills.map((skill: string, i: number) => (
+                    {(job.skills_required as string[]).map((skill: string, i: number) => (
                       <Badge key={i} variant="outline">
                         {skill}
                       </Badge>
@@ -243,7 +196,7 @@ export default async function JobDetailPage({
               )}
             </Card>
 
-            {/* ── Proposal form ── */}
+            {/* ── Proposal section ── */}
             {!isJobOwner && isFreelancer && job.status === 'open' && (
               <Card className="p-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
                 <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-1">
@@ -256,13 +209,10 @@ export default async function JobDetailPage({
                 </p>
 
                 {existingProposal ? (
-                  /* Show submitted proposal details */
                   <div className="space-y-4">
                     <div className="grid sm:grid-cols-2 gap-4">
                       <div className="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                          Your Bid
-                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Your Bid</p>
                         <p className="text-xl font-bold text-gray-900 dark:text-white">
                           {formatCurrency(existingProposal.proposed_price)}
                         </p>
@@ -277,9 +227,7 @@ export default async function JobDetailPage({
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-sm text-gray-600 dark:text-gray-400">
-                        Status:
-                      </span>
+                      <span className="text-sm text-gray-600 dark:text-gray-400">Status:</span>
                       <Badge
                         variant={
                           existingProposal.status === 'accepted'
@@ -293,7 +241,10 @@ export default async function JobDetailPage({
                         {existingProposal.status ?? 'pending'}
                       </Badge>
                     </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400" suppressHydrationWarning>
+                    <p
+                      className="text-xs text-gray-500 dark:text-gray-400"
+                      suppressHydrationWarning
+                    >
                       Submitted{' '}
                       {existingProposal.created_at
                         ? formatRelativeTime(existingProposal.created_at)
@@ -306,81 +257,8 @@ export default async function JobDetailPage({
                     </Link>
                   </div>
                 ) : (
-                  /* Proposal submission form */
-                  <form action={submitProposalWithId} className="space-y-5">
-                    <div className="grid sm:grid-cols-2 gap-4">
-                      <div>
-                        <label
-                          htmlFor="proposed_price"
-                          className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5"
-                        >
-                          Your Bid (₦) *
-                        </label>
-                        <div className="relative">
-                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-medium">
-                            ₦
-                          </span>
-                          <input
-                            type="number"
-                            id="proposed_price"
-                            name="proposed_price"
-                            min="0"
-                            step="100"
-                            required
-                            placeholder="0"
-                            className="w-full pl-8 pr-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="delivery_days"
-                          className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5"
-                        >
-                          Delivery Time (days) *
-                        </label>
-                        <input
-                          type="number"
-                          id="delivery_days"
-                          name="delivery_days"
-                          min="1"
-                          max="365"
-                          required
-                          placeholder="e.g. 7"
-                          className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label
-                        htmlFor="cover_letter"
-                        className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5"
-                      >
-                        Cover Letter *
-                      </label>
-                      <textarea
-                        id="cover_letter"
-                        name="cover_letter"
-                        rows={6}
-                        required
-                        placeholder="Introduce yourself, explain your relevant experience, and why you're the best fit for this project..."
-                        className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-                      />
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                        Tip: Personalise your proposal to this specific job for better results.
-                      </p>
-                    </div>
-
-                    <Button
-                      type="submit"
-                      className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white"
-                    >
-                      <Send className="w-4 h-4" />
-                      Submit Proposal
-                    </Button>
-                  </form>
+                  // Client form — calls POST /api/proposals (no server action)
+                  <ProposalSubmitForm jobId={id} />
                 )}
               </Card>
             )}
@@ -393,16 +271,15 @@ export default async function JobDetailPage({
                 </p>
                 <Link href={`/client/jobs/${job.id}`}>
                   <Button className="bg-blue-600 hover:bg-blue-700 text-white">
-                    Manage This Job & View Proposals
+                    Manage This Job &amp; View Proposals
                   </Button>
                 </Link>
               </Card>
             )}
           </div>
 
-          {/* ── Right column: Client info + meta ── */}
+          {/* ── Right: client info + meta ── */}
           <div className="space-y-6">
-            {/* Client card */}
             <Card className="p-5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
               <h3 className="font-semibold text-gray-900 dark:text-white mb-4">
                 About the Client
@@ -441,11 +318,8 @@ export default async function JobDetailPage({
               </div>
             </Card>
 
-            {/* Job meta */}
             <Card className="p-5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-              <h3 className="font-semibold text-gray-900 dark:text-white mb-4">
-                Job Overview
-              </h3>
+              <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Job Overview</h3>
               <div className="space-y-3 text-sm">
                 <div className="flex justify-between">
                   <span className="text-gray-500 dark:text-gray-400">Budget</span>

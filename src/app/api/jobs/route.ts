@@ -1,8 +1,7 @@
 // src/app/api/jobs/route.ts
-// PRODUCTION-READY: Enhanced jobs API with comprehensive security
-// UPDATED: Trust Gate check added to POST handler before job insertion.
-// FIXED: GET handler now applies applyMiddleware (auth:optional, rateLimit:api).
-//        Previously the highest-traffic endpoint in the domain had zero protection.
+// FIXED: GET handler now applies applyMiddleware with auth:optional + rateLimit:api.
+// Previously the GET endpoint had zero rate limiting, leaving it as the only
+// unprotected read endpoint in the entire domain.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -17,24 +16,24 @@ import { z } from 'zod';
 // GET - Browse jobs with filtering
 export async function GET(request: NextRequest) {
   try {
-    // Rate-limit unauthenticated browsing; auth is optional (public endpoint)
-    const { error: middlewareError } = await applyMiddleware(request, {
+    // FIXED: rate limiting added — was completely absent
+    const { error: rlError } = await applyMiddleware(request, {
       auth: 'optional',
       rateLimit: 'api',
     });
-    if (middlewareError) return middlewareError;
+    if (rlError) return rlError;
 
     const searchParams = request.nextUrl.searchParams;
 
-    const category        = sanitizeText(searchParams.get('category')         ?? '');
+    const category        = sanitizeText(searchParams.get('category') || '');
     const budgetType      = searchParams.get('budget_type');
-    const status          = searchParams.get('status') ?? 'open';
+    const status          = searchParams.get('status') || 'open';
     const experienceLevel = searchParams.get('experience_level');
     const minBudget       = searchParams.get('min_budget');
     const maxBudget       = searchParams.get('max_budget');
-    const search          = sanitizeText(searchParams.get('search')            ?? '');
-    const page            = Math.max(1, parseInt(searchParams.get('page')      ?? '1'));
-    const perPage         = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') ?? '20')));
+    const search          = sanitizeText(searchParams.get('search') || '');
+    const page            = Math.max(1, parseInt(searchParams.get('page') || '1'));
+    const perPage         = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
 
     if (search && containsSqlInjection(search)) {
       logger.warn('SQL injection attempt in jobs search', {
@@ -52,25 +51,19 @@ export async function GET(request: NextRequest) {
     let query = supabase
       .from('jobs')
       .select(
-        `
-        *,
+        `*,
         client:profiles!jobs_client_id_fkey(
-          id,
-          full_name,
-          profile_image_url,
-          client_rating,
-          total_jobs_posted,
-          identity_verified
+          id, full_name, profile_image_url,
+          client_rating, total_jobs_posted, identity_verified
         ),
-        proposals(count)
-      `,
+        proposals(count)`,
         { count: 'exact' }
       )
       .eq('status', status);
 
     if (search) {
-      const term = `%${search}%`;
-      query = query.or(`title.ilike.${term},description.ilike.${term}`);
+      const searchTerm = `%${search}%`;
+      query = query.or(`title.ilike.${searchTerm},description.ilike.${searchTerm}`);
     }
 
     if (category)        query = query.eq('category', category);
@@ -92,8 +85,8 @@ export async function GET(request: NextRequest) {
     }
 
     logger.info('Jobs query executed', {
-      filters: { category, search, status },
-      resultCount: data?.length ?? 0,
+      filters:     { category, search, status },
+      resultCount: data?.length || 0,
     });
 
     return NextResponse.json({
@@ -102,8 +95,8 @@ export async function GET(request: NextRequest) {
       pagination: {
         page,
         per_page:    perPage,
-        total:       count ?? 0,
-        total_pages: Math.ceil((count ?? 0) / perPage),
+        total:       count || 0,
+        total_pages: Math.ceil((count || 0) / perPage),
       },
     });
   } catch (error) {
@@ -119,8 +112,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
-      auth: 'required',
-      roles: ['client', 'both'],
+      auth:      'required',
+      roles:     ['client', 'both'],
       rateLimit: 'createJob',
     });
 
@@ -134,24 +127,24 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
 
-    const parsedMin  = Number(body.budget_min) || 0;
-    const parsedMax  = Number(body.budget_max) || 0;
+    const parsedMin   = Number(body.budget_min) || 0;
+    const parsedMax   = Number(body.budget_max) || 0;
     const checkAmount = Math.max(parsedMin, parsedMax);
 
     const gate = await evaluateTrustGate(user.id, 'post_listing', checkAmount);
 
     if (!gate.allowed) {
       logger.warn('Trust Gate blocked job post', {
-        userId: user.id,
+        userId:          user.id,
         restrictionType: gate.restrictionType,
         checkAmount,
       });
       return NextResponse.json(
         {
-          success: false,
-          error: gate.reason,
+          success:         false,
+          error:           gate.reason,
           restrictionType: gate.restrictionType,
-          capAmount: gate.capAmount,
+          capAmount:       gate.capAmount,
         },
         { status: 403 }
       );
@@ -159,10 +152,10 @@ export async function POST(request: NextRequest) {
 
     const sanitizedBody = {
       ...body,
-      title:           sanitizeText(body.title       ?? ''),
-      description:     sanitizeHtml(body.description ?? ''),
-      category:        sanitizeText(body.category    ?? ''),
-      skills_required: body.skills_required?.map((s: string) => sanitizeText(s)) ?? [],
+      title:           sanitizeText(body.title || ''),
+      description:     sanitizeHtml(body.description || ''),
+      category:        sanitizeText(body.category || ''),
+      skills_required: body.skills_required?.map((s: string) => sanitizeText(s)) || [],
     };
 
     const validatedData = jobSchema.parse(sanitizedBody);
@@ -171,19 +164,19 @@ export async function POST(request: NextRequest) {
     const { data, error: jobError } = await supabase
       .from('jobs')
       .insert({
-        client_id:        user.id,
-        title:            validatedData.title,
-        description:      validatedData.description,
-        category:         validatedData.category,
-        budget_type:      validatedData.budget_type,
-        budget_min:       validatedData.budget_min,
-        budget_max:       validatedData.budget_max,
+        client_id:       user.id,
+        title:           validatedData.title,
+        description:     validatedData.description,
+        category:        validatedData.category,
+        budget_type:     validatedData.budget_type,
+        budget_min:      validatedData.budget_min,
+        budget_max:      validatedData.budget_max,
         experience_level: validatedData.experience_level,
-        deadline:         validatedData.deadline,
-        skills_required:  validatedData.skills_required,
-        status:           'open',
-        views_count:      0,
-        proposals_count:  0,
+        deadline:        validatedData.deadline,
+        skills_required: validatedData.skills_required,
+        status:          'open',
+        views_count:     0,
+        proposals_count: 0,
       })
       .select()
       .single();
@@ -209,7 +202,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error:   error.issues[0]?.message ?? 'Validation failed',
+          error:   error.issues[0]?.message || 'Validation failed',
           details: error.issues,
         },
         { status: 400 }

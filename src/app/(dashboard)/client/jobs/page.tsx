@@ -1,5 +1,9 @@
 // src/app/(dashboard)/client/jobs/page.tsx
-// Client's posted jobs management
+// FIXED:
+//   1. job.required_skills → job.skills_required (correct column name)
+//   2. Proposal count now reads from live join result (proposals[0]?.count)
+//      rather than the denormalized proposals_count column, so the displayed
+//      count is always accurate regardless of RPC failures.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -11,37 +15,32 @@ import { formatCurrency, formatRelativeTime } from '@/lib/utils';
 import { Plus, Users, Eye, Clock } from 'lucide-react';
 import type { Job as BaseJob } from '@/types';
 
-// Extended type to match the actual query response
+// proposals[0].count is the Supabase aggregate result from proposals(count)
 type JobWithProposals = BaseJob & {
   proposals: Array<{ count: number }>;
 };
 
 export default async function ClientJobsPage() {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) {
-    redirect('/login');
-  }
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  // Get all jobs posted by client
+  if (!user) redirect('/login');
+
   const { data: jobs } = await supabase
     .from('jobs')
-    .select(`
-      *,
-      proposals(count)
-    `)
+    .select(`*, proposals(count)`)
     .eq('client_id', user.id)
     .order('created_at', { ascending: false });
 
   const getStatusColor = (status: string | null) => {
     if (!status) return 'bg-gray-100 text-gray-800';
-    
     const colors: Record<string, string> = {
-      open: 'bg-green-100 text-green-800',
+      open:        'bg-green-100 text-green-800',
       in_progress: 'bg-blue-100 text-blue-800',
-      completed: 'bg-gray-100 text-gray-800',
-      cancelled: 'bg-red-100 text-red-800',
+      completed:   'bg-gray-100 text-gray-800',
+      cancelled:   'bg-red-100 text-red-800',
     };
     return colors[status] || 'bg-gray-100 text-gray-800';
   };
@@ -63,64 +62,70 @@ export default async function ClientJobsPage() {
 
       {jobs && jobs.length > 0 ? (
         <div className="space-y-4">
-          {jobs.map((job: JobWithProposals) => (
-            <Card key={job.id} className="p-6 hover:shadow-lg transition-shadow">
-              <div className="flex justify-between items-start mb-4">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <h2 className="text-xl font-semibold">{job.title}</h2>
-                    <Badge className={getStatusColor(job.status)}>
-                      {job.status || 'Unknown'}
-                    </Badge>
-                  </div>
-                  <p className="text-gray-600 mb-4 line-clamp-2">{job.description}</p>
-                  
-                  <div className="flex flex-wrap gap-4 text-sm text-gray-500">
-                    <div className="flex items-center gap-1">
-                      <Users className="w-4 h-4" />
-                      <span className="font-medium">{job.proposals_count || 0} proposals</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Eye className="w-4 h-4" />
-                      <span>{job.views_count || 0} views</span>
-                    </div>
-                    {job.budget_min && (
-                      <div className="flex items-center gap-1">
-                        <span>Budget: {formatCurrency(job.budget_min)}</span>
-                      </div>
-                    )}
-                    {job.created_at && (
-                      <div className="flex items-center gap-1">
-                        <Clock className="w-4 h-4" />
-                        <span>Posted {formatRelativeTime(job.created_at)}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                
-                <Link href={`/client/jobs/${job.id}`}>
-                  <Button variant="outline">
-                    View Details
-                  </Button>
-                </Link>
-              </div>
+          {jobs.map((job: JobWithProposals) => {
+            // Live count from the join takes precedence over the denormalized column
+            const proposalCount = job.proposals?.[0]?.count ?? job.proposals_count ?? 0;
 
-              {job.required_skills && job.required_skills.length > 0 && (
-                <div className="flex flex-wrap gap-2 pt-4 border-t">
-                  {job.required_skills.slice(0, 5).map((skill: string, index: number) => (
-                    <Badge key={index} variant="outline">
-                      {skill}
-                    </Badge>
-                  ))}
-                  {job.required_skills.length > 5 && (
-                    <Badge variant="outline">
-                      +{job.required_skills.length - 5} more
-                    </Badge>
-                  )}
+            return (
+              <Card key={job.id} className="p-6 hover:shadow-lg transition-shadow">
+                <div className="flex justify-between items-start mb-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <h2 className="text-xl font-semibold">{job.title}</h2>
+                      <Badge className={getStatusColor(job.status)}>
+                        {job.status || 'Unknown'}
+                      </Badge>
+                    </div>
+                    <p className="text-gray-600 mb-4 line-clamp-2">{job.description}</p>
+
+                    <div className="flex flex-wrap gap-4 text-sm text-gray-500">
+                      <div className="flex items-center gap-1">
+                        <Users className="w-4 h-4" />
+                        <span className="font-medium">{proposalCount} proposals</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Eye className="w-4 h-4" />
+                        <span>{job.views_count || 0} views</span>
+                      </div>
+                      {job.budget_min && (
+                        <div className="flex items-center gap-1">
+                          <span>Budget: {formatCurrency(job.budget_min)}</span>
+                        </div>
+                      )}
+                      {job.created_at && (
+                        <div className="flex items-center gap-1">
+                          <Clock className="w-4 h-4" />
+                          <span suppressHydrationWarning>
+                            Posted {formatRelativeTime(job.created_at)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <Link href={`/client/jobs/${job.id}`}>
+                    <Button variant="outline">View Details</Button>
+                  </Link>
                 </div>
-              )}
-            </Card>
-          ))}
+
+                {/* FIXED: was job.required_skills — correct column is skills_required */}
+                {job.skills_required && job.skills_required.length > 0 && (
+                  <div className="flex flex-wrap gap-2 pt-4 border-t">
+                    {(job.skills_required as string[]).slice(0, 5).map((skill: string, index: number) => (
+                      <Badge key={index} variant="outline">
+                        {skill}
+                      </Badge>
+                    ))}
+                    {job.skills_required.length > 5 && (
+                      <Badge variant="outline">
+                        +{job.skills_required.length - 5} more
+                      </Badge>
+                    )}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
         </div>
       ) : (
         <Card className="p-12 text-center">
@@ -130,7 +135,7 @@ export default async function ClientJobsPage() {
             </div>
             <h3 className="text-xl font-semibold mb-2">No Jobs Posted Yet</h3>
             <p className="text-gray-600 mb-6">
-              Start by posting your first job and receive proposals from talented Nigerian freelancers
+              Start by posting your first job and receive proposals from talented Nigerian freelancers.
             </p>
             <Link href="/jobs/new">
               <Button>Post Your First Job</Button>

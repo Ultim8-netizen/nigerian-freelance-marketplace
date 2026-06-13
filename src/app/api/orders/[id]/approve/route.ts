@@ -1,5 +1,6 @@
 // src/app/api/orders/[id]/approve/route.ts
-// Client approves delivered work and releases payment atomically
+// CHANGED: Removed PATCH/revision handler — it is now at POST /api/orders/[id]/revision.
+// Standardized auth to direct createClient() (consistent with all other action routes).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
@@ -13,14 +14,6 @@ const approvalSchema = z.object({
   professionalism_rating: z.number().int().min(1).max(5).optional(),
 });
 
-const revisionSchema = z.object({
-  revision_note: z
-    .string()
-    .min(20, 'Revision note must be at least 20 characters')
-    .max(500, 'Revision note cannot exceed 500 characters'),
-});
-
-// Typed shape of the complete_order_with_payment RPC response
 interface OrderCompletionResult {
   success: boolean;
   error?: string;
@@ -28,13 +21,14 @@ interface OrderCompletionResult {
 }
 
 /**
- * POST - Approve delivered work and release payment
- * This endpoint atomically:
- * 1. Updates order status to completed
- * 2. Releases escrow payment to freelancer
- * 3. Creates review
- * 4. Updates freelancer ratings and stats
- * 5. Sends notification
+ * POST — Approve delivered work and release payment atomically.
+ * Delegates to the complete_order_with_payment SECURITY DEFINER RPC which:
+ *   1. Sets order.status = 'completed'
+ *   2. Sets escrow.status = 'released_to_freelancer'
+ *   3. Inserts a review record
+ *   4. Updates freelancer profile stats (total_jobs_completed, freelancer_rating)
+ *   5. Closes linked job if present
+ *   6. Notifies freelancer (funds pending 7-day clearance, not immediate credit)
  */
 export async function POST(
   request: NextRequest,
@@ -42,7 +36,10 @@ export async function POST(
 ) {
   try {
     const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
 
     if (authError || !user) {
       return NextResponse.json(
@@ -55,7 +52,7 @@ export async function POST(
     const body = await request.json();
     const validatedData = approvalSchema.parse(body);
 
-    // Verify order exists and user is authorized
+    // Verify order exists and user is the client
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .select('client_id, status')
@@ -78,39 +75,37 @@ export async function POST(
 
     if (order.status !== 'delivered') {
       return NextResponse.json(
-        {
-          success: false,
-          error: 'Order must be delivered before approval',
-        },
+        { success: false, error: 'Order must be in delivered status before approval' },
         { status: 400 }
       );
     }
 
-    // ATOMIC: Complete order and release payment using database function
-    // This ensures all operations succeed or fail together
-    const { data: rpcResult, error: rpcError } = await supabase
-      .rpc('complete_order_with_payment', {
+    // Atomically complete the order via SECURITY DEFINER RPC
+    const { data: rpcResult, error: rpcError } = await supabase.rpc(
+      'complete_order_with_payment',
+      {
         p_order_id: orderId,
         p_client_rating: validatedData.rating,
-        p_client_review: validatedData.review,
-        p_communication_rating: validatedData.communication_rating,
-        p_quality_rating: validatedData.quality_rating,
-        p_professionalism_rating: validatedData.professionalism_rating,
-      });
+        p_client_review: validatedData.review ?? null,
+        p_communication_rating: validatedData.communication_rating ?? null,
+        p_quality_rating: validatedData.quality_rating ?? null,
+        p_professionalism_rating: validatedData.professionalism_rating ?? null,
+      }
+    );
 
     if (rpcError) {
-      console.error('Order completion error:', rpcError);
+      console.error('Order completion RPC error:', rpcError);
       return NextResponse.json(
         {
           success: false,
           error: 'Failed to complete order',
-          details: process.env.NODE_ENV === 'development' ? rpcError.message : undefined,
+          details:
+            process.env.NODE_ENV === 'development' ? rpcError.message : undefined,
         },
         { status: 500 }
       );
     }
 
-    // Cast Json return type to known shape
     const result = rpcResult as OrderCompletionResult;
 
     if (!result?.success) {
@@ -125,172 +120,26 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      message: 'Order completed and payment released',
+      message: 'Order completed — payment queued for release',
       data: result,
     });
   } catch (error) {
-    console.error('Approval error:', error);
-
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         {
           success: false,
           error: 'Invalid input',
-          details: error.issues[0]?.message || 'Validation failed',
+          details: error.issues[0]?.message ?? 'Validation failed',
         },
         { status: 400 }
       );
     }
 
+    console.error('Approval error:', error);
     return NextResponse.json(
       {
         success: false,
         error: 'Internal server error',
-        details:
-          process.env.NODE_ENV === 'development' && error instanceof Error
-            ? error.message
-            : undefined,
-      },
-      { status: 500 }
-    );
-  }
-}
-
-/**
- * PATCH - Request revision on delivered work
- * Client can request revisions up to the maximum allowed
- */
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  try {
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
-
-    const orderId = params.id;
-    const body = await request.json();
-
-    // Validate revision request data
-    const validatedData = revisionSchema.parse(body);
-    const revisionNote = validatedData.revision_note;
-
-    // Get order details
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .select('client_id, freelancer_id, status, revision_count, max_revisions, title')
-      .eq('id', orderId)
-      .single();
-
-    if (orderError || !order) {
-      return NextResponse.json(
-        { success: false, error: 'Order not found' },
-        { status: 404 }
-      );
-    }
-
-    if (order.client_id !== user.id) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 403 }
-      );
-    }
-
-    if (order.status !== 'delivered') {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Can only request revisions on delivered orders',
-        },
-        { status: 400 }
-      );
-    }
-
-    // Null-coalesce nullable schema fields to safe defaults
-    const revisionCount = order.revision_count ?? 0;
-    const maxRevisions = order.max_revisions ?? 0;
-
-    if (revisionCount >= maxRevisions) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Maximum revisions reached (${maxRevisions})`,
-        },
-        { status: 400 }
-      );
-    }
-
-    // Update order status and increment revision count
-    const { error: updateError } = await supabase
-      .from('orders')
-      .update({
-        status: 'revision_requested',
-        revision_count: revisionCount + 1,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', orderId);
-
-    if (updateError) {
-      console.error('Order update error:', updateError);
-      throw updateError;
-    }
-
-    // Notify freelancer with revision details
-    await supabase.from('notifications').insert({
-      user_id: order.freelancer_id,
-      type: 'revision_requested',
-      title: 'Revision Requested',
-      message: `Client requested revision for: ${order.title}`,
-      link: `/freelancer/orders/${orderId}`,
-    });
-
-    // Log revision request to audit_logs (order_activities table does not exist in schema)
-    await supabase.from('audit_logs').insert({
-      user_id: user.id,
-      action: 'revision_requested',
-      resource_type: 'order',
-      resource_id: orderId,
-      metadata: {
-        revision_count: revisionCount + 1,
-        max_revisions: maxRevisions,
-        revision_note: revisionNote,
-      },
-    });
-
-    return NextResponse.json({
-      success: true,
-      message: 'Revision requested',
-      data: {
-        revision_count: revisionCount + 1,
-        max_revisions: maxRevisions,
-        revision_note: revisionNote,
-      },
-    });
-  } catch (error) {
-    console.error('Revision request error:', error);
-
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Invalid input',
-          details: error.issues[0]?.message || 'Validation failed',
-        },
-        { status: 400 }
-      );
-    }
-
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'Failed to request revision',
         details:
           process.env.NODE_ENV === 'development' && error instanceof Error
             ? error.message

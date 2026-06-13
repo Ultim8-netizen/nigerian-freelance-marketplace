@@ -1,77 +1,73 @@
+// src/components/services/DeleteServiceButton.tsx
+// Client button calling DELETE /api/services/:id.
+// Soft-deletes if the service has orders (sets is_active=false),
+// hard-deletes otherwise. Inline confirmation prevents accidents.
+
 'use client';
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { Trash2, Loader2 } from 'lucide-react';
+import { Trash2, Loader2, AlertTriangle } from 'lucide-react';
 
 interface DeleteServiceButtonProps {
   serviceId: string;
-  /** True if the service has existing orders — triggers soft-delete (deactivate) instead */
-  hasOrders: boolean;
 }
 
-type State = 'idle' | 'confirming' | 'loading';
-
-export function DeleteServiceButton({ serviceId, hasOrders }: DeleteServiceButtonProps) {
+export function DeleteServiceButton({ serviceId }: DeleteServiceButtonProps) {
   const router = useRouter();
-  const [state, setState] = useState<State>('idle');
-  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [loading, setLoading]       = useState(false);
+  const [error, setError]           = useState<string | null>(null);
 
-  const execute = async () => {
-    setState('loading');
+  const handleDelete = async () => {
+    setLoading(true);
     setError(null);
-
     try {
       const res = await fetch(`/api/services/${serviceId}`, { method: 'DELETE' });
       const data = await res.json();
-
-      if (!res.ok || !data.success) {
-        setError(data.error ?? 'Failed to delete service.');
-        setState('idle');
+      if (!res.ok) {
+        setError(data.error || 'Failed to delete service.');
+        setConfirming(false);
         return;
       }
-
       router.refresh();
     } catch {
       setError('Network error. Please try again.');
-      setState('idle');
+    } finally {
+      setLoading(false);
+      setConfirming(false);
     }
   };
 
-  if (state === 'loading') {
+  if (confirming) {
     return (
-      <Button variant="outline" size="sm" className="px-2" disabled>
-        <Loader2 className="w-4 h-4 animate-spin" />
-      </Button>
-    );
-  }
-
-  if (state === 'confirming') {
-    return (
-      <div className="flex flex-col gap-1.5 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-xs min-w-[160px]">
-        <p className="text-red-700 dark:text-red-300 font-medium">
-          {hasOrders ? 'Deactivate this service?' : 'Delete permanently?'}
+      <div className="flex flex-col gap-1.5 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+        <p className="text-xs text-red-800 dark:text-red-300 font-medium flex items-center gap-1">
+          <AlertTriangle className="w-3 h-3 shrink-0" />
+          Delete this service?
         </p>
-        {error && <p className="text-red-600 dark:text-red-400">{error}</p>}
-        <div className="flex gap-1">
+        <div className="flex gap-1.5">
           <Button
             size="sm"
-            variant="outline"
-            className="flex-1 h-6 text-xs text-red-600 border-red-300 hover:bg-red-100 dark:text-red-400 dark:border-red-700"
-            onClick={execute}
+            variant="destructive"
+            onClick={handleDelete}
+            disabled={loading}
+            className="h-7 px-2 text-xs"
           >
-            {hasOrders ? 'Deactivate' : 'Delete'}
+            {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Delete'}
           </Button>
           <Button
             size="sm"
             variant="ghost"
-            className="flex-1 h-6 text-xs"
-            onClick={() => { setState('idle'); setError(null); }}
+            onClick={() => setConfirming(false)}
+            disabled={loading}
+            className="h-7 px-2 text-xs"
           >
-            Cancel
+            Keep
           </Button>
         </div>
+        {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
       </div>
     );
   }
@@ -80,8 +76,8 @@ export function DeleteServiceButton({ serviceId, hasOrders }: DeleteServiceButto
     <Button
       variant="outline"
       size="sm"
-      className="px-2 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-      onClick={() => setState('confirming')}
+      className="px-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20 border-gray-200 dark:border-gray-700"
+      onClick={() => setConfirming(true)}
     >
       <Trash2 className="w-4 h-4" />
     </Button>

@@ -1,8 +1,10 @@
 // src/app/api/orders/[id]/dispute/route.ts
-// Raise dispute for an order
+// CHANGED: Standardized auth to direct createClient() + added rate limiting,
+// consistent with all other action routes in this domain.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { checkRateLimit } from '@/lib/rate-limit-upstash';
 import { z } from 'zod';
 
 const disputeSchema = z.object({
@@ -11,13 +13,17 @@ const disputeSchema = z.object({
   evidence: z.array(z.string().url()).max(10).optional(),
 });
 
+// POST — Raise a dispute
 export async function POST(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
     const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
 
     if (authError || !user) {
       return NextResponse.json(
@@ -26,14 +32,27 @@ export async function POST(
       );
     }
 
+    // Rate limiting: disputes are low-frequency, sensitive actions
+    const rateLimitResult = await checkRateLimit('api', user.id);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Too many requests',
+          resetAt: rateLimitResult.reset,
+        },
+        { status: 429 }
+      );
+    }
+
     const orderId = params.id;
     const body = await request.json();
     const validatedData = disputeSchema.parse(body);
 
-    // Get order
+    // Fetch full order for ownership + status checks
     const { data: order, error: orderError } = await supabase
       .from('orders')
-      .select('*')
+      .select('id, client_id, freelancer_id, status, title')
       .eq('id', orderId)
       .single();
 
@@ -44,7 +63,6 @@ export async function POST(
       );
     }
 
-    // Verify user is either client or freelancer
     const isClient = order.client_id === user.id;
     const isFreelancer = order.freelancer_id === user.id;
 
@@ -55,10 +73,8 @@ export async function POST(
       );
     }
 
-    // Can't dispute completed or refunded orders
-    // status is nullable per schema, so null-coalesce to empty string
     const orderStatus = order.status ?? '';
-    if (['completed', 'refunded', 'disputed'].includes(orderStatus)) {
+    if (['completed', 'refunded', 'disputed', 'cancelled'].includes(orderStatus)) {
       return NextResponse.json(
         {
           success: false,
@@ -68,24 +84,24 @@ export async function POST(
       );
     }
 
-    // Check if dispute already exists
+    // Prevent duplicate open disputes
     const { data: existingDispute } = await supabase
       .from('disputes')
       .select('id')
       .eq('order_id', orderId)
       .eq('status', 'open')
-      .single();
+      .maybeSingle();
 
     if (existingDispute) {
       return NextResponse.json(
-        { success: false, error: 'Dispute already exists for this order' },
+        { success: false, error: 'A dispute already exists for this order' },
         { status: 400 }
       );
     }
 
     const againstId = isClient ? order.freelancer_id : order.client_id;
 
-    // Create dispute
+    // Create dispute record
     const { data: dispute, error: disputeError } = await supabase
       .from('disputes')
       .insert({
@@ -94,29 +110,32 @@ export async function POST(
         against: againstId,
         reason: validatedData.reason,
         description: validatedData.description,
-        evidence: validatedData.evidence,
+        evidence: validatedData.evidence ?? null,
         status: 'open',
       })
       .select()
       .single();
 
     if (disputeError) {
-      throw disputeError;
+      console.error('Dispute creation error:', disputeError);
+      return NextResponse.json(
+        { success: false, error: 'Failed to create dispute' },
+        { status: 500 }
+      );
     }
 
-    // Update order status
+    // Freeze the order and escrow
     await supabase
       .from('orders')
-      .update({ status: 'disputed' })
+      .update({ status: 'disputed', updated_at: new Date().toISOString() })
       .eq('id', orderId);
 
-    // Update escrow status
     await supabase
       .from('escrow')
       .update({ status: 'disputed' })
       .eq('order_id', orderId);
 
-    // Notify other party
+    // Notify the other party
     await supabase.from('notifications').insert({
       user_id: againstId,
       type: 'dispute_raised',
@@ -128,15 +147,17 @@ export async function POST(
     return NextResponse.json({
       success: true,
       data: dispute,
-      message:
-        'Dispute raised successfully. Our team will review within 48 hours.',
+      message: 'Dispute raised. Our team will review within 48 hours.',
     });
   } catch (error) {
     console.error('Dispute error:', error);
 
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { success: false, error: error.issues[0].message },
+        {
+          success: false,
+          error: error.issues[0]?.message ?? 'Validation failed',
+        },
         { status: 400 }
       );
     }
@@ -148,14 +169,17 @@ export async function POST(
   }
 }
 
-// GET - View dispute details
+// GET — View dispute details
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
     const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
 
     if (authError || !user) {
       return NextResponse.json(
@@ -164,18 +188,17 @@ export async function GET(
       );
     }
 
-    const orderId = params.id;
-
-    // Get dispute
     const { data: dispute, error: disputeError } = await supabase
       .from('disputes')
-      .select(`
+      .select(
+        `
         *,
         order:orders(*),
         raised_by_user:profiles!disputes_raised_by_fkey(*),
         against_user:profiles!disputes_against_fkey(*)
-      `)
-      .eq('order_id', orderId)
+      `
+      )
+      .eq('order_id', params.id)
       .single();
 
     if (disputeError || !dispute) {
@@ -185,7 +208,6 @@ export async function GET(
       );
     }
 
-    // Verify access
     if (dispute.raised_by !== user.id && dispute.against !== user.id) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized' },
@@ -193,10 +215,7 @@ export async function GET(
       );
     }
 
-    return NextResponse.json({
-      success: true,
-      data: dispute,
-    });
+    return NextResponse.json({ success: true, data: dispute });
   } catch (error) {
     console.error('Dispute fetch error:', error);
     return NextResponse.json(
