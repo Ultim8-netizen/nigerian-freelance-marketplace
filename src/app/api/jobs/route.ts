@@ -2,6 +2,16 @@
 // FIXED: GET handler now applies applyMiddleware with auth:optional + rateLimit:api.
 // Previously the GET endpoint had zero rate limiting, leaving it as the only
 // unprotected read endpoint in the entire domain.
+//
+// FIXED (Domain 4 audit, POST handler):
+//   - sanitizedBody now reads `body.required_skills` (was `body.skills_required`,
+//     which never matched what CreateJobForm sends — every job was created with
+//     an empty skills array regardless of what the user entered).
+//   - Added subcategory + estimated_duration sanitization/passthrough — both are
+//     real columns on `jobs` and both are collected by CreateJobForm, previously
+//     silently dropped.
+//   - insert now writes `required_skills` (was `skills_required`, which is not a
+//     column on `jobs` — that insert would have thrown "column does not exist").
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -152,10 +162,14 @@ export async function POST(request: NextRequest) {
 
     const sanitizedBody = {
       ...body,
-      title:           sanitizeText(body.title || ''),
-      description:     sanitizeHtml(body.description || ''),
-      category:        sanitizeText(body.category || ''),
-      skills_required: body.skills_required?.map((s: string) => sanitizeText(s)) || [],
+      title:              sanitizeText(body.title || ''),
+      description:        sanitizeHtml(body.description || ''),
+      category:           sanitizeText(body.category || ''),
+      subcategory:        body.subcategory ? sanitizeText(body.subcategory) : undefined,
+      estimated_duration: body.estimated_duration ? sanitizeText(body.estimated_duration) : undefined,
+      // FIXED: was `body.skills_required` — CreateJobForm sends `required_skills`,
+      // matching the jobs.required_skills column.
+      required_skills:    body.required_skills?.map((s: string) => sanitizeText(s)) || [],
     };
 
     const validatedData = jobSchema.parse(sanitizedBody);
@@ -164,19 +178,22 @@ export async function POST(request: NextRequest) {
     const { data, error: jobError } = await supabase
       .from('jobs')
       .insert({
-        client_id:       user.id,
-        title:           validatedData.title,
-        description:     validatedData.description,
-        category:        validatedData.category,
-        budget_type:     validatedData.budget_type,
-        budget_min:      validatedData.budget_min,
-        budget_max:      validatedData.budget_max,
-        experience_level: validatedData.experience_level,
-        deadline:        validatedData.deadline,
-        skills_required: validatedData.skills_required,
-        status:          'open',
-        views_count:     0,
-        proposals_count: 0,
+        client_id:          user.id,
+        title:              validatedData.title,
+        description:        validatedData.description,
+        category:           validatedData.category,
+        subcategory:        validatedData.subcategory ?? null,
+        budget_type:        validatedData.budget_type,
+        budget_min:         validatedData.budget_min ?? null,
+        budget_max:         validatedData.budget_max ?? null,
+        experience_level:   validatedData.experience_level,
+        estimated_duration: validatedData.estimated_duration ?? null,
+        deadline:           validatedData.deadline ?? null,
+        // FIXED: was `skills_required` — not a column on `jobs`.
+        required_skills:    validatedData.required_skills ?? [],
+        status:             'open',
+        views_count:        0,
+        proposals_count:    0,
       })
       .select()
       .single();

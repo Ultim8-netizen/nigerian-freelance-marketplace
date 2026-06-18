@@ -1,10 +1,17 @@
 // src/app/api/jobs/[id]/route.ts
 // PRODUCTION-READY: Individual job operations with comprehensive security
+//
+// FIXED (Domain 4 audit, PATCH handler):
+//   - sanitizedBody now reads/writes `required_skills` (was `skills_required`,
+//     mismatched against both CreateJobForm and the jobs table column).
+//   - `jobSchema.partial()` → `jobBaseSchema.partial()`. jobSchema is
+//     `jobBaseSchema.refine(...)`, which returns ZodEffects — ZodEffects has
+//     no `.partial()` method, so this was a compile error.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
 import { createClient } from '@/lib/supabase/server';
-import { jobSchema } from '@/lib/validations';
+import { jobBaseSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeText, sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
@@ -162,10 +169,16 @@ export async function PATCH(
       title: body.title ? sanitizeText(body.title) : undefined,
       description: body.description ? sanitizeHtml(body.description) : undefined,
       category: body.category ? sanitizeText(body.category) : undefined,
-      skills_required: body.skills_required?.map((skill: string) => sanitizeText(skill)) || undefined,
+      subcategory: body.subcategory ? sanitizeText(body.subcategory) : undefined,
+      estimated_duration: body.estimated_duration ? sanitizeText(body.estimated_duration) : undefined,
+      // FIXED: was `body.skills_required` — matches CreateJobForm + jobs.required_skills.
+      required_skills: body.required_skills?.map((skill: string) => sanitizeText(skill)) || undefined,
     };
 
-    const validatedData = jobSchema.partial().parse(sanitizedBody);
+    // FIXED: was `jobSchema.partial()` — jobSchema is a ZodEffects (from
+    // .refine()) and has no `.partial()`. jobBaseSchema is the plain
+    // ZodObject this needs.
+    const validatedData = jobBaseSchema.partial().parse(sanitizedBody);
 
     const { data: updatedJob, error: updateError } = await supabase
       .from('jobs')

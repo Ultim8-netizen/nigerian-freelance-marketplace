@@ -8,6 +8,22 @@
 //      - autoHold=true → inserted with is_active:false, flagged for admin review.
 // FIX: requirePostingActive guard added — blocks new listing creation when
 //      profiles.posting_suspended_until is set and in the future.
+//
+// FIXED (Domain 4 audit, GET handler):
+//   1. Rate limiting added — was completely absent (same pattern as api/jobs/route.ts).
+//   2. verified_only filter: was `.eq('freelancer.identity_verified', true)` on an
+//      outer join, which PostgREST does not apply as a row filter — it silently
+//      returned all rows. Pre-fetching verified profile IDs and using
+//      `.in('freelancer_id', ids)` is unambiguous and correct.
+//   3. sort_by=rating: was passing 'freelancer.freelancer_rating' as a dotted
+//      string to `.order()`, which PostgREST does not interpret as a foreign-table
+//      column reference. Fixed to use `{ referencedTable: 'profiles' }` option.
+//
+// FIXED (Domain 4 audit, POST handler):
+//   Removed dead `tags:` line from sanitizedBody. `tags` is not a column on
+//   `services` (database.types.ts) — it was being stripped by Zod before the
+//   insert anyway, but was also tripping the old `tags.length >= 3` refine that
+//   caused every service creation to fail. Both that refine and this line are gone.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware, requirePostingActive } from '@/lib/api/enhanced-middleware';
@@ -24,6 +40,13 @@ import { z } from 'zod';
 
 export async function GET(request: NextRequest) {
   try {
+    // FIXED: rate limiting added — was completely absent
+    const { error: rlError } = await applyMiddleware(request, {
+      auth: 'optional',
+      rateLimit: 'api',
+    });
+    if (rlError) return rlError;
+
     const searchParams = request.nextUrl.searchParams;
 
     const category = sanitizeText(searchParams.get('category') || '');
@@ -33,7 +56,7 @@ export async function GET(request: NextRequest) {
     const state    = sanitizeText(searchParams.get('state')    || '');
     const city     = sanitizeText(searchParams.get('city')     || '');
     const verified = searchParams.get('verified_only') === 'true';
-    const sortBy   = searchParams.get('sort_by') || 'created_at';
+    const sortBy   = searchParams.get('sort_by') || 'recent';
     const page     = Math.max(1, parseInt(searchParams.get('page')     || '1'));
     const perPage  = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
 
@@ -49,6 +72,35 @@ export async function GET(request: NextRequest) {
     }
 
     const supabase = await createClient();
+
+    // FIXED: verified_only — pre-fetch verified profile IDs so we can use
+    // `.in('freelancer_id', ids)` instead of filtering on a joined column.
+    // The old `.eq('freelancer.identity_verified', true)` on an outer join
+    // silently matched nothing in PostgREST, returning all rows.
+    let verifiedFreelancerIds: string[] | null = null;
+    if (verified) {
+      const { data: verifiedProfiles } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('identity_verified', true);
+
+      if (!verifiedProfiles || verifiedProfiles.length === 0) {
+        // No verified freelancers exist — short-circuit with an empty result
+        return NextResponse.json({
+          success: true,
+          data: [],
+          pagination: { page, per_page: perPage, total: 0, total_pages: 0 },
+          filters: {
+            category, search,
+            price_range: { min: minPrice, max: maxPrice },
+            location: { state, city },
+            verified_only: verified,
+            sort_by: sortBy,
+          },
+        });
+      }
+      verifiedFreelancerIds = verifiedProfiles.map((p: { id: string }) => p.id);
+    }
 
     let query = supabase
       .from('services')
@@ -69,30 +121,42 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    if (category) query = query.ilike('category', `%${category}%`);
-    if (minPrice) query = query.gte('base_price', parseFloat(minPrice));
-    if (maxPrice) query = query.lte('base_price', parseFloat(maxPrice));
-    if (state)    query = query.ilike('service_location', `%${state}%`);
-    if (city)     query = query.ilike('service_location', `%${city}%`);
-    if (verified) query = query.eq('freelancer.identity_verified', true);
-
-    const sortMap: Record<string, string> = {
-      price_low:  'base_price',
-      price_high: 'base_price',
-      rating:     'freelancer.freelancer_rating',
-      popular:    'orders_count',
-      recent:     'created_at',
-    };
-
-    const sortColumn = sortMap[sortBy] || 'created_at';
-    const ascending  = sortBy !== 'price_high' && sortBy !== 'rating' && sortBy !== 'popular';
-
-    query = query.order(sortColumn, { ascending });
+    if (category)              query = query.ilike('category', `%${category}%`);
+    if (minPrice)              query = query.gte('base_price', parseFloat(minPrice));
+    if (maxPrice)              query = query.lte('base_price', parseFloat(maxPrice));
+    if (state)                 query = query.ilike('service_location', `%${state}%`);
+    if (city)                  query = query.ilike('service_location', `%${city}%`);
+    if (verifiedFreelancerIds) query = query.in('freelancer_id', verifiedFreelancerIds);
 
     const from = (page - 1) * perPage;
     const to   = from + perPage - 1;
 
-    const { data, error, count } = await query.range(from, to);
+    // FIXED: sort_by=rating — the old code passed 'freelancer.freelancer_rating'
+    // as a column string, which PostgREST does not recognise as a foreign-table
+    // column reference. The correct Supabase client API is { referencedTable }.
+    // All other sort columns exist directly on the services table and need no
+    // special option.
+    let fetchResult;
+    if (sortBy === 'rating') {
+      fetchResult = await query
+        .order('freelancer_rating', { referencedTable: 'profiles', ascending: false })
+        .range(from, to);
+    } else {
+      const colMap: Record<string, string> = {
+        price_low:  'base_price',
+        price_high: 'base_price',
+        popular:    'orders_count',
+        recent:     'created_at',
+      };
+      const sortColumn = colMap[sortBy] || 'created_at';
+      const ascending  = sortBy !== 'price_high' && sortBy !== 'popular';
+
+      fetchResult = await query
+        .order(sortColumn, { ascending })
+        .range(from, to);
+    }
+
+    const { data, error, count } = fetchResult;
 
     if (error) {
       logger.error('Services fetch error', error);
@@ -116,8 +180,8 @@ export async function GET(request: NextRequest) {
       filters: {
         category,
         search,
-        price_range:  { min: minPrice, max: maxPrice },
-        location:     { state, city },
+        price_range:   { min: minPrice, max: maxPrice },
+        location:      { state, city },
         verified_only: verified,
         sort_by:       sortBy,
       },
@@ -154,21 +218,21 @@ export async function POST(request: NextRequest) {
     const supabase = await createClient();
 
     // ── Gate 0: Posting suspension ────────────────────────────────────────
-    // Checks profiles.posting_suspended_until. Returns 403 with resumesAt
-    // if the freelancer is within an active 72-hour suspension window from
-    // consecutive 1-star reviews. Does not affect account_status.
     const postingBlocked = await requirePostingActive(user.id, supabase);
     if (postingBlocked) return postingBlocked;
 
     const body = await request.json();
 
+    // FIXED: removed dead `tags:` line — `tags` is not a column on `services`
+    // and was being stripped by Zod before the insert anyway. The old
+    // `tags.length >= 3` refine (since removed from serviceSchema) was also
+    // triggered by the defaulted empty array, rejecting every service creation.
     const sanitizedBody = {
       ...body,
       title:        sanitizeText(body.title       || ''),
       description:  sanitizeHtml(body.description || ''),
       category:     sanitizeText(body.category    || ''),
       requirements: body.requirements ? sanitizeHtml(body.requirements) : undefined,
-      tags:         body.tags?.map((tag: string) => sanitizeText(tag)) || [],
     };
 
     const validatedData = serviceSchema.parse(sanitizedBody);
@@ -197,15 +261,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Gate 2: Content triggers — prohibited keywords & high-value new accounts
-    //
-    // FIX: evaluateContentTriggers was dead code; it is now called here.
-    // Three outcomes:
-    //   allowed=false  → reject immediately, notify user, return 400.
-    //   autoHold=true  → insert with is_active:false so the service is invisible
-    //                    to clients; security_log written inside automation.ts
-    //                    surfaces it in the admin Flags page for review.
-    //   otherwise      → insert normally with is_active:true.
+    // ── Gate 2: Content triggers ──────────────────────────────────────────
     const contentCheck = await evaluateContentTriggers(user.id, {
       title:       validatedData.title,
       description: validatedData.description,
@@ -261,8 +317,6 @@ export async function POST(request: NextRequest) {
         freelancer_id: user.id,
         ...serviceData,
         images:       body.images || [],
-        // autoHold: is_active=false makes the service invisible to clients
-        // until admin approves it from the Flags & Tickets page.
         is_active:    isActive,
         views_count:  0,
         orders_count: 0,
@@ -299,7 +353,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Notify the freelancer when their service is held for review
     if (contentCheck.autoHold) {
       await supabase.from('notifications').insert({
         user_id: user.id,

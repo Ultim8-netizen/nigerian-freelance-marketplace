@@ -5,6 +5,12 @@
 //      client component that calls POST /api/proposals with full validation,
 //      duplicate check, rate limiting, and notification (all in the API route)
 //   3. revalidatePath import removed (no longer needed)
+//
+// FIXED (Domain 4 audit): the "Required Skills" block referenced
+// `job.skills_required`, which is not a column on `jobs` — the real column
+// is `required_skills` (database.types.ts). The select uses `*`, so the data
+// was present on `job.required_skills` all along; this section just never
+// rendered because it was checking the wrong field name.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect, notFound } from 'next/navigation';
@@ -31,7 +37,7 @@ export default async function JobDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string; success?: string }>;
 }) {
-  const { id }                          = await params;
+  const { id } = await params;
   const { error: qError, success: qSuccess } = await searchParams;
 
   const supabase = await createClient();
@@ -179,14 +185,14 @@ export default async function JobDetailPage({
                 </p>
               </div>
 
-              {/* Required skills — FIXED: skills_required (was required_skills) */}
-              {job.skills_required && job.skills_required.length > 0 && (
+              {/* Required skills — FIXED: required_skills (was skills_required, not a column) */}
+              {job.required_skills && job.required_skills.length > 0 && (
                 <div>
                   <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">
                     Required Skills
                   </h2>
                   <div className="flex flex-wrap gap-2">
-                    {(job.skills_required as string[]).map((skill: string, i: number) => (
+                    {(job.required_skills as string[]).map((skill: string, i: number) => (
                       <Badge key={i} variant="outline">
                         {skill}
                       </Badge>
@@ -300,6 +306,7 @@ export default async function JobDetailPage({
                   )}
                 </div>
               </div>
+
               <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400">
                 {job.client?.client_rating != null && (
                   <div className="flex justify-between">
@@ -319,7 +326,9 @@ export default async function JobDetailPage({
             </Card>
 
             <Card className="p-5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-              <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Job Overview</h3>
+              <h3 className="font-semibold text-gray-900 dark:text-white mb-4">
+                Job Overview
+              </h3>
               <div className="space-y-3 text-sm">
                 <div className="flex justify-between">
                   <span className="text-gray-500 dark:text-gray-400">Budget</span>

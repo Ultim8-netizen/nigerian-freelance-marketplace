@@ -2,6 +2,12 @@
 // Client's job management view: full job details, all proposals with
 // accept/reject actions, accepted freelancer highlight, job cancellation.
 // Ownership enforced at query level (.eq('client_id', user.id)).
+//
+// FIXED (Domain 4 audit): the select list requested `skills_required`, which
+// is not a column on `jobs` (database.types.ts defines `required_skills`).
+// This made the entire query throw "column jobs.skills_required does not
+// exist", breaking this page outright. Changed the select to
+// `required_skills` and updated the two JSX references below.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect, notFound } from 'next/navigation';
@@ -91,7 +97,7 @@ export default async function ClientJobDetailPage({
     .select(`
       id, title, description, status, budget_type, budget_min, budget_max,
       experience_level, category, deadline, created_at, updated_at,
-      views_count, proposals_count, skills_required,
+      views_count, proposals_count, required_skills,
       proposals(
         id, freelancer_id, proposed_price, delivery_days, status,
         created_at, cover_letter,
@@ -167,13 +173,13 @@ export default async function ClientJobDetailPage({
               {job.description}
             </p>
 
-            {job.skills_required && job.skills_required.length > 0 && (
+            {job.required_skills && job.required_skills.length > 0 && (
               <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
                 <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Required Skills
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {(job.skills_required as string[]).map((skill, i) => (
+                  {(job.required_skills as string[]).map((skill, i) => (
                     <span
                       key={i}
                       className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border border-blue-200 dark:border-blue-700"

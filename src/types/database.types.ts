@@ -2188,6 +2188,10 @@ export type Database = {
         }
         Returns: Json
       }
+      decrement_proposals_count: {
+        Args: { p_job_id: string }
+        Returns: undefined
+      }
       find_frequent_disputers: {
         Args: { since_date: string }
         Returns: {

@@ -6963,4 +6963,31 @@ CREATE POLICY "Order participants can update their orders"
   USING (client_id = auth.uid() OR freelancer_id = auth.uid());
 
 
-  
+  -- Migration: add decrement_proposals_count RPC
+-- Run once in the Supabase SQL editor (or via `supabase db push`) before deploying.
+--
+-- Context: api/proposals/[id]/route.ts (withdraw action) calls
+-- supabase.rpc('decrement_proposals_count', { p_job_id }) when a freelancer
+-- withdraws a proposal. Only increment_proposals_count existed in the schema —
+-- decrement was missing, so the proposals_count column drifted upward on every
+-- withdrawal and never corrected itself.
+--
+-- GREATEST(0, ...) prevents the counter going negative if the function is
+-- called more times than the count allows (e.g. manual admin actions or a
+-- race condition on concurrent withdrawals).
+
+CREATE OR REPLACE FUNCTION decrement_proposals_count(p_job_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE jobs
+  SET proposals_count = GREATEST(0, COALESCE(proposals_count, 0) - 1)
+  WHERE id = p_job_id;
+END;
+$$;
+
+-- Grant execute to authenticated users (same pattern as increment_proposals_count)
+GRANT EXECUTE ON FUNCTION decrement_proposals_count(uuid) TO authenticated;

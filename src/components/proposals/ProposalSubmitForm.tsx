@@ -3,6 +3,13 @@
 // Replaces the broken server action in jobs/[id]/page.tsx.
 // Calls POST /api/proposals; on success triggers router.refresh() so the
 // parent server component re-fetches and displays the submitted proposal state.
+//
+// FIXED (Domain 4 audit): client-side cover letter minimum raised from 30 to
+// 100 characters to match proposalSchema.cover_letter.min(100) in
+// src/lib/validations.ts. Previously a 30–99 character cover letter passed
+// this form's check and was then rejected by the API with a confusing
+// "Validation failed" — now caught before the network round-trip with a
+// message that matches the server's actual requirement.
 
 'use client';
 
@@ -39,8 +46,8 @@ export function ProposalSubmitForm({ jobId }: ProposalSubmitFormProps) {
       setError('Please enter a valid delivery time (at least 1 day).');
       return;
     }
-    if (!coverLetter.trim() || coverLetter.trim().length < 30) {
-      setError('Cover letter must be at least 30 characters.');
+    if (!coverLetter.trim() || coverLetter.trim().length < 100) {
+      setError('Cover letter must be at least 100 characters.');
       return;
     }
 
@@ -161,8 +168,11 @@ export function ProposalSubmitForm({ jobId }: ProposalSubmitFormProps) {
           onChange={(e) => setCoverLetter(e.target.value)}
           className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
         />
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-          Minimum 30 characters. Personalise your proposal for better results.
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex justify-between">
+          <span>Personalise your proposal for better results.</span>
+          <span className={coverLetter.trim().length < 100 ? 'text-red-400' : 'text-green-500'}>
+            {coverLetter.trim().length}/100 min
+          </span>
         </p>
       </div>
 

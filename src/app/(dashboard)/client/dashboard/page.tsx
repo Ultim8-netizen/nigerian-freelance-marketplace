@@ -1,6 +1,9 @@
 // src/app/(dashboard)/client/dashboard/page.tsx
 // FIXED: Proper type handling for Order with freelancer relation and nullable status
 // FIXED: Removed proposals_count alias that was overwriting the native integer column
+//
+// FIXED (Domain 4 audit): "Post a New Job" Quick Action linked to /jobs/new,
+// which has no route file. Changed to /client/post-jobs (the actual page).
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -64,7 +67,7 @@ export default async function ClientDashboard() {
     .eq('client_id', user.id)
     .eq('status', 'completed');
 
-  // Get pending proposals
+  // Get pending proposals for this client's jobs
   const { count: proposalsCount } = await supabase
     .from('proposals')
     .select(`
@@ -124,7 +127,8 @@ export default async function ClientDashboard() {
         <Card className="p-6">
           <h2 className="text-xl font-semibold mb-4">Quick Actions</h2>
           <div className="space-y-3">
-            <Link href="/jobs/new">
+            {/* FIXED: was /jobs/new — that route does not exist. Canonical path is /client/post-jobs */}
+            <Link href="/client/post-jobs">
               <Button className="w-full">Post a New Job</Button>
             </Link>
             <Link href="/services">

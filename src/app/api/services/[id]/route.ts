@@ -6,6 +6,21 @@
 //   3. requireOwnership() removed — ownership checked manually in-query
 //      (same pattern as jobs/[id]/route.ts), eliminating a redundant DB call
 //   4. Fire-and-forget view increment uses void (project protocol)
+//
+// FIXED (Domain 4 audit, GET handler):
+//   reviews:reviews!reviews_reviewee_id_fkey(...) removed from the services
+//   select. That FK links reviews.reviewee_id → profiles.id, not services.id.
+//   PostgREST cannot resolve this embed from the services table and was throwing
+//   a 500 on every service-detail request.
+//   Reviews are now fetched in a separate round-trip: completed order IDs for
+//   this service are retrieved first (orders.service_id), then reviews for those
+//   orders are queried and merged into the response under the same `reviews` key,
+//   preserving the response shape for any consumer reading data.reviews.
+//
+// FIXED (Domain 4 audit, PATCH handler):
+//   Removed dead `tags:` sanitization line from sanitizedBody. `tags` is not a
+//   column on `services` (database.types.ts) and was stripped by Zod anyway;
+//   leaving it in was misleading.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware } from '@/lib/api/enhanced-middleware';
@@ -14,6 +29,22 @@ import { serviceSchema } from '@/lib/validations';
 import { sanitizeHtml, sanitizeText, sanitizeUuid } from '@/lib/security/sanitize';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
+
+// ── Local types ───────────────────────────────────────────────────────────────
+
+type ReviewRow = {
+  id: string;
+  rating: number;
+  review_text: string | null;
+  created_at: string | null;
+  communication_rating: number | null;
+  quality_rating: number | null;
+  professionalism_rating: number | null;
+  reviewer: {
+    full_name: string;
+    profile_image_url: string | null;
+  } | null;
+};
 
 // GET — service details (public, optional auth, rate-limited)
 export async function GET(
@@ -39,6 +70,8 @@ export async function GET(
 
     const supabase = await createClient();
 
+    // Step 1: Fetch the service with freelancer profile.
+    // The reviews embed is intentionally absent — see file header for why.
     const { data: service, error } = await supabase
       .from('services')
       .select(`
@@ -48,12 +81,6 @@ export async function GET(
           freelancer_rating, total_jobs_completed,
           identity_verified, student_verified,
           university, location, created_at
-        ),
-        reviews:reviews!reviews_reviewee_id_fkey(
-          id, rating, review_text, created_at,
-          reviewer:profiles!reviews_reviewer_id_fkey(
-            full_name, profile_image_url
-          )
         )
       `)
       .eq('id', serviceId)
@@ -67,6 +94,47 @@ export async function GET(
       );
     }
 
+    // Step 2: Fetch reviews via the orders bridge.
+    // There is no FK from reviews to services. The traversal is:
+    //   services ← orders.service_id   (orders has service_id FK)
+    //   orders   ← reviews.order_id   (reviews has order_id FK)
+    // So we go: service → orders → reviews.
+    let reviews: ReviewRow[] = [];
+
+    const { data: serviceOrders } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('service_id', serviceId)
+      .eq('status', 'completed');
+
+    if (serviceOrders && serviceOrders.length > 0) {
+      const orderIds = serviceOrders.map((o: { id: string }) => o.id);
+
+      const { data: reviewData, error: reviewError } = await supabase
+        .from('reviews')
+        .select(`
+          id, rating, review_text, created_at,
+          communication_rating, quality_rating, professionalism_rating,
+          reviewer:profiles!reviews_reviewer_id_fkey(
+            full_name, profile_image_url
+          )
+        `)
+        .in('order_id', orderIds)
+        .eq('is_public', true)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      if (reviewError) {
+        // Non-fatal: log and continue with empty reviews rather than failing the page
+        logger.warn('Reviews fetch failed for service', {
+          serviceId,
+          error: reviewError.message,
+        });
+      } else {
+        reviews = (reviewData ?? []) as ReviewRow[];
+      }
+    }
+
     const viewsCount = service.views_count ?? 0;
 
     // Fire-and-forget (project protocol: void)
@@ -77,7 +145,15 @@ export async function GET(
 
     logger.info('Service viewed', { serviceId, viewCount: viewsCount + 1 });
 
-    return NextResponse.json({ success: true, data: service });
+    return NextResponse.json({
+      success: true,
+      // Merge reviews into the data object — same key the old embed used,
+      // so any existing consumer reading data.reviews still works.
+      data: {
+        ...service,
+        reviews,
+      },
+    });
   } catch (err) {
     logger.error('Service fetch error', err as Error);
     return NextResponse.json(
@@ -141,13 +217,15 @@ export async function PATCH(
 
     const body = await request.json();
 
+    // FIXED: removed `tags` from sanitizedBody — `tags` is not a column on
+    // `services` (database.types.ts). Zod was already stripping it before the
+    // update, so this was dead code; removing it prevents confusion.
     const sanitizedBody = {
       ...body,
       title:        body.title        ? sanitizeText(body.title)        : undefined,
       description:  body.description  ? sanitizeHtml(body.description)  : undefined,
       category:     body.category     ? sanitizeText(body.category)     : undefined,
       requirements: body.requirements ? sanitizeHtml(body.requirements) : undefined,
-      tags:         body.tags?.map((tag: string) => sanitizeText(tag))  || undefined,
     };
 
     const validatedData = serviceSchema.partial().parse(sanitizedBody);

@@ -1,6 +1,13 @@
 // src/components/services/EditServiceForm.tsx
 // Client form for editing an existing service. Calls PATCH /api/services/:id.
 // On success, redirects to /freelancer/services.
+//
+// FIXED (Domain 4 audit): removed the `tags` field entirely. `tags` is not a
+// column on the `services` table (database.types.ts). The field was collecting
+// user input, serialising it into an array, and sending it in the PATCH body —
+// where it was stripped silently by serviceSchema.partial() before the update,
+// meaning nothing was ever persisted. Keeping the field creates a false UX
+// expectation (user fills in tags, saves, refreshes — tags are gone).
 
 'use client';
 
@@ -17,7 +24,6 @@ interface ServiceData {
   category: string;
   base_price: number;
   requirements: string | null;
-  tags: string[] | null;
   is_active: boolean;
   service_location: string | null;
   remote_ok: boolean | null;
@@ -35,7 +41,6 @@ export default function EditServiceForm({ service }: EditServiceFormProps) {
   const [category, setCategory]         = useState(service.category);
   const [basePrice, setBasePrice]       = useState(String(service.base_price));
   const [requirements, setRequirements] = useState(service.requirements ?? '');
-  const [tags, setTags]                 = useState((service.tags ?? []).join(', '));
   const [isActive, setIsActive]         = useState(service.is_active);
   const [location, setLocation]         = useState(service.service_location ?? '');
   const [remoteOk, setRemoteOk]         = useState(service.remote_ok ?? true);
@@ -64,11 +69,6 @@ export default function EditServiceForm({ service }: EditServiceFormProps) {
       return;
     }
 
-    const parsedTags = tags
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean);
-
     setLoading(true);
     try {
       const res = await fetch(`/api/services/${service.id}`, {
@@ -80,7 +80,6 @@ export default function EditServiceForm({ service }: EditServiceFormProps) {
           category:         category.trim(),
           base_price:       price,
           requirements:     requirements.trim() || null,
-          tags:             parsedTags,
           is_active:        isActive,
           service_location: location.trim() || null,
           remote_ok:        remoteOk,
@@ -169,21 +168,6 @@ export default function EditServiceForm({ service }: EditServiceFormProps) {
             className={`${inputClass} resize-none`}
           />
         </div>
-
-        <div>
-          <label htmlFor="tags" className={labelClass}>Tags</label>
-          <input
-            type="text"
-            id="tags"
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="e.g. logo, branding, design (comma-separated)"
-            className={inputClass}
-          />
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Separate tags with commas. Helps clients discover your service.
-          </p>
-        </div>
       </Card>
 
       <Card className="p-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 space-y-5">
@@ -252,7 +236,7 @@ export default function EditServiceForm({ service }: EditServiceFormProps) {
               onChange={(e) => setIsActive(e.target.checked)}
               className="sr-only peer"
             />
-            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600" />
+            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600" />
           </label>
         </div>
       </Card>

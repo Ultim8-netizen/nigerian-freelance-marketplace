@@ -1,6 +1,20 @@
 // src/lib/validations.ts
 // Enhanced Zod validation schemas with smart UX innovations and comprehensive security
 // Zod v4 compatible - all deprecation warnings resolved
+//
+// FIXED (Domain 4 audit):
+//   - jobSchema: renamed skills_required → required_skills (matches jobs table column),
+//     removed .min(1) refine (was rejecting every submission with an empty array),
+//     added subcategory + estimated_duration (collected by CreateJobForm but previously
+//     dropped silently), split into jobBaseSchema (plain ZodObject, used with .partial()
+//     in PATCH) + jobSchema (jobBaseSchema.refine(...) for budget_max >= budget_min on create).
+//   - proposalSchema.portfolio_links: removed .refine(length >= 1) — the form always
+//     sends [] since portfolio links aren't collected, which made every proposal fail.
+//   - serviceSchema: base_price/delivery_days/revisions_included now z.coerce.number()
+//     since CreateServiceForm keeps these as strings in form state. Removed `tags` —
+//     not a column on `services` and not collected by the form; was causing every
+//     service creation to fail its "at least 3 tags" refine on the empty array
+//     defaulted by api/services/route.ts.
 
 import { z } from 'zod';
 
@@ -378,8 +392,19 @@ export const packageSchema = z.object({
 
 /**
  * Service creation/update schema with smart pricing suggestions.
- * Now includes service_location, location_required, remote_ok,
- * portfolio_links, and the full packages sub-object.
+ * Includes service_location, location_required, remote_ok, portfolio_links,
+ * and the full packages sub-object.
+ *
+ * FIXED: base_price / delivery_days / revisions_included are z.coerce.number()
+ * — CreateServiceForm keeps these as <input type="number"> string state and
+ * sends them as strings. Without coerce, every submission threw
+ * "Expected number, received string".
+ *
+ * REMOVED: `tags` — not a column on the `services` table (see
+ * database.types.ts) and not collected anywhere in CreateServiceForm.
+ * api/services/route.ts previously defaulted this to `[]`, which is "present"
+ * for Zod purposes, tripping the old `.refine(tags => tags.length >= 3)` and
+ * failing every service creation.
  */
 export const serviceSchema = z.object({
   title: z
@@ -418,19 +443,19 @@ export const serviceSchema = z.object({
     .max(100, { error: 'Subcategory name is too long' })
     .optional(),
 
-  base_price: z
+  base_price: z.coerce
     .number()
     .int({ error: 'Price must be a whole number' })
     .min(NAIRA_CONSTRAINTS.MIN_PRICE, { error: `Minimum price is ₦${NAIRA_CONSTRAINTS.MIN_PRICE.toLocaleString()}` })
     .max(NAIRA_CONSTRAINTS.MAX_PRICE, { error: `Maximum price is ₦${NAIRA_CONSTRAINTS.MAX_PRICE.toLocaleString()}` }),
 
-  delivery_days: z
+  delivery_days: z.coerce
     .number()
     .int({ error: 'Delivery days must be a whole number' })
     .min(1, { error: 'Minimum delivery time is 1 day' })
     .max(90, { error: 'Maximum delivery time is 90 days' }),
 
-  revisions_included: z
+  revisions_included: z.coerce
     .number()
     .int({ error: 'Revisions must be a whole number' })
     .min(0, { error: 'Revisions cannot be negative' })
@@ -440,16 +465,6 @@ export const serviceSchema = z.object({
     .string()
     .max(2000, { error: 'Requirements text is too long' })
     .transform(sanitizeString)
-    .optional(),
-
-  tags: z
-    .array(z.string().max(50))
-    .max(10, { error: 'Maximum 10 tags allowed' })
-    .refine((tags) => {
-      return tags.length >= 3;
-    }, {
-      message: 'Add at least 3 tags to improve discoverability'
-    })
     .optional(),
 
   service_location: z
@@ -480,9 +495,24 @@ export const serviceSchema = z.object({
 });
 
 /**
- * Job posting schema with budget validation and smart suggestions
+ * Job posting schema.
+ *
+ * FIXED:
+ *   - Field renamed `skills_required` → `required_skills` to match the
+ *     `jobs.required_skills` column in database.types.ts. CreateJobForm
+ *     already used `required_skills`; the schema and API routes were the
+ *     ones out of sync.
+ *   - Removed `.min(1)` on required_skills — CreateJobForm allows posting
+ *     with zero skills, and an empty array is "present" for Zod, so the old
+ *     min(1) rejected every submission with no skills added.
+ *   - Added `subcategory` and `estimated_duration` — both are real columns
+ *     on `jobs` and both are collected by CreateJobForm, but were previously
+ *     silently dropped by validation.
+ *   - Split into `jobBaseSchema` (plain ZodObject) + `jobSchema` (refined).
+ *     PATCH /api/jobs/[id] needs `.partial()`, which only exists on
+ *     ZodObject — not on the ZodEffects returned by `.refine()`.
  */
-export const jobSchema = z.object({
+export const jobBaseSchema = z.object({
   title: z
     .string()
     .min(10, { error: 'Title must be at least 10 characters' })
@@ -506,6 +536,11 @@ export const jobSchema = z.object({
     .min(1, { error: 'Category is required' })
     .max(100, { error: 'Category name is too long' }),
 
+  subcategory: z
+    .string()
+    .max(100, { error: 'Subcategory name is too long' })
+    .optional(),
+
   budget_type: z.enum(['fixed', 'hourly', 'negotiable'], {
     message: 'Please select a valid budget type',
   }),
@@ -527,6 +562,11 @@ export const jobSchema = z.object({
   experience_level: z.enum(['beginner', 'intermediate', 'expert', 'any'], {
     message: 'Please select a valid experience level',
   }),
+
+  estimated_duration: z
+    .string()
+    .max(50, { error: 'Estimated duration is too long' })
+    .optional(),
 
   deadline: z
     .string()
@@ -553,12 +593,13 @@ export const jobSchema = z.object({
       { message: 'Consider setting a deadline at least 2 days away to receive quality proposals' }
     ),
 
-  skills_required: z
+  required_skills: z
     .array(z.string().max(50))
-    .min(1, { error: 'At least one skill is required' })
     .max(15, { error: 'Maximum 15 skills allowed' })
     .optional(),
-}).refine(
+});
+
+export const jobSchema = jobBaseSchema.refine(
   (data) => {
     const { budget_min, budget_max } = data;
     if (budget_min !== undefined && budget_max !== undefined) {
@@ -577,7 +618,12 @@ export const jobSchema = z.object({
 // ============================================================================
 
 /**
- * Proposal submission schema with quality checks
+ * Proposal submission schema with quality checks.
+ *
+ * FIXED: portfolio_links no longer requires length >= 1. ProposalSubmitForm
+ * doesn't collect portfolio links at all and always sends `[]`; the old
+ * `.refine(links => links.length >= 1, ...)` treated that empty-but-present
+ * array as a validation failure, rejecting every proposal.
  */
 export const proposalSchema = z.object({
   job_id: z
@@ -623,9 +669,6 @@ export const proposalSchema = z.object({
   portfolio_links: z
     .array(z.string().url({ error: 'Invalid URL format' }))
     .max(5, { error: 'Maximum 5 portfolio links allowed' })
-    .refine((links) => links.length >= 1, {
-      message: 'Include at least one portfolio link to strengthen your proposal'
-    })
     .optional(),
 });
 

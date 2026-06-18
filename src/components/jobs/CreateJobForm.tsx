@@ -14,6 +14,17 @@
 // 6. Direct supabase.from('jobs').insert call replaced with fetch('/api/jobs') to go
 //    through the proper API endpoint.
 // 7. Added restriction state + ContestButton rendering for 403 restriction responses.
+//
+// FIXED (Domain 4 audit, handleSubmit):
+// 8. Submission payload is now built explicitly instead of `JSON.stringify(formData)`:
+//    - budget_min/budget_max are omitted entirely when not applicable/empty, instead
+//      of being sent as `''` (which threw "Expected number, received string").
+//    - deadline (an <input type="date"> value like "2026-07-01") is converted to a
+//      full ISO datetime string, since jobSchema.deadline requires z.string().datetime().
+//      An empty deadline is omitted entirely rather than sent as `''`.
+//    - subcategory is only sent when non-empty.
+//    `required_skills` and `estimated_duration` are sent as before — both are now
+//    accepted by jobBaseSchema and persisted by /api/jobs.
 
 import React, { useState, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
@@ -142,12 +153,43 @@ export function CreateJobForm() {
         return;
       }
 
+      // FIXED: Build the payload explicitly rather than JSON.stringify(formData).
+      // budget_min/budget_max/deadline default to '' in form state — sending
+      // those as-is fails jobSchema (expects number / ISO datetime / undefined).
+      const payload: Record<string, unknown> = {
+        title: formData.title,
+        description: formData.description,
+        category: formData.category,
+        budget_type: formData.budget_type,
+        experience_level: formData.experience_level,
+        estimated_duration: formData.estimated_duration,
+        required_skills: formData.required_skills,
+      };
+
+      if (formData.subcategory.trim()) {
+        payload.subcategory = formData.subcategory.trim();
+      }
+
+      if (formData.budget_type !== 'negotiable' && formData.budget_min !== '') {
+        payload.budget_min = formData.budget_min;
+      }
+
+      if (formData.budget_type === 'fixed' && formData.budget_max !== '') {
+        payload.budget_max = formData.budget_max;
+      }
+
+      if (formData.deadline) {
+        // <input type="date"> yields "YYYY-MM-DD" — jobSchema.deadline requires
+        // a full ISO datetime string (z.string().datetime()).
+        payload.deadline = new Date(`${formData.deadline}T00:00:00`).toISOString();
+      }
+
       // FIXED: replaced direct supabase.from('jobs').insert(...) with a proper
       // fetch call to /api/jobs so the request goes through the API layer.
       const response = await fetch('/api/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
 
       const result = await response.json();

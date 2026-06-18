@@ -4,6 +4,12 @@
 //   2. Proposal count now reads from live join result (proposals[0]?.count)
 //      rather than the denormalized proposals_count column, so the displayed
 //      count is always accurate regardless of RPC failures.
+//
+// FIXED (Domain 4 audit): the comment above had it backwards. The `jobs` table
+// column is `required_skills` (see database.types.ts) — `skills_required` is
+// not a column. This page was referencing `job.skills_required`, which is
+// `undefined` on the `Job` type, so the skills badges silently never rendered.
+// Reverted to `job.required_skills`.
 
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
@@ -52,7 +58,7 @@ export default async function ClientJobsPage() {
           <h1 className="text-3xl font-bold mb-2">My Job Posts</h1>
           <p className="text-gray-600">Manage your job listings and proposals</p>
         </div>
-        <Link href="/jobs/new">
+        <Link href="/client/post-jobs">
           <Button className="gap-2">
             <Plus className="w-4 h-4" />
             Post New Job
@@ -108,17 +114,17 @@ export default async function ClientJobsPage() {
                   </Link>
                 </div>
 
-                {/* FIXED: was job.required_skills — correct column is skills_required */}
-                {job.skills_required && job.skills_required.length > 0 && (
+                {/* FIXED: correct column is required_skills, not skills_required */}
+                {job.required_skills && job.required_skills.length > 0 && (
                   <div className="flex flex-wrap gap-2 pt-4 border-t">
-                    {(job.skills_required as string[]).slice(0, 5).map((skill: string, index: number) => (
+                    {(job.required_skills as string[]).slice(0, 5).map((skill: string, index: number) => (
                       <Badge key={index} variant="outline">
                         {skill}
                       </Badge>
                     ))}
-                    {job.skills_required.length > 5 && (
+                    {job.required_skills.length > 5 && (
                       <Badge variant="outline">
-                        +{job.skills_required.length - 5} more
+                        +{job.required_skills.length - 5} more
                       </Badge>
                     )}
                   </div>
@@ -137,7 +143,7 @@ export default async function ClientJobsPage() {
             <p className="text-gray-600 mb-6">
               Start by posting your first job and receive proposals from talented Nigerian freelancers.
             </p>
-            <Link href="/jobs/new">
+            <Link href="/client/post-jobs">
               <Button>Post Your First Job</Button>
             </Link>
           </div>
