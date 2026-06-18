@@ -3,9 +3,18 @@
 // Extracted from the incorrect PATCH handler in approve/route.ts.
 // Validates revision count ceiling, updates order status, notifies freelancer,
 // and logs the request to audit_logs.
+//
+// FIX: notifications has no INSERT RLS policy for user-scoped clients —
+//      freelancer notification now uses createAdminClient().
+// FIX: audit_logs has a single ALL policy restricted to
+//      profile.user_type = 'admin' with no separate WITH CHECK, which means
+//      Postgres reuses the USING clause for INSERT too — non-admin inserts
+//      were being silently blocked. Audit log insert now uses
+//      createAdminClient() as well.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { z } from 'zod';
 
 const revisionSchema = z.object({
@@ -82,7 +91,8 @@ export async function POST(
 
     const newRevisionCount = revisionCount + 1;
 
-    // Update order status
+    // Update order status — orders UPDATE RLS confirmed scoped to
+    // client_id/freelancer_id, so the user-scoped client is correct here.
     const { error: updateError } = await supabase
       .from('orders')
       .update({
@@ -100,8 +110,11 @@ export async function POST(
       );
     }
 
-    // Notify freelancer
-    await supabase.from('notifications').insert({
+    const adminClient = createAdminClient();
+
+    // Notify freelancer.
+    // FIX: notifications has no INSERT policy for user-scoped clients.
+    await adminClient.from('notifications').insert({
       user_id: order.freelancer_id,
       type: 'revision_requested',
       title: 'Revision Requested',
@@ -109,8 +122,10 @@ export async function POST(
       link: `/freelancer/orders/${orderId}`,
     });
 
-    // Audit trail
-    await supabase.from('audit_logs').insert({
+    // Audit trail.
+    // FIX: audit_logs only has an admin-only ALL policy — non-admin inserts
+    // were silently blocked. Use the service-role client.
+    await adminClient.from('audit_logs').insert({
       user_id: user.id,
       action: 'revision_requested',
       resource_type: 'order',

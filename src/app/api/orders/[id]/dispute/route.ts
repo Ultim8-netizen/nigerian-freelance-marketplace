@@ -1,9 +1,24 @@
 // src/app/api/orders/[id]/dispute/route.ts
 // CHANGED: Standardized auth to direct createClient() + added rate limiting,
 // consistent with all other action routes in this domain.
+//
+// FIX: escrow has only a SELECT policy for participants — no UPDATE policy
+//      exists at all, confirmed via live policy audit. The freeze-escrow
+//      update was being silently dropped, leaving disputed orders with their
+//      escrow row stuck at 'held' indefinitely. Now uses createAdminClient().
+// FIX: notifications has no INSERT policy for user-scoped clients — the
+//      "notify the other party" insert now uses createAdminClient() too.
+//
+// NOTE: guard_against_double_wallet_credit() fires BEFORE UPDATE on escrow
+// for any update (triggers aren't bypassed by the service-role key, only
+// RLS is). It's expected to only guard the held -> released_to_freelancer
+// transition, but this hasn't been exercised against a held -> disputed
+// update yet. If this throws in testing, surface the trigger function
+// source and it can be patched.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { checkRateLimit } from '@/lib/rate-limit-upstash';
 import { z } from 'zod';
 
@@ -101,7 +116,9 @@ export async function POST(
 
     const againstId = isClient ? order.freelancer_id : order.client_id;
 
-    // Create dispute record
+    // Create dispute record — disputes has no RLS audit yet, but this insert
+    // sets raised_by = auth.uid() implicitly via user_id checks elsewhere in
+    // the schema; left on the user-scoped client per existing behavior.
     const { data: dispute, error: disputeError } = await supabase
       .from('disputes')
       .insert({
@@ -124,19 +141,36 @@ export async function POST(
       );
     }
 
-    // Freeze the order and escrow
+    // Freeze the order — orders UPDATE RLS confirmed scoped to
+    // client_id/freelancer_id, so the user-scoped client is correct here.
     await supabase
       .from('orders')
       .update({ status: 'disputed', updated_at: new Date().toISOString() })
       .eq('id', orderId);
 
-    await supabase
+    const adminClient = createAdminClient();
+
+    // Freeze escrow.
+    // FIX: escrow has no UPDATE policy for any role except via SECURITY
+    // DEFINER RPCs — this update was being silently dropped. Use the
+    // service-role client.
+    const { error: escrowUpdateError } = await adminClient
       .from('escrow')
       .update({ status: 'disputed' })
       .eq('order_id', orderId);
 
-    // Notify the other party
-    await supabase.from('notifications').insert({
+    if (escrowUpdateError) {
+      console.error('Escrow freeze error on dispute:', escrowUpdateError, {
+        orderId,
+      });
+      // Dispute record and order status are already committed — surface the
+      // escrow failure for visibility but don't fail the whole request, since
+      // the dispute itself is the priority and the order is already frozen.
+    }
+
+    // Notify the other party.
+    // FIX: notifications has no INSERT policy for user-scoped clients.
+    await adminClient.from('notifications').insert({
       user_id: againstId,
       type: 'dispute_raised',
       title: 'Dispute Raised',

@@ -194,14 +194,14 @@ export default async function FreelancerOrderDetailPage({
                 {deliveryFiles && deliveryFiles.length > 0 && (
                   <div className="space-y-2">
                     {deliveryFiles.map((url, i) => (
-                      
+                      <a
                         key={i}
                         href={url}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400 hover:underline"
                       >
-                        <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                         {getFileLabel(url)}
                       </a>
                     ))}

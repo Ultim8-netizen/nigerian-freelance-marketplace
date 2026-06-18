@@ -1,9 +1,14 @@
 // src/app/api/orders/[id]/deliver/route.ts
 // CHANGED: Replaced applyMiddleware with direct createClient() auth, consistent
 // with all other action routes in this domain. Logic unchanged.
+// FIX: notifications has no INSERT RLS policy for user-scoped clients
+//      (confirmed via live policy audit — only SELECT/UPDATE own exist).
+//      Client notification insert now uses createAdminClient() (service role),
+//      matching the established pattern in marketplace/orders routes.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { z } from 'zod';
 
@@ -88,8 +93,12 @@ export async function POST(
       );
     }
 
-    // Notify client
-    await supabase.from('notifications').insert({
+    // Notify client.
+    // FIX: notifications has no INSERT RLS policy for user-scoped clients —
+    // this insert was previously silently dropped. Use the service-role
+    // client so the client actually receives the notification.
+    const adminClient = createAdminClient();
+    await adminClient.from('notifications').insert({
       user_id: order.client_id,
       type: 'order_delivered',
       title: 'Order Delivered! 📦',
