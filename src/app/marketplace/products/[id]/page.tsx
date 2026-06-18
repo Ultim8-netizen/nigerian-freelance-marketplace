@@ -26,7 +26,6 @@ export default async function ProductDetailPage({
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  // Fetch product with seller info
   const { data: product, error } = await supabase
     .from('products')
     .select(`
@@ -49,17 +48,12 @@ export default async function ProductDetailPage({
     notFound();
   }
 
-  // Guard: seller relation is nullable per Supabase join typing.
-  // A product without a seller is invalid — treat it as not found.
   if (!product.seller) {
     notFound();
   }
 
-  // seller is now narrowed to non-null for all JSX below
   const seller = product.seller;
 
-  // Fetch seller's other products
-  // seller_id is string | null per schema — guard before using in query
   const sellerProducts = product.seller_id
     ? await supabase
         .from('products')
@@ -71,7 +65,6 @@ export default async function ProductDetailPage({
         .then(({ data }) => data)
     : null;
 
-  // Fetch reviews
   const { data: reviews } = await supabase
     .from('marketplace_reviews')
     .select(`
@@ -87,10 +80,12 @@ export default async function ProductDetailPage({
 
   const isOwnProduct = user?.id === product.seller_id;
 
-  // rating and reviews_count are NOT NULL columns (number, default 0)
-  // added via the add_product_rating.sql migration — no null handling needed.
-  const rating       = product.rating;        // number 0–5, maintained by DB trigger
-  const reviewsCount = product.reviews_count; // number >= 0, maintained by DB trigger
+  // products.rating and products.reviews_count are NOT NULL columns (numeric
+  // and integer, both with default 0) confirmed in the schema. They are
+  // maintained by application code in reviews/route.ts (updateProductRating)
+  // — there is no DB trigger. No null guard needed.
+  const rating       = product.rating;
+  const reviewsCount = product.reviews_count;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -118,16 +113,12 @@ export default async function ProductDetailPage({
         </nav>
 
         <div className="grid lg:grid-cols-3 gap-8">
-          {/* ----------------------------------------------------------------
-              Left Column — Images & Details
-          ---------------------------------------------------------------- */}
+          {/* Left Column */}
           <div className="lg:col-span-2">
             <Card className="p-6 mb-6">
-              {/* images is string[] | null per schema — fallback to empty array */}
               <ImageGallery images={product.images ?? []} alt={product.title} />
             </Card>
 
-            {/* Description */}
             <Card className="p-6 mb-6">
               <h2 className="text-xl font-semibold mb-4">Description</h2>
               <div className="prose max-w-none">
@@ -135,7 +126,6 @@ export default async function ProductDetailPage({
               </div>
             </Card>
 
-            {/* Product Details */}
             <Card className="p-6 mb-6">
               <h2 className="text-xl font-semibold mb-4">Product Details</h2>
               <dl className="grid grid-cols-2 gap-4">
@@ -149,7 +139,6 @@ export default async function ProductDetailPage({
                 </div>
                 <div>
                   <dt className="text-sm text-gray-500">Posted</dt>
-                  {/* created_at is string | null — fallback to empty string */}
                   <dd className="font-medium">{formatRelativeTime(product.created_at ?? '')}</dd>
                 </div>
                 <div>
@@ -159,14 +148,12 @@ export default async function ProductDetailPage({
               </dl>
             </Card>
 
-            {/* Reviews Section */}
             {reviews && reviews.length > 0 && (
               <Card className="p-6">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-xl font-semibold">Customer Reviews</h2>
                   <div className="flex items-center gap-2">
                     <Star className="w-5 h-5 fill-yellow-400 stroke-yellow-400" />
-                    {/* rating is a real NOT NULL column — display directly */}
                     <span className="font-semibold">{rating.toFixed(1)}</span>
                     <span className="text-gray-500">({reviewsCount} reviews)</span>
                   </div>
@@ -207,7 +194,6 @@ export default async function ProductDetailPage({
                           </div>
                           <p className="text-sm text-gray-600 mb-1">{review.review_text}</p>
                           <span className="text-xs text-gray-400">
-                            {/* created_at is string | null — fallback to empty string */}
                             {formatRelativeTime(review.created_at ?? '')}
                           </span>
                         </div>
@@ -225,15 +211,12 @@ export default async function ProductDetailPage({
             )}
           </div>
 
-          {/* ----------------------------------------------------------------
-              Right Column — Purchase Card & Seller Info
-          ---------------------------------------------------------------- */}
+          {/* Right Column */}
           <div>
             <Card className="p-6 sticky top-4">
               <div className="mb-6">
                 <h1 className="text-2xl font-bold mb-2">{product.title}</h1>
                 <div className="flex items-center gap-2 mb-4">
-                  {/* Stars filled proportionally to actual rating (NOT NULL number) */}
                   <div className="flex">
                     {[...Array(5)].map((_, i) => (
                       <Star
@@ -299,7 +282,7 @@ export default async function ProductDetailPage({
               </div>
             </Card>
 
-            {/* Seller Info — seller narrowed to non-null above */}
+            {/* Seller Info */}
             <Card className="p-6 mt-4">
               <h3 className="font-semibold mb-4">Seller Information</h3>
               <Link href={`/marketplace/sellers/${product.seller_id}`}>
@@ -326,10 +309,12 @@ export default async function ProductDetailPage({
                     </div>
                     <div className="flex items-center gap-1 text-sm text-gray-600">
                       <Star className="w-3 h-3 fill-yellow-400 stroke-yellow-400" />
-                      {/* freelancer_rating is number | null on profiles — fallback to 0 */}
+                      {/* freelancer_rating is the seller's gig-domain rating
+                          (numeric | null, default 0). Shown here as overall
+                          platform reputation context for the buyer. */}
                       <span>{(seller.freelancer_rating ?? 0).toFixed(1)}</span>
                       <span className="text-gray-400">•</span>
-                      <span>{seller.total_jobs_completed ?? 0} sales</span>
+                      <span>{seller.total_jobs_completed ?? 0} completed</span>
                     </div>
                   </div>
                 </div>
@@ -344,7 +329,6 @@ export default async function ProductDetailPage({
                 )}
                 <div className="flex items-center gap-2 text-gray-600">
                   <Clock className="w-4 h-4" />
-                  {/* created_at is string | null on profiles — fallback to empty string */}
                   <span>Joined {formatRelativeTime(seller.created_at ?? '')}</span>
                 </div>
               </div>
@@ -383,7 +367,6 @@ export default async function ProductDetailPage({
                 <Link key={item.id} href={`/marketplace/products/${item.id}`}>
                   <Card className="overflow-hidden hover:shadow-lg transition-shadow">
                     <div className="relative h-48 bg-gray-200">
-                      {/* images is string[] | null — optional-chain + fallback */}
                       <Image
                         src={item.images?.[0] ?? ''}
                         alt={item.title}

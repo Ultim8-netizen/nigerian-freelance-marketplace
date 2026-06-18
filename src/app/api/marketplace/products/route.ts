@@ -2,16 +2,13 @@
 // PRODUCTION-READY: Marketplace products with full security
 // UPDATED: Trust Gate check added to POST handler before product insertion.
 // FIX: evaluateContentTriggers now invoked after trust gate.
-//      - allowed=false → 400, listing rejected, user notified.
-//      - autoHold=true → inserted with is_active:false, flagged for admin review.
-// FIX: requirePostingActive guard added — blocks new listing creation when
-//      profiles.posting_suspended_until is set and in the future.
-// FIX: `location` (products.location, character varying, nullable) is now
-//      accepted, sanitized, and persisted — previously sent by
-//      CreateProductForm but stripped by Zod and silently dropped.
-// FIX: notifications has no INSERT RLS policy for user-scoped clients —
-//      both notification inserts (listing_rejected, listing_held) now use
-//      createAdminClient() (service role).
+// FIX: requirePostingActive guard added.
+// FIX: location field accepted, sanitized, and persisted.
+// FIX: notifications inserts use createAdminClient().
+// FIX: In GET, applyMiddleware (rate limiter) now runs BEFORE the SQL
+//      injection check. Previously the injection check returned early before
+//      the rate limiter ran, so unlimited injection probes never consumed a
+//      rate-limit token — a free DoS / scanning vector.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { applyMiddleware, requirePostingActive } from '@/lib/api/enhanced-middleware';
@@ -49,6 +46,17 @@ export async function GET(request: NextRequest) {
     const page      = Math.max(1, parseInt(searchParams.get('page')     || '1'));
     const perPage   = Math.min(50, Math.max(1, parseInt(searchParams.get('per_page') || '20')));
 
+    // FIX: Rate limiter runs FIRST. Injection probes that were returned early
+    // before this call never decremented the Upstash counter — every probing
+    // request was free. By running applyMiddleware here, all requests (including
+    // bad ones) consume a token before we inspect content.
+    const { error } = await applyMiddleware(request, {
+      auth:      'optional',
+      rateLimit: 'api',
+    });
+    if (error) return error;
+
+    // SQL injection check — now runs after the rate limiter.
     if (search && containsSqlInjection(search)) {
       logger.warn('SQL injection attempt in product search', {
         search,
@@ -59,12 +67,6 @@ export async function GET(request: NextRequest) {
         { status: 400 }
       );
     }
-
-    const { error } = await applyMiddleware(request, {
-      auth:      'optional',
-      rateLimit: 'api',
-    });
-    if (error) return error;
 
     const supabase = await createClient();
 
@@ -139,17 +141,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Single client instance reused for all DB operations in this handler
-    const supabase = await createClient();
-
-    // Service-role client — required for notification inserts (notifications
-    // has no INSERT RLS policy for user-scoped clients).
+    const supabase    = await createClient();
     const adminClient = createAdminClient();
 
-    // ── Gate 0: Posting suspension ────────────────────────────────────────
-    // Checks profiles.posting_suspended_until. Returns 403 with resumesAt
-    // if the seller is within an active 72-hour suspension window from
-    // consecutive 1-star reviews. Does not affect account_status.
+    // Gate 0: posting suspension
     const postingBlocked = await requirePostingActive(user.id, supabase);
     if (postingBlocked) return postingBlocked;
 
@@ -167,7 +162,7 @@ export async function POST(request: NextRequest) {
 
     const validated = productSchema.parse(sanitizedBody);
 
-    // ── Gate 1: Trust score / listing price cap ───────────────────────────
+    // Gate 1: Trust score / listing price cap
     const gate = await evaluateTrustGate(user.id, 'post_listing', validated.price);
 
     if (!gate.allowed) {
@@ -187,15 +182,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Gate 2: Content triggers — prohibited keywords & high-value new accounts
-    //
-    // FIX: evaluateContentTriggers was dead code; it is now called here.
-    // Three outcomes:
-    //   allowed=false  → reject immediately, notify user, return 400.
-    //   autoHold=true  → insert with is_active:false so it is invisible to
-    //                    buyers; the security_log written inside automation.ts
-    //                    surfaces it in the admin Flags page for review.
-    //   otherwise      → insert normally with is_active:true.
+    // Gate 2: Content triggers — prohibited keywords & high-value new accounts
     const contentCheck = await evaluateContentTriggers(user.id, {
       title:       validated.title,
       description: validated.description,
@@ -208,7 +195,6 @@ export async function POST(request: NextRequest) {
         reason: contentCheck.reason,
       });
 
-      // FIX: notifications has no INSERT RLS policy for user-scoped clients.
       await adminClient.from('notifications').insert({
         user_id: user.id,
         type:    'listing_rejected',
@@ -223,7 +209,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // autoHold — listing is created but held for admin review
     const isActive = !contentCheck.autoHold;
 
     const { data, error: createError } = await supabase
@@ -231,8 +216,6 @@ export async function POST(request: NextRequest) {
       .insert({
         seller_id:        user.id,
         ...validated,
-        // autoHold: is_active=false makes the listing invisible to buyers until
-        // admin approves it from the Flags & Tickets page.
         is_active:        isActive,
         views_count:      0,
         sales_count:      0,
@@ -245,15 +228,14 @@ export async function POST(request: NextRequest) {
       throw createError;
     }
 
-    // Notify the seller when their listing is held for review
     if (contentCheck.autoHold) {
-      // FIX: notifications has no INSERT RLS policy for user-scoped clients.
       await adminClient.from('notifications').insert({
         user_id: user.id,
         type:    'listing_held',
         title:   'Listing Pending Review',
         message:
-          'Your listing has been submitted but is pending admin review because it exceeds ₦100,000 and your account is less than 7 days old. It will be published once approved.',
+          'Your listing has been submitted but is pending admin review because it exceeds ' +
+          '₦100,000 and your account is less than 7 days old. It will be published once approved.',
         link:    `/marketplace/products/${data.id}`,
       });
 
@@ -268,12 +250,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(
       {
-        success:   true,
+        success:  true,
         data,
-        message:   contentCheck.autoHold
+        message:  contentCheck.autoHold
           ? 'Product submitted and pending admin review.'
           : 'Product created successfully',
-        autoHold:  contentCheck.autoHold ?? false,
+        autoHold: contentCheck.autoHold ?? false,
       },
       { status: 201 }
     );

@@ -2,28 +2,24 @@
 // PRODUCTION-READY: Product and seller reviews with rating calculations
 // + configurable consecutive low-rating posting suspension
 //
-// FIX: consecutive_low_rating_threshold (was hardcoded 3) and
-//      posting_suspension_hours (was hardcoded 72) are now read from
-//      platform_config via createAdminClient() in the POST handler and
-//      passed explicitly into checkAndSuspendPostingOnConsecutiveLowRatings.
-//      platform_config has admin-only RLS — createAdminClient() (service role)
-//      is required; a regular user-scoped createClient() returns no rows.
-// FIX: checkAndSuspendPostingOnConsecutiveLowRatings now fires dual-channel
-//      on new suspensions: bell notification (notifications.insert) + F9 inbox
-//      message (sendF9SystemMessage). Previously only the bell was sent.
-// FIX: requireAuth now imported from enhanced-middleware (canonical, takes
-//      (request, supabase) and returns { user?, error? } instead of throwing
-//      a NextResponse instance).
-// FIX: updateProductRating, updateSellerRating, and
-//      checkAndSuspendPostingOnConsecutiveLowRatings now take an explicit
-//      adminClient (service role) and use it for all writes to `products`
-//      and `profiles`. The reviewer's user-scoped client cannot satisfy
-//      the RLS UPDATE policies on those tables (products: auth.uid() =
-//      seller_id; profiles: auth.uid() = id) — under the previous
-//      user-scoped client these writes were silently failing, so product
-//      ratings, seller ratings, and posting suspensions never persisted.
-// FIX: the "new_review" notification insert now uses adminClient —
-//      notifications has no INSERT RLS policy for user-scoped clients.
+// FIX: consecutive_low_rating_threshold and posting_suspension_hours read
+//      from platform_config via createAdminClient().
+// FIX: checkAndSuspendPostingOnConsecutiveLowRatings fires dual-channel on
+//      new suspensions: bell notification + F9 inbox message.
+// FIX: requireAuth imported from enhanced-middleware (canonical).
+// FIX: updateProductRating uses adminClient for the products UPDATE (reviewer
+//      session cannot satisfy products' RLS UPDATE policy).
+// FIX: updateSellerRating REMOVED. Schema confirmed (database.types.ts +
+//      Supabase CSV export): profiles has NO marketplace_rating or
+//      marketplace_reviews_count columns. Every call was writing to
+//      non-existent columns — either silently ignored or erroring. The
+//      seller's gig-domain freelancer_rating (maintained by the
+//      update_freelancer_rating RPC from gig reviews) must not be overwritten
+//      by marketplace reviews. Product-level ratings are correctly maintained
+//      via updateProductRating → products.rating / products.reviews_count.
+//      A future schema migration adding marketplace_rating to profiles would
+//      allow restoring a seller-level marketplace rating here.
+// FIX: "new_review" notification insert uses adminClient.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth }               from '@/lib/api/enhanced-middleware';
@@ -122,11 +118,9 @@ export async function POST(request: NextRequest) {
 
     const validated = createReviewSchema.parse(sanitized);
 
-    // ── Service-role client ───────────────────────────────────────────────
-    // Required for: platform_config reads (admin-only RLS), and for all
-    // writes to `products`/`profiles`/`notifications` performed on behalf
-    // of the seller below (the reviewer's session cannot satisfy those
-    // tables' RLS UPDATE/INSERT policies).
+    // Service-role client required for platform_config reads (admin-only RLS),
+    // products UPDATE (reviewer session cannot satisfy seller_id RLS), and
+    // notifications INSERT (no INSERT policy for user-scoped clients).
     const adminClient = createAdminClient();
     const config = await getPlatformConfigs(adminClient, [
       CONFIG_KEYS.CONSECUTIVE_LOW_RATING_THRESHOLD,
@@ -136,7 +130,7 @@ export async function POST(request: NextRequest) {
     const consecutiveThreshold   = config[CONFIG_KEYS.CONSECUTIVE_LOW_RATING_THRESHOLD];
     const postingSuspensionHours = config[CONFIG_KEYS.POSTING_SUSPENSION_HOURS];
 
-    // ── Order guard ──────────────────────────────────────────────────────────
+    // ── Order guard ─────────────────────────────────────────────────────────
     const { data: order, error: orderError } = await supabase
       .from('marketplace_orders')
       .select('buyer_id, seller_id, status')
@@ -169,6 +163,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Duplicate guard ──────────────────────────────────────────────────────
+    // marketplace_reviews.order_id has a unique constraint (isOneToOne: true).
     const { data: existing } = await supabase
       .from('marketplace_reviews')
       .select('id')
@@ -191,17 +186,21 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    // ── Post-insert side-effects (non-blocking) ──────────────────────────────
-    // FIX: writes target products/profiles owned by the seller, not the
-    // reviewer — pass adminClient (service role) to bypass RLS for these
-    // specific writes.
-    await Promise.all([
-      updateProductRating(supabase, adminClient, validated.product_id),
-      updateSellerRating(supabase, adminClient, validated.seller_id),
-    ]);
+    // ── Post-insert side-effects ─────────────────────────────────────────────
+    // updateProductRating: correctly persists products.rating and
+    // products.reviews_count — both confirmed NOT NULL (numeric/integer, NO)
+    // in the schema with default 0. adminClient bypasses the products RLS
+    // UPDATE policy (auth.uid() = seller_id) which the reviewer never satisfies.
+    //
+    // updateSellerRating is intentionally absent. Schema confirmed: profiles
+    // has no marketplace_rating or marketplace_reviews_count columns. The call
+    // was writing to non-existent columns on every review. Product-level ratings
+    // (products.rating) are the correct per-listing reputation signal in the
+    // marketplace domain. A marketplace_rating column on profiles requires a
+    // future migration before seller-level aggregation can be persisted.
+    await updateProductRating(supabase, adminClient, validated.product_id);
 
     // Notify seller of new review
-    // FIX: notifications has no INSERT RLS policy for user-scoped clients.
     await adminClient.from('notifications').insert({
       user_id: validated.seller_id,
       type:    'new_review',
@@ -210,7 +209,7 @@ export async function POST(request: NextRequest) {
       link:    `/marketplace/reviews/${review.id}`,
     });
 
-    // ── Consecutive low-rating check → configurable posting suspension ───────
+    // ── Consecutive low-rating check → configurable posting suspension ────────
     await checkAndSuspendPostingOnConsecutiveLowRatings(
       supabase,
       adminClient,
@@ -252,14 +251,11 @@ export async function POST(request: NextRequest) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Recalculate and persist the product's average rating and review count.
+ * Recalculate and persist products.rating and products.reviews_count.
+ * Schema: both columns are NOT NULL (numeric/integer) with default 0.
  *
- * @param readClient  Used for the SELECT (marketplace_reviews SELECT policy
- *                     is "Anyone can view reviews" — the reviewer's session
- *                     is sufficient).
- * @param adminClient Used for the UPDATE — products UPDATE RLS policy is
- *                     `auth.uid() = seller_id`, which the reviewer never
- *                     satisfies.
+ * @param readClient  Reviewer's session — sufficient for marketplace_reviews SELECT.
+ * @param adminClient Service-role — required for products UPDATE (RLS: seller_id = uid).
  */
 async function updateProductRating(
   readClient:  SupabaseClient,
@@ -293,70 +289,15 @@ async function updateProductRating(
 }
 
 /**
- * Recalculate and persist the seller's marketplace average rating and review count.
+ * After every new review, fetch the seller's N most recent marketplace reviews.
+ * If every one is 1-star, suspend posting for suspensionHours.
  *
- * @param readClient  Used for the SELECT (marketplace_reviews SELECT policy
- *                     is "Anyone can view reviews").
- * @param adminClient Used for the UPDATE — profiles UPDATE RLS policy is
- *                     `auth.uid() = id`, which the reviewer never satisfies
- *                     for the seller's profile.
- */
-async function updateSellerRating(
-  readClient:  SupabaseClient,
-  adminClient: SupabaseClient,
-  sellerId:    string,
-) {
-  try {
-    const { data: reviews } = await readClient
-      .from('marketplace_reviews')
-      .select('rating')
-      .eq('seller_id', sellerId);
-
-    if (reviews && reviews.length > 0) {
-      const avgRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
-
-      const { error } = await adminClient
-        .from('profiles')
-        .update({
-          marketplace_rating:        Math.round(avgRating * 10) / 10,
-          marketplace_reviews_count: reviews.length,
-        })
-        .eq('id', sellerId);
-
-      if (error) {
-        logger.error('Failed to persist seller rating update', error, { sellerId });
-      }
-    }
-  } catch (err) {
-    logger.error('Failed to update seller rating', err as Error, { sellerId });
-  }
-}
-
-/**
- * After every new review, fetch the seller's N most recent marketplace reviews
- * (newest first, N = consecutiveThreshold from platform_config). If every one
- * of them is 1-star, set posting_suspended_until to NOW() + suspensionHours.
- * This restricts new listing creation only — it does NOT suspend the account
- * or affect login/existing listings.
- *
- * Skips silently if:
- * - Fewer than consecutiveThreshold reviews exist (insufficient signal)
- * - Suspension window is already active (extends to fresh window on re-trigger)
- *
- * @param readClient          User-scoped client. Sufficient for SELECTs
- *                            (marketplace_reviews: "Anyone can view reviews";
- *                            profiles: "Public profiles viewable by all").
- * @param adminClient         Service-role client. Required for the
- *                            profiles.posting_suspended_until UPDATE
- *                            (profiles UPDATE RLS policy is `auth.uid() = id`,
- *                            which the reviewer never satisfies) and for the
- *                            notifications INSERT (no INSERT RLS policy
- *                            exists on notifications for user-scoped clients).
- * @param sellerId            Target seller profile ID.
- * @param consecutiveThreshold Number of consecutive 1-star reviews required to
- *                            trigger suspension (from platform_config).
- * @param suspensionHours     Duration of the posting suspension in hours
- *                            (from platform_config).
+ * @param readClient           Reviewer session — sufficient for SELECTs.
+ * @param adminClient          Service-role — required for profiles UPDATE and
+ *                             notifications INSERT.
+ * @param sellerId             Target seller.
+ * @param consecutiveThreshold From platform_config.
+ * @param suspensionHours      From platform_config.
  */
 async function checkAndSuspendPostingOnConsecutiveLowRatings(
   readClient:           SupabaseClient,
@@ -382,14 +323,11 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       return;
     }
 
-    // Need exactly consecutiveThreshold reviews — don't suspend on fewer
     if (!recentReviews || recentReviews.length < consecutiveThreshold) return;
 
     const allOneStar = recentReviews.every((r) => r.rating === 1);
     if (!allOneStar) return;
 
-    // Fetch current suspension state to determine whether this is a new
-    // suspension or a window extension (controls notification gating below)
     const { data: profile, error: profileError } = await readClient
       .from('profiles')
       .select('posting_suspended_until')
@@ -410,7 +348,6 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       ? new Date(profile.posting_suspended_until)
       : null;
 
-    // Always extend to a fresh window from now — repeat offenders stay blocked
     const suspendedUntil = new Date(
       now.getTime() + suspensionHours * 60 * 60 * 1000
     ).toISOString();
@@ -429,7 +366,6 @@ async function checkAndSuspendPostingOnConsecutiveLowRatings(
       return;
     }
 
-    // Only notify on first suspension, not on window extensions
     const isNewSuspension = !existingSuspension || existingSuspension <= now;
     if (isNewSuspension) {
       const advisoryMessage =

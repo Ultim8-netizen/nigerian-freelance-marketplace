@@ -1,78 +1,64 @@
-export interface Product {
-  id: string;
-  seller_id: string;
-  title: string;
-  description: string;
-  category: string;
-  price: number;
-  condition: 'new' | 'like_new' | 'used';
-  images: string[];
-  delivery_options: string[];
-  is_active: boolean;
-  rating: number;
-  reviews_count: number;
-  views_count: number;
-  sales_count: number;
-  created_at: string;
-  updated_at: string;
-  seller?: {
-    id: string;
-    full_name: string;
-    profile_image_url?: string;
-    freelancer_rating: number;
-    total_jobs_completed: number;
-    identity_verified: boolean;
-    location?: string;
-    created_at: string;
-  };
-}
+// src/types/marketplace.types.ts
+// All types derived from database.types.ts (source of truth).
+// Hand-rolled interfaces are retired — they diverged from the schema on
+// nullability (images, is_active, sales_count, views_count) and were
+// missing fields present in the DB (platform_fee, seller_earnings).
+//
+// Base entity types (Product, MarketplaceOrder, MarketplaceReview) are
+// exported from '@/types' as Tables<'...'> aliases. This file owns only
+// the join-extended shapes that components and server components consume.
 
-export interface MarketplaceOrder {
-  id: string;
-  order_number: string;
-  buyer_id: string;
-  seller_id: string;
-  product_id: string;
-  quantity: number;
-  unit_price: number;
-  subtotal: number;
-  delivery_fee: number;
-  total_amount: number;
-  delivery_address: {
-    full_name: string;
-    phone: string;
-    address: string;
-    city: string;
-    state: string;
-    landmark?: string;
-  };
-  tracking_number?: string;
-  status: 'pending_payment' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled' | 'refunded';
-  payment_method: 'card' | 'bank_transfer' | 'wallet';
-  status_notes?: string;
-  created_at: string;
-  updated_at: string;
-  paid_at?: string;
-  shipped_at?: string;
-  delivered_at?: string;
-  cancelled_at?: string;
-}
+import type { Tables } from './database.types';
 
-export interface MarketplaceReview {
+// ─── Seller join shape ────────────────────────────────────────────────────────
+// Matches the SELECT column list used by:
+//   products/route.ts GET — explicit column list
+//   products/[id]/route.ts GET — explicit column list
+//   marketplace/page.tsx — wildcard join (superset, safely assignable)
+//
+// Note: profiles has NO marketplace_rating or marketplace_reviews_count columns.
+// The only rating field is freelancer_rating (gig domain). Marketplace product
+// ratings live on products.rating / products.reviews_count and are the correct
+// source for marketplace display.
+export type ProductSeller = {
   id: string;
-  reviewer_id: string;
-  seller_id: string;
-  product_id: string;
-  order_id: string;
-  rating: number;
-  review_text: string;
-  product_quality?: number;
-  delivery_speed?: number;
-  communication?: number;
-  images?: string[];
-  created_at: string;
-  reviewer?: {
-    full_name: string;
-    profile_image_url?: string;
-  };
-}
+  full_name: string;
+  profile_image_url: string | null;
+  freelancer_rating: number | null;
+  total_jobs_completed: number | null;
+  identity_verified: boolean | null;
+  location: string | null;
+  created_at: string | null;
+};
+
+// ─── ProductWithSeller ────────────────────────────────────────────────────────
+// Shape returned by any products SELECT that LEFT JOINs profiles.
+// seller is optional/nullable because PostgREST returns null for the join
+// object when the FK target row is missing (should not happen in production
+// but the type must reflect what the client library actually emits).
+export type ProductWithSeller = Tables<'products'> & {
+  seller?: ProductSeller | null;
+};
+
+// ─── MarketplaceOrderWithRelations ───────────────────────────────────────────
+// Shape returned by marketplace_orders SELECT with buyer/seller/product joins.
+// platform_fee and seller_earnings are NOT NULL in the schema (numeric, NO, 0).
+export type MarketplaceOrderWithRelations = Tables<'marketplace_orders'> & {
+  product?: Tables<'products'> | null;
+  buyer?:   Pick<Tables<'profiles'>, 'id' | 'full_name' | 'profile_image_url' | 'email'> | null;
+  seller?:  Pick<Tables<'profiles'>, 'id' | 'full_name' | 'profile_image_url' | 'email'> | null;
+};
+
+// ─── MarketplaceReviewWithRelations ──────────────────────────────────────────
+// Shape returned by marketplace_reviews SELECT with reviewer/product/order joins.
+export type ReviewerShape = {
+  id: string;
+  full_name: string;
+  profile_image_url: string | null;
+};
+
+export type MarketplaceReviewWithRelations = Tables<'marketplace_reviews'> & {
+  reviewer?: ReviewerShape | null;
+  product?:  Pick<Tables<'products'>, 'id' | 'title' | 'images'> | null;
+  order?:    Pick<Tables<'marketplace_orders'>, 'id' | 'order_number'> | null;
+};
