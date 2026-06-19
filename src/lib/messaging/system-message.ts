@@ -82,7 +82,6 @@ export async function sendF9SystemMessage(
     let conversationId: string;
 
     if (existing) {
-      // Reuse the existing thread — append the new message to it.
       conversationId = existing.id;
     } else {
       // ── Step 2: create the system↔freelancer conversation ──────────────────
@@ -101,14 +100,17 @@ export async function sendF9SystemMessage(
     }
 
     // ── Step 3: insert the message from the system account ───────────────────
-    // sender_id = systemUserId so the message appears in the freelancer's inbox
-    // as a message from the platform, not from themselves.
+    // FIX (Bug 1): column is `message_text`, not `content`.
+    // `content` is not a column in the messages table per database.types.ts.
+    // Using the wrong key causes a silent insert failure — the DB rejects the
+    // unknown column, msgError is logged, but callers receive no signal and
+    // every system inbox message (withdrawal holds, hold-release) was discarded.
     const { error: msgError } = await adminClient
       .from('messages')
       .insert({
         conversation_id: conversationId,
         sender_id:       systemUserId,
-        content,
+        message_text:    content,
       });
 
     if (msgError) {

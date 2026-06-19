@@ -2,23 +2,15 @@
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { MessagingClient } from './MessagingClient';
-import type { Database } from '@/types';
+import type { NotificationInsert } from '@/types';
 
-// ─── Extended insert type ─────────────────────────────────────────────────────
-// Covers the two columns added by migration:
-//   ALTER TABLE public.notifications
-//     ADD COLUMN scheduled_at   TIMESTAMPTZ,
-//     ADD COLUMN delivery_method TEXT NOT NULL DEFAULT 'both';
-// Remove this extension and regenerate database.types.ts once the migration is applied.
-
-type NotificationInsertExtended = Database['public']['Tables']['notifications']['Insert'] & {
-  scheduled_at?:    string | null;
-  delivery_method?: string;
-};
+// NotificationInsertExtended was removed. Both `scheduled_at` and
+// `delivery_method` already exist in notifications.Insert per database.types.ts.
+// The extension type and the `as unknown as Database[...]` cast it required
+// were masking type errors and providing no value.
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
 
-/** Send (or schedule) a direct notification to a single user, looked up by email. */
 async function sendDirect(fd: FormData) {
   'use server';
   const recipientEmail = (fd.get('recipient_email') as string).trim();
@@ -45,7 +37,7 @@ async function sendDirect(fd: FormData) {
 
   if (lookupError || !recipient) throw new Error('Recipient not found');
 
-  const row: NotificationInsertExtended = {
+  const row: NotificationInsert = {
     user_id:         recipient.id,
     type,
     title,
@@ -57,7 +49,7 @@ async function sendDirect(fd: FormData) {
 
   const { error: insertError } = await supabase
     .from('notifications')
-    .insert(row as unknown as Database['public']['Tables']['notifications']['Insert']);
+    .insert(row);
 
   if (insertError) {
     console.error('[sendDirect] notification insert error:', insertError);
@@ -87,20 +79,11 @@ async function sendDirect(fd: FormData) {
  *   both       — active users with user_type = 'both'
  *   inactive   — active users whose most-recent user_devices.last_seen_at is
  *                older than `inactive_days` days
- *                (profiles has no last_seen_at; the authoritative column is
- *                 user_devices.last_seen_at — schema-verified)
  *   low_trust  — active users with trust_score < `trust_threshold`
  *   unverified — active users who have not completed identity verification
+ *                (identity_verified IS NULL OR identity_verified = false)
  *   state      — active users whose user_locations.state matches `state`,
- *                optionally narrowed to a specific `city` within that state
- *                (profiles has no state column; geography lives in the
- *                 user_locations table — schema-verified)
- *
- * Audience-specific FormData fields (appended by MessagingClient):
- *   trust_threshold  (number, default 40)  — used by low_trust
- *   state            (string)              — used by state
- *   city             (string | absent)     — used by state; omitted = all cities
- *   inactive_days    (number, default 30)  — used by inactive
+ *                optionally narrowed to a specific `city`
  */
 async function sendBroadcast(fd: FormData) {
   'use server';
@@ -116,10 +99,8 @@ async function sendBroadcast(fd: FormData) {
     ? new Date(rawSchedule).toISOString()
     : null;
 
-  // Audience-specific filter values
   const trustThreshold = parseInt((fd.get('trust_threshold') as string) || '40', 10);
   const targetState    = (fd.get('state') as string) || null;
-  // targetCity is optional — empty string / absent both mean "all cities in state"
   const rawCity        = (fd.get('city') as string | null) ?? '';
   const targetCity     = rawCity.trim().length > 0 ? rawCity.trim() : null;
   const inactiveDays   = parseInt((fd.get('inactive_days') as string) || '30', 10);
@@ -128,34 +109,13 @@ async function sendBroadcast(fd: FormData) {
   const { data: { user: admin }, error: authError } = await supabase.auth.getUser();
   if (authError || !admin) throw new Error('Unauthenticated');
 
-  // ── Resolve recipient IDs for segments that require a pre-query ─────────────
-  //
-  // Two segments cannot be resolved with a simple profiles column filter because
-  // the relevant columns do not exist on the profiles table:
-  //
-  //   inactive → user_devices.last_seen_at  (profiles has no last_seen_at)
-  //   state    → user_locations.state       (profiles has location: string | null,
-  //                                          which is free-text, not a state enum)
-  //              user_locations.city        (optional sub-filter — schema-verified)
-  //
-  // Strategy: pre-query the owning table, collect profile UUIDs, then apply
-  // .in('id', ids) on the main profiles query. Both tables have a user_id FK
-  // to profiles and are schema-verified in database.types.ts.
+  // ── Pre-filter: segments that need a join query ─────────────────────────────
 
-  let preFilteredIds: string[] | null = null; // null = no pre-filter needed
+  let preFilteredIds: string[] | null = null;
 
   if (audience === 'inactive') {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - inactiveDays);
-
-    // user_devices.last_seen_at: string | null (schema-verified)
-    // A user may have multiple device rows; we want the ones whose MOST RECENT
-    // device activity is still before the cutoff. Selecting distinct user_ids
-    // whose every device row is old is non-trivial in a single Supabase query,
-    // so we take the pragmatic approach: select all user_ids that appear in
-    // user_devices with last_seen_at < cutoff, then exclude any whose user_id
-    // also appears with last_seen_at >= cutoff (active on at least one device).
-    // Implemented as two queries + set subtraction.
 
     const { data: staleDevices, error: staleErr } = await supabase
       .from('user_devices')
@@ -197,24 +157,12 @@ async function sendBroadcast(fd: FormData) {
   }
 
   if (audience === 'state' && targetState) {
-    // user_locations columns (schema-verified):
-    //   state : string  NOT NULL
-    //   city  : string | null
-    //
-    // The 1:1 FK (user_locations_user_id_fkey) means at most one row per user.
-    // When targetCity is provided we chain a second .eq() to narrow to that city.
-    // When targetCity is null we query by state only (all cities in that state).
-
     let locationQuery = supabase
       .from('user_locations')
       .select('user_id')
       .eq('state', targetState);
 
     if (targetCity) {
-      // Narrow to the specific city within the state.
-      // user_locations.city is nullable; .eq() will exclude NULL rows, which is
-      // correct — a NULL city means the user hasn't provided city-level detail
-      // and should not receive city-targeted broadcasts.
       locationQuery = locationQuery.eq('city', targetCity);
     }
 
@@ -231,10 +179,7 @@ async function sendBroadcast(fd: FormData) {
       ),
     ];
 
-    const locationLabel = targetCity
-      ? `${targetCity}, ${targetState}`
-      : targetState;
-
+    const locationLabel = targetCity ? `${targetCity}, ${targetState}` : targetState;
     if (preFilteredIds.length === 0) {
       throw new Error(`No users found in ${locationLabel}`);
     }
@@ -257,25 +202,27 @@ async function sendBroadcast(fd: FormData) {
 
     case 'inactive':
     case 'state':
-      // Pre-filter IDs resolved above; apply them here.
-      // preFilteredIds is guaranteed non-null and non-empty at this point.
       recipientQuery = recipientQuery.in('id', preFilteredIds!);
       break;
 
     case 'low_trust':
-      // trust_score is nullable; .lt() naturally excludes NULL rows,
-      // which is correct (NULL = unscored, not low-trust).
+      // trust_score is nullable; .lt() excludes NULL which is correct —
+      // NULL means unscored, not low-trust.
       recipientQuery = recipientQuery.lt('trust_score', trustThreshold);
       break;
 
     case 'unverified':
-      // Target users who have not completed identity verification.
-      recipientQuery = recipientQuery.eq('identity_verified', false);
+      // FIX (Error 6): identity_verified is boolean | null. New registrations
+      // have NULL (no default on this column); they are the primary target of
+      // a verification reminder. .eq('identity_verified', false) silently
+      // excluded them. .or() captures both explicit false and NULL rows.
+      recipientQuery = recipientQuery.or(
+        'identity_verified.is.null,identity_verified.eq.false'
+      );
       break;
 
     case 'all':
     default:
-      // No additional filter; active status already applied above.
       break;
   }
 
@@ -287,7 +234,7 @@ async function sendBroadcast(fd: FormData) {
   }
   if (!recipients || recipients.length === 0) throw new Error('No recipients found');
 
-  const rows: NotificationInsertExtended[] = recipients.map((r) => ({
+  const rows: NotificationInsert[] = recipients.map((r) => ({
     user_id:         r.id,
     type,
     title,
@@ -299,24 +246,21 @@ async function sendBroadcast(fd: FormData) {
 
   const { error: insertError } = await supabase
     .from('notifications')
-    .insert(rows as unknown as Database['public']['Tables']['notifications']['Insert'][]);
+    .insert(rows);
 
   if (insertError) {
     console.error('[sendBroadcast] bulk insert error:', insertError);
     throw new Error('Failed to insert broadcast notifications');
   }
 
-  // Build a human-readable location label for the audit log
   const locationLabel = audience === 'state'
     ? targetCity
       ? `${targetCity}, ${targetState}`
       : targetState ?? 'unknown state'
     : null;
 
-  const scheduleNote = scheduledAt ? ` | scheduled: ${scheduledAt}` : '';
-  const audienceLabel = locationLabel
-    ? `state: ${locationLabel}`
-    : audience;
+  const scheduleNote  = scheduledAt ? ` | scheduled: ${scheduledAt}` : '';
+  const audienceLabel = locationLabel ? `state: ${locationLabel}` : audience;
 
   const { error: logError } = await supabase.from('admin_action_logs').insert({
     admin_id:       admin.id,
