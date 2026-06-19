@@ -10,34 +10,20 @@
 //     2. src/app/api/admin/automation/cron/route.ts (cron Rule 4)
 //        — at hold-release time, to notify the freelancer that their
 //          withdrawal is now queued for processing.
-//   Keeping a single canonical implementation prevents the two call sites
-//   from drifting apart.
 //
-// WHY adminClient / serviceClient IS REQUIRED:
+// WHY adminClient IS REQUIRED:
 //   conversations INSERT RLS: (participant_1 = auth.uid()) OR (participant_2 = auth.uid())
 //   messages INSERT RLS:      sender_id = auth.uid()
-//
-//   Neither the earnings server action (running as the freelancer) nor the
-//   cron route (running with no user session) can satisfy these policies for
-//   a message whose sender is the platform system account. A service-role
-//   client bypasses all RLS and must be passed in by the caller.
-//
-// CONVERSATION REUSE:
-//   A SELECT-before-INSERT pattern is used rather than an upsert because
-//   PostgreSQL treats NULL ≠ NULL in unique indexes by default. The UNIQUE
-//   constraint on (participant_1, participant_2, order_id) does not collapse
-//   multiple rows where order_id IS NULL, so upsert ON CONFLICT would silently
-//   insert duplicates. SELECT-then-INSERT is the safe alternative.
+//   Neither caller can satisfy these policies for a message whose sender is
+//   the platform system account. Service-role client bypasses all RLS.
 //
 // PARTICIPANT ORDERING:
-//   participant_1 is always the lexicographically smaller UUID so that the
-//   same conversation is found regardless of which UUID is "system" vs
-//   "recipient" at call time.
+//   participant_1 is always the lexicographically smaller UUID so the same
+//   conversation is located regardless of which UUID is "system" vs "recipient".
 //
 // ENVIRONMENT VARIABLE:
-//   PLATFORM_SYSTEM_USER_ID must be set to the UUID of the platform/system
-//   Supabase auth user. If absent, the function no-ops with a console.warn
-//   and the caller's notifications fallback still fires.
+//   PLATFORM_SYSTEM_USER_ID — UUID of the platform Supabase auth user.
+//   If absent the function no-ops; the caller's notifications fallback fires.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -63,9 +49,9 @@ export async function sendF9SystemMessage(
     : [recipientId, systemUserId];
 
   try {
-    // ── Step 1: find existing system↔freelancer general conversation ─────────
-    // "General" means order_id IS NULL — this thread is not tied to any
-    // specific order and serves as the platform-to-user notification channel.
+    // ── Step 1: find existing system↔user general conversation ───────────────
+    // order_id IS NULL = platform-to-user notification thread, not tied to
+    // any specific order.
     const { data: existing, error: selectError } = await adminClient
       .from('conversations')
       .select('id')
@@ -84,7 +70,7 @@ export async function sendF9SystemMessage(
     if (existing) {
       conversationId = existing.id;
     } else {
-      // ── Step 2: create the system↔freelancer conversation ──────────────────
+      // ── Step 2: create the system↔user conversation ───────────────────────
       const { data: newConv, error: insertConvError } = await adminClient
         .from('conversations')
         .insert({ participant_1: p1, participant_2: p2, order_id: null })
@@ -99,12 +85,8 @@ export async function sendF9SystemMessage(
       conversationId = newConv.id;
     }
 
-    // ── Step 3: insert the message from the system account ───────────────────
-    // FIX (Bug 1): column is `message_text`, not `content`.
-    // `content` is not a column in the messages table per database.types.ts.
-    // Using the wrong key causes a silent insert failure — the DB rejects the
-    // unknown column, msgError is logged, but callers receive no signal and
-    // every system inbox message (withdrawal holds, hold-release) was discarded.
+    // ── Step 3: insert the message ────────────────────────────────────────────
+    // Column is message_text (schema-verified in database.types.ts).
     const { error: msgError } = await adminClient
       .from('messages')
       .insert({
@@ -115,7 +97,27 @@ export async function sendF9SystemMessage(
 
     if (msgError) {
       console.error('[sendF9SystemMessage] message INSERT failed:', msgError);
+      // Do not proceed to last_message_at update — the message didn't land.
+      return;
     }
+
+    // ── Step 4: update last_message_at ───────────────────────────────────────
+    // FIX (Bug B): without this update the conversation sorts by its creation
+    // time in the user's sidebar, meaning system messages (withdrawal holds,
+    // hold-release notifications) permanently appear at the bottom regardless
+    // of recency. Fire-and-forget per F9 protocol — a timestamp failure must
+    // not propagate to the caller or break a redirect.
+    void (async () => {
+      const { error: tsError } = await adminClient
+        .from('conversations')
+        .update({ last_message_at: new Date().toISOString() })
+        .eq('id', conversationId);
+
+      if (tsError) {
+        console.error('[sendF9SystemMessage] last_message_at update failed:', tsError);
+      }
+    })();
+
   } catch (err) {
     // Never let a messaging failure surface to the caller or break a redirect.
     console.error('[sendF9SystemMessage] unexpected error:', err);

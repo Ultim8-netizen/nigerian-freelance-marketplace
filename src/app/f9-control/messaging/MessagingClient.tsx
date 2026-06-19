@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useState, useTransition, type ElementType } from 'react';
 import { Card } from '@/components/ui/card';
 import {
   Loader2, CheckCircle, Send, Inbox, Clock, FileText,
@@ -68,7 +68,6 @@ const DELIVERY_METHODS = [
   { value: 'inbox',  label: 'F9 Inbox only'  },
 ];
 
-// Canonical state list sourced from location.types.ts (DB-aligned, 'FCT' not 'FCT (Abuja)')
 const NG_STATES = [...NIGERIAN_STATES] as string[];
 
 // ─── Template library ─────────────────────────────────────────────────────────
@@ -92,15 +91,9 @@ interface Template {
 }
 
 const TEMPLATES: Template[] = [
-
-  // ── Enforcement ─────────────────────────────────────────────────────────────
-
   {
-    id:       'level_1_advisory',
-    label:    'Level 1 Advisory Notice',
-    category: 'enforcement',
-    type:     'level_1_advisory',
-    title:    'Advisory Notice — We Noticed Something',
+    id: 'level_1_advisory', label: 'Level 1 Advisory Notice', category: 'enforcement',
+    type: 'level_1_advisory', title: 'Advisory Notice — We Noticed Something',
     message:
 `We want to be upfront with you: our systems flagged some recent activity on your account that we'd like you to be aware of. Specifically, [DESCRIBE BEHAVIOUR — e.g. "a pattern of late order deliveries" / "a client dispute that was escalated"].
 
@@ -108,13 +101,9 @@ This isn't an accusation — it's an early heads-up, given before anything forma
 
 No action has been taken on your account at this time. Please review our Community Guidelines and, if you have any context or questions, reach out to our support team. We'd rather talk than escalate.`,
   },
-
   {
-    id:       'level_2_warning',
-    label:    'Level 2 Formal Warning',
-    category: 'enforcement',
-    type:     'level_2_warning',
-    title:    'Formal Warning — Action Required',
+    id: 'level_2_warning', label: 'Level 2 Formal Warning', category: 'enforcement',
+    type: 'level_2_warning', title: 'Formal Warning — Action Required',
     message:
 `This is a Level 2 Formal Warning issued to your F9 account.
 
@@ -124,13 +113,9 @@ This warning is now a permanent record on your account. Any further violations w
 
 We take no pleasure in issuing this notice — our obligation is to protect every member of this community equally. If you believe this warning was issued in error, please raise a formal dispute within 48 hours of receiving this message and our review team will assess your case.`,
   },
-
   {
-    id:       'account_under_review',
-    label:    'Account Under Review',
-    category: 'enforcement',
-    type:     'account_under_review',
-    title:    'Your Account is Currently Under Review',
+    id: 'account_under_review', label: 'Account Under Review', category: 'enforcement',
+    type: 'account_under_review', title: 'Your Account is Currently Under Review',
     message:
 `We're writing to let you know that your F9 account has been placed under a temporary administrative review.
 
@@ -140,13 +125,9 @@ We aim to complete all account reviews within 72 hours. You do not need to take 
 
 Thank you for your patience. We understand this is inconvenient, and we commit to resolving it as quickly as possible.`,
   },
-
   {
-    id:       'account_suspended',
-    label:    'Account Suspended',
-    category: 'enforcement',
-    type:     'account_suspended',
-    title:    'Your Account Has Been Suspended',
+    id: 'account_suspended', label: 'Account Suspended', category: 'enforcement',
+    type: 'account_suspended', title: 'Your Account Has Been Suspended',
     message:
 `Your F9 account has been suspended [for X days / until further notice] following a review of your recent activity on the platform.
 
@@ -162,13 +143,9 @@ If you believe this decision was made in error, you have 48 hours from the date 
 
 We do not take suspension lightly — it is always a last resort, taken only when the integrity of the platform requires it.`,
   },
-
   {
-    id:       'account_reinstated',
-    label:    'Account Reinstated',
-    category: 'enforcement',
-    type:     'account_reinstated',
-    title:    'Your Account Has Been Reinstated — Welcome Back',
+    id: 'account_reinstated', label: 'Account Reinstated', category: 'enforcement',
+    type: 'account_reinstated', title: 'Your Account Has Been Reinstated — Welcome Back',
     message:
 `Good news: your F9 account is now fully active again.
 
@@ -180,15 +157,9 @@ A reminder that our Community Guidelines remain in full effect, applied consiste
 
 Welcome back.`,
   },
-
-  // ── Verification ─────────────────────────────────────────────────────────
-
   {
-    id:       'verification_reminder',
-    label:    'Verification Reminder (General)',
-    category: 'verification',
-    type:     'verification_reminder',
-    title:    "Complete Your Verification — You're Leaving Value on the Table",
+    id: 'verification_reminder', label: 'Verification Reminder (General)', category: 'verification',
+    type: 'verification_reminder', title: "Complete Your Verification — You're Leaving Value on the Table",
     message:
 `Your F9 account currently has [pending / incomplete] verification steps, and it's worth taking ten minutes to finish them.
 
@@ -202,13 +173,9 @@ Verified freelancers receive significantly more client enquiries than unverified
 
 Tap below to complete your remaining steps. It takes under ten minutes, and it unlocks everything.`,
   },
-
   {
-    id:       'verification_student',
-    label:    'Student Verification Reminder',
-    category: 'verification',
-    type:     'verification_reminder',
-    title:    'Verify Your Student Status — F9 Was Built for You',
+    id: 'verification_student', label: 'Student Verification Reminder', category: 'verification',
+    type: 'verification_reminder', title: 'Verify Your Student Status — F9 Was Built for You',
     message:
 `F9 exists, in part, because of Nigerian university students. You are exactly the person this platform was designed to support — ambitious, skilled, in need of a legitimate marketplace that takes you seriously and pays you fairly.
 
@@ -222,13 +189,9 @@ All you need is a valid student ID from a recognised Nigerian university. The pr
 
 Your degree is not just a certificate — it's a signal. Let's make sure the marketplace sees it.`,
   },
-
   {
-    id:       'verification_identity',
-    label:    'Identity / Liveness Verification',
-    category: 'verification',
-    type:     'verification_reminder',
-    title:    'One Final Step: Verify Your Identity',
+    id: 'verification_identity', label: 'Identity / Liveness Verification', category: 'verification',
+    type: 'verification_reminder', title: 'One Final Step: Verify Your Identity',
     message:
 `Your F9 account is almost fully verified — there's one step remaining, and it's the most important one.
 
@@ -247,15 +210,9 @@ Your data is processed securely using industry-standard encryption and is never 
 
 It takes less than three minutes. Tap below to complete this final step.`,
   },
-
-  // ── Milestone ────────────────────────────────────────────────────────────
-
   {
-    id:       'milestone_first_order',
-    label:    'First Order Completed',
-    category: 'milestone',
-    type:     'milestone',
-    title:    "Your First Order on F9 — That's a Big Deal \uD83C\uDF89",
+    id: 'milestone_first_order', label: 'First Order Completed', category: 'milestone',
+    type: 'milestone', title: "Your First Order on F9 — That's a Big Deal 🎉",
     message:
 `You just completed your first order on F9. We don't say this lightly: that matters.
 
@@ -267,50 +224,38 @@ From here, each order builds your reputation, your rating, and your earning powe
 
 Keep going.`,
   },
-
   {
-    id:       'milestone_earnings',
-    label:    'Earnings Milestone',
-    category: 'milestone',
-    type:     'milestone',
-    title:    '\u20A6[AMOUNT] Earned on F9 \uD83D\uDCB0',
+    id: 'milestone_earnings', label: 'Earnings Milestone', category: 'milestone',
+    type: 'milestone', title: '₦[AMOUNT] Earned on F9 💰',
     message:
-`\u20A6[AMOUNT] earned on F9. Let that sit for a moment.
+`₦[AMOUNT] earned on F9. Let that sit for a moment.
 
 That is real money — generated by your skill, your reliability, and your decision to show up consistently on this platform. Not a salary someone handed you. Not a favour. Something you built.
 
 You've joined a growing group of Nigerian professionals creating genuine, sustainable income through the digital economy — on their own terms, on their own schedule. That group is still small enough that being in it means something.
 
-This milestone has been noted on your account record. Your next threshold is \u20A6[NEXT AMOUNT].
+This milestone has been noted on your account record. Your next threshold is ₦[NEXT AMOUNT].
 
 There's more where that came from. Keep building.`,
   },
-
   {
-    id:       'milestone_trust_tier',
-    label:    'Trust Tier Upgrade',
-    category: 'milestone',
-    type:     'milestone',
-    title:    "You've Been Promoted — [NEW TIER] Trust Tier \uD83C\uDFC5",
+    id: 'milestone_trust_tier', label: 'Trust Tier Upgrade', category: 'milestone',
+    type: 'milestone', title: "You've Been Promoted — [NEW TIER] Trust Tier 🏅",
     message:
 `Your Trust Score has crossed into the [NEW TIER] tier, and we want to make sure you understand what that means: you earned this.
 
 Trust tier upgrades on F9 are not automatic or time-based. They reflect a sustained pattern of quality — completing orders on time, maintaining strong client ratings, keeping your account in good standing, and demonstrating the kind of integrity the platform was built to reward.
 
 What the [NEW TIER] tier unlocks for you:
-[LIST BENEFITS — e.g. "— Lower commission rate (X% → Y%)" / "— Withdrawal limit increased to \u20A6X" / "— Priority dispute resolution" / "— Featured placement in search results"]
+[LIST BENEFITS — e.g. "— Lower commission rate (X% → Y%)" / "— Withdrawal limit increased to ₦X" / "— Priority dispute resolution" / "— Featured placement in search results"]
 
 Clients who browse F9 actively filter by Trust Tier. Moving up is not just a badge — it is a measurable commercial advantage. This is a significant milestone.
 
 You've earned it.`,
   },
-
   {
-    id:       'milestone_jobs_count',
-    label:    'Jobs Completed Milestone',
-    category: 'milestone',
-    type:     'milestone',
-    title:    '[X] Jobs Completed on F9 \uD83C\uDFAF',
+    id: 'milestone_jobs_count', label: 'Jobs Completed Milestone', category: 'milestone',
+    type: 'milestone', title: '[X] Jobs Completed on F9 🎯',
     message:
 `[X] jobs. Not started — completed. There's a real difference, and you know it.
 
@@ -322,13 +267,9 @@ Your profile has been updated to reflect this achievement. The next milestone is
 
 Keep the streak alive.`,
   },
-
   {
-    id:       'milestone_perfect_rating',
-    label:    'Perfect Rating Streak',
-    category: 'milestone',
-    type:     'milestone',
-    title:    '[X] Consecutive 5-Star Reviews \u2B50',
+    id: 'milestone_perfect_rating', label: 'Perfect Rating Streak', category: 'milestone',
+    type: 'milestone', title: '[X] Consecutive 5-Star Reviews ⭐',
     message:
 `[X] five-star reviews in a row. Not one client, across [X] separate transactions, found a reason to give you anything less than perfect.
 
@@ -338,15 +279,9 @@ F9 exists to surface talent like yours and connect it with the people who need i
 
 This achievement has been noted on your account. We thought you should know that we noticed.`,
   },
-
-  // ── Seasonal ─────────────────────────────────────────────────────────────
-
   {
-    id:       'seasonal_ramadan',
-    label:    'Ramadan Kareem',
-    category: 'seasonal',
-    type:     'general_announcement',
-    title:    'Ramadan Kareem from the F9 Family \uD83C\uDF19',
+    id: 'seasonal_ramadan', label: 'Ramadan Kareem', category: 'seasonal',
+    type: 'general_announcement', title: 'Ramadan Kareem from the F9 Family 🌙',
     message:
 `As the blessed month of Ramadan begins, the entire F9 team extends our warmest greetings to every member of our community who is observing the fast.
 
@@ -354,15 +289,11 @@ Ramadan Kareem.
 
 This is a month of spiritual depth, communal generosity, and extraordinary endurance — and we see that endurance reflected every day in the way our community shows up to do great work, even under conditions most people wouldn't manage.
 
-We hope this month brings you clarity, barakah, and genuine rest alongside the work. From all of us: Ramadan Kareem. \uD83C\uDF19`,
+We hope this month brings you clarity, barakah, and genuine rest alongside the work. From all of us: Ramadan Kareem. 🌙`,
   },
-
   {
-    id:       'seasonal_eid_al_fitr',
-    label:    'Eid al-Fitr Greetings',
-    category: 'seasonal',
-    type:     'general_announcement',
-    title:    'Eid Mubarak from All of Us at F9 \uD83C\uDF19\u2728',
+    id: 'seasonal_eid_al_fitr', label: 'Eid al-Fitr Greetings', category: 'seasonal',
+    type: 'general_announcement', title: 'Eid Mubarak from All of Us at F9 🌙✨',
     message:
 `As the holy month of Ramadan draws to a close, the entire F9 team wishes you and your loved ones a joyful and deeply peaceful Eid al-Fitr.
 
@@ -370,15 +301,11 @@ You fasted, you worked, you delivered — and today you celebrate. That combinat
 
 May this Eid bring you rest, gratitude, and the kind of quiet happiness that comes from knowing you showed up fully for something. And may the year ahead bring everything you've been working toward — on this platform and far beyond it.
 
-Eid Mubarak — from every person on the F9 team to every person in this community. \uD83C\uDF19\u2728`,
+Eid Mubarak — from every person on the F9 team to every person in this community. 🌙✨`,
   },
-
   {
-    id:       'seasonal_eid_al_adha',
-    label:    'Eid al-Adha / Sallah Greetings',
-    category: 'seasonal',
-    type:     'general_announcement',
-    title:    'Eid al-Adha Mubarak — Sallah Greetings from F9 \uD83D\uDC11',
+    id: 'seasonal_eid_al_adha', label: 'Eid al-Adha / Sallah Greetings', category: 'seasonal',
+    type: 'general_announcement', title: 'Eid al-Adha Mubarak — Sallah Greetings from F9 🐑',
     message:
 `To our Muslim community members marking Eid al-Adha — Sallah Mubarak from the entire F9 family.
 
@@ -388,15 +315,11 @@ We are grateful to share a community with people who carry those values into the
 
 May your celebration be filled with blessings, your homes with warmth and laughter, and the year ahead with every kind of prosperity — on F9 and far beyond it.
 
-Eid Mubarak. \uD83D\uDC11`,
+Eid Mubarak. 🐑`,
   },
-
   {
-    id:       'seasonal_christmas',
-    label:    'Christmas Greetings',
-    category: 'seasonal',
-    type:     'general_announcement',
-    title:    'Merry Christmas from the F9 Team \uD83C\uDF84',
+    id: 'seasonal_christmas', label: 'Christmas Greetings', category: 'seasonal',
+    type: 'general_announcement', title: 'Merry Christmas from the F9 Team 🎄',
     message:
 `To everyone in our community celebrating Christmas — Merry Christmas from the entire F9 family.
 
@@ -406,15 +329,11 @@ We hope this season gives you exactly what you need — whether that's laughter 
 
 Thank you for choosing F9 as part of your year. See you on the other side.
 
-Merry Christmas. \uD83C\uDF84`,
+Merry Christmas. 🎄`,
   },
-
   {
-    id:       'seasonal_new_year',
-    label:    'New Year Greetings',
-    category: 'seasonal',
-    type:     'general_announcement',
-    title:    "Happy New Year — Here's to [YEAR] \uD83E\uDD42",
+    id: 'seasonal_new_year', label: 'New Year Greetings', category: 'seasonal',
+    type: 'general_announcement', title: "Happy New Year — Here's to [YEAR] 🥂",
     message:
 `A new year is a rare thing: a clean slate, a new chapter, and the permission — if you choose to take it — to do things differently.
 
@@ -422,15 +341,11 @@ The F9 team is deeply grateful for what we built together in [PREVIOUS YEAR]. Th
 
 In [YEAR], we're going further. More features, more opportunities, more ways to earn and grow. We have every intention of making F9 the most trusted freelance marketplace in Nigeria — because you deserve that infrastructure.
 
-Happy New Year. Here's to [YEAR]. \uD83E\uDD42`,
+Happy New Year. Here's to [YEAR]. 🥂`,
   },
-
   {
-    id:       'seasonal_independence',
-    label:    'Independence Day (Oct 1)',
-    category: 'seasonal',
-    type:     'general_announcement',
-    title:    'Happy Independence Day — October 1st \uD83C\uDDF3\uD83C\uDDEC',
+    id: 'seasonal_independence', label: 'Independence Day (Oct 1)', category: 'seasonal',
+    type: 'general_announcement', title: 'Happy Independence Day — October 1st 🇳🇬',
     message:
 `On this day in 1960, Nigeria declared itself to the world. The declaration continues — not just in government buildings, but in the work of millions of ordinary Nigerians who refuse to let their circumstances define their ceiling.
 
@@ -438,17 +353,11 @@ F9 was built on a single belief: that Nigerian talent is world-class, and that i
 
 To every freelancer, every client, every student entrepreneur who chose to build something real on F9: you are not waiting for Nigeria to become great. You are the evidence that it already is.
 
-Happy Independence Day. \uD83C\uDDF3\uD83C\uDDEC`,
+Happy Independence Day. 🇳🇬`,
   },
-
-  // ── Re-engagement ─────────────────────────────────────────────────────────
-
   {
-    id:       'reengagement_general',
-    label:    "We've Missed You (General)",
-    category: 'reengagement',
-    type:     'reengagement',
-    title:    "We've Missed You on F9",
+    id: 'reengagement_general', label: "We've Missed You (General)", category: 'reengagement',
+    type: 'reengagement', title: "We've Missed You on F9",
     message:
 `It's been a while since we've seen you active on F9, and we genuinely wanted to check in.
 
@@ -458,13 +367,9 @@ If something about your experience wasn't working for you, we want to know. Repl
 
 And if life simply got in the way — that's fine too. Come back when you're ready. Everything is exactly as you left it.`,
   },
-
   {
-    id:       'reengagement_freelancer',
-    label:    'Dormant Freelancer Win-Back',
-    category: 'reengagement',
-    type:     'reengagement',
-    title:    'Your Skills Are Still in Demand on F9',
+    id: 'reengagement_freelancer', label: 'Dormant Freelancer Win-Back', category: 'reengagement',
+    type: 'reengagement', title: 'Your Skills Are Still in Demand on F9',
     message:
 `You built a profile on F9, and then — for whatever reason — the momentum paused. We get it. Life is not a straight line.
 
@@ -474,13 +379,9 @@ The Nigerian freelance market is moving faster than it ever has, and F9 is at th
 
 Don't let your spot go to someone else. Log in and pick up where you left off.`,
   },
-
   {
-    id:       'reengagement_client',
-    label:    'Dormant Client Win-Back',
-    category: 'reengagement',
-    type:     'reengagement',
-    title:    'Ready to Get Things Done? F9 Is Here',
+    id: 'reengagement_client', label: 'Dormant Client Win-Back', category: 'reengagement',
+    type: 'reengagement', title: 'Ready to Get Things Done? F9 Is Here',
     message:
 `It's been a while since you posted a job on F9. Whether your last project wrapped up, your priorities shifted, or life simply got busy — we're here when you're ready for what's next.
 
@@ -490,15 +391,9 @@ Whatever you're building next — your next product, campaign, idea, or event �
 
 Post a job today. It takes five minutes, and the right person might respond by tomorrow morning.`,
   },
-
-  // ── Trust ─────────────────────────────────────────────────────────────────
-
   {
-    id:       'trust_score_warning',
-    label:    'Trust Score Warning',
-    category: 'trust',
-    type:     'trust_score_alert',
-    title:    'Your Trust Score Needs Attention',
+    id: 'trust_score_warning', label: 'Trust Score Warning', category: 'trust',
+    type: 'trust_score_alert', title: 'Your Trust Score Needs Attention',
     message:
 `We're reaching out because your Trust Score has dropped to [SCORE] — below the [THRESHOLD] threshold F9 uses to determine unrestricted platform access.
 
@@ -513,13 +408,9 @@ The important thing: Trust Scores are designed to recover. They are not permanen
 
 You built a reputation on this platform. Let's rebuild it.`,
   },
-
   {
-    id:       'trust_score_recovery',
-    label:    'Trust Score Recovery Notice',
-    category: 'trust',
-    type:     'trust_score_alert',
-    title:    'Your Trust Score Is Moving in the Right Direction \u2197',
+    id: 'trust_score_recovery', label: 'Trust Score Recovery Notice', category: 'trust',
+    type: 'trust_score_alert', title: 'Your Trust Score Is Moving in the Right Direction ↗',
     message:
 `We wanted you to know: your Trust Score has improved to [NEW SCORE] and is trending upward.
 
@@ -531,15 +422,9 @@ At [NEXT THRESHOLD], you'll unlock [NEXT BENEFIT — e.g. "the Standard trust ti
 
 Keep it up. You're heading in the right direction.`,
   },
-
-  // ── Platform ─────────────────────────────────────────────────────────────
-
   {
-    id:       'maintenance',
-    label:    'Scheduled Maintenance',
-    category: 'platform',
-    type:     'platform_notice',
-    title:    'Scheduled Platform Maintenance — [DATE]',
+    id: 'maintenance', label: 'Scheduled Maintenance', category: 'platform',
+    type: 'platform_notice', title: 'Scheduled Platform Maintenance — [DATE]',
     message:
 `F9 will undergo scheduled maintenance on [DATE] from [START TIME] to [END TIME] WAT.
 
@@ -554,13 +439,9 @@ We've scheduled this work during off-peak hours to minimise disruption. If the m
 
 We apologise in advance for any inconvenience, and appreciate your patience as we keep the platform at its best.`,
   },
-
   {
-    id:       'policy_update',
-    label:    'Policy / Terms Update',
-    category: 'platform',
-    type:     'platform_notice',
-    title:    'Important Update to Our Terms of Service',
+    id: 'policy_update', label: 'Policy / Terms Update', category: 'platform',
+    type: 'platform_notice', title: 'Important Update to Our Terms of Service',
     message:
 `We've updated F9's Terms of Service and Marketplace Guidelines, effective [DATE].
 
@@ -575,13 +456,9 @@ If you have questions about how these changes affect your account specifically, 
 
 We believe in being upfront about how we operate. That's why we're telling you exactly what changed — not just that something did.`,
   },
-
   {
-    id:       'new_feature',
-    label:    'New Feature Announcement',
-    category: 'platform',
-    type:     'new_feature',
-    title:    'Something New Just Landed on F9 \u2728',
+    id: 'new_feature', label: 'New Feature Announcement', category: 'platform',
+    type: 'new_feature', title: 'Something New Just Landed on F9 ✨',
     message:
 `We're excited to introduce [FEATURE NAME] — [ONE CLEAR SENTENCE: what it does and who it's for].
 
@@ -591,17 +468,13 @@ This came directly from feedback submitted by our community. We build F9 in resp
 
 If you find something that isn't working the way it should, we want to hear it. Open a support ticket or reply to this message. A real person will respond.`,
   },
-
   {
-    id:       'promo',
-    label:    'Promotional Broadcast',
-    category: 'platform',
-    type:     'general_announcement',
-    title:    '[HEADLINE — specific, not generic]',
+    id: 'promo', label: 'Promotional Broadcast', category: 'platform',
+    type: 'general_announcement', title: '[HEADLINE — specific, not generic]',
     message:
 `[OPENING — one sentence that earns the reader's next 20 seconds. Start with the value, not the announcement. Avoid "We're excited to announce."]
 
-[BODY — 2-3 sentences. What is it? Who is it for? What does it change for them? Be concrete: \u20A6 amounts, percentages, dates, numbers. Vague promotions don't land.]
+[BODY — 2-3 sentences. What is it? Who is it for? What does it change for them? Be concrete: ₦ amounts, percentages, dates, numbers. Vague promotions don't land.]
 
 [CTA — one clear action. "Post a job today." / "Withdraw your earnings now." / "Upgrade your profile before [DATE]." Not "Learn more" — that's a deferral, not an action.]
 
@@ -613,7 +486,7 @@ If you find something that isn't working the way it should, we want to hear it. 
 
 const CATEGORY_META: Record<
   TemplateCategory,
-  { label: string; colour: string; icon: React.ElementType }
+  { label: string; colour: string; icon: ElementType }
 > = {
   enforcement:  { label: 'Enforcement',   colour: 'bg-red-100 text-red-700',       icon: ShieldAlert },
   verification: { label: 'Verification',  colour: 'bg-blue-100 text-blue-700',     icon: UserCheck   },
@@ -644,6 +517,19 @@ function nowLocal() {
 type FeedbackState = 'idle' | 'pending' | 'ok' | 'error';
 
 // ─── Compose Tab ──────────────────────────────────────────────────────────────
+//
+// FIX: The original implementation used a useEffect to sync `seed` prop changes
+// into controlled state fields (setType / setTitle / setMessage). The ESLint rule
+// `react-hooks/set-state-in-effect` correctly flags synchronous setState calls
+// inside an effect body — they cause a second render cycle with no external system
+// involved, which is exactly what "You Might Not Need an Effect" warns against.
+//
+// The idiomatic fix: remove the useEffect entirely and use a `key` prop on this
+// component instead (set in MessagingClient.handleUseTemplate). When `key` changes,
+// React unmounts and remounts ComposeTab, so the useState initialisers re-run with
+// the new seed values — zero extra renders, no effect needed. The parent increments
+// a counter on every template selection, so clicking the same template twice still
+// produces a remount (the key changes even when the template ID doesn't).
 
 function ComposeTab({
   onSendDirect,
@@ -654,43 +540,34 @@ function ComposeTab({
   onSendBroadcast: (fd: FormData) => Promise<void>;
   seed: { type: string; title: string; message: string } | null;
 }) {
-  const [mode,           setMode]           = useState<'direct' | 'broadcast'>('direct');
-  const [feedback,       setFeedback]       = useState<FeedbackState>('idle');
-  const [isPending,      start]             = useTransition();
+  const [mode,           setMode]      = useState<'direct' | 'broadcast'>('direct');
+  const [feedback,       setFeedback]  = useState<FeedbackState>('idle');
+  const [isPending,      start]        = useTransition();
 
-  const [type,           setType]           = useState(seed?.type    ?? NOTIF_TYPES[0]);
-  const [title,          setTitle]          = useState(seed?.title   ?? '');
-  const [message,        setMessage]        = useState(seed?.message ?? '');
-  const [link,           setLink]           = useState('');
-  const [recipient,      setRecipient]      = useState('');
-  const [audience,       setAudience]       = useState('all');
+  // Initialisers read from `seed` at mount time. Because MessagingClient passes
+  // an incrementing `key`, every new template selection remounts this component
+  // and these initialisers run fresh — no useEffect required.
+  const [type,           setType]      = useState(seed?.type    ?? NOTIF_TYPES[0]);
+  const [title,          setTitle]     = useState(seed?.title   ?? '');
+  const [message,        setMessage]   = useState(seed?.message ?? '');
+  const [link,           setLink]      = useState('');
+  const [recipient,      setRecipient] = useState('');
+  const [audience,       setAudience]  = useState('all');
   const [deliveryMethod, setDeliveryMethod] = useState('both');
   const [scheduledAt,    setScheduledAt]    = useState('');
 
-  // audience-specific filter fields
   const [trustThreshold, setTrustThreshold] = useState('40');
   const [selectedState,  setSelectedState]  = useState<string>(NG_STATES[0]);
-  // selectedCity: '' means "All cities" — no city filter applied
   const [selectedCity,   setSelectedCity]   = useState<string>('');
-  // inactive threshold: days since last login
   const [inactiveDays,   setInactiveDays]   = useState('30');
 
   const isScheduled        = scheduledAt.trim().length > 0;
   const hasUnfilledBracket = message.includes('[') && message.includes(']');
 
-  // Cities available for the currently selected state (may be empty for states
-  // not in MAJOR_CITIES, which is fine — city dropdown will only show "All")
   const citiesForState: string[] = MAJOR_CITIES[selectedState] ?? [];
-
-  const applyTemplate = (t: Template) => {
-    setType(t.type);
-    setTitle(t.title);
-    setMessage(t.message);
-  };
 
   const handleStateChange = (newState: string) => {
     setSelectedState(newState);
-    // Reset city selection whenever state changes — avoids stale city values
     setSelectedCity('');
   };
 
@@ -698,15 +575,11 @@ function ComposeTab({
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
 
-    // Append audience-specific filter values so the server action can apply them
     if (mode === 'broadcast') {
       if (audience === 'low_trust') fd.set('trust_threshold', trustThreshold);
       if (audience === 'inactive')  fd.set('inactive_days',   inactiveDays);
       if (audience === 'state') {
         fd.set('state', selectedState);
-        // Only send 'city' when a specific city is chosen — empty string means
-        // "all cities in this state", which the server action interprets as no
-        // city-level filter.
         if (selectedCity) fd.set('city', selectedCity);
       }
     }
@@ -732,9 +605,7 @@ function ComposeTab({
       <div className="flex gap-2">
         {(['direct', 'broadcast'] as const).map((m) => (
           <button
-            key={m}
-            type="button"
-            onClick={() => setMode(m)}
+            key={m} type="button" onClick={() => setMode(m)}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
               mode === m ? 'bg-blue-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
             }`}
@@ -774,7 +645,6 @@ function ComposeTab({
               </select>
             </div>
 
-            {/* Trust score threshold — shown when audience is low_trust */}
             {audience === 'low_trust' && (
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -791,14 +661,12 @@ function ComposeTab({
               </div>
             )}
 
-            {/* State + city selectors — shown when audience is state */}
             {audience === 'state' && (
               <>
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">Target State</label>
                   <select
-                    value={selectedState}
-                    onChange={(e) => handleStateChange(e.target.value)}
+                    value={selectedState} onChange={(e) => handleStateChange(e.target.value)}
                     className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                   >
                     {NG_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -814,8 +682,7 @@ function ComposeTab({
                     Target City <span className="text-gray-400 font-normal">(optional &mdash; leave as &ldquo;All cities&rdquo; to target the entire state)</span>
                   </label>
                   <select
-                    value={selectedCity}
-                    onChange={(e) => setSelectedCity(e.target.value)}
+                    value={selectedCity} onChange={(e) => setSelectedCity(e.target.value)}
                     className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                   >
                     <option value="">All cities in {selectedState}</option>
@@ -842,7 +709,6 @@ function ComposeTab({
               </>
             )}
 
-            {/* Inactivity window — shown when audience is inactive */}
             {audience === 'inactive' && (
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -975,7 +841,8 @@ function ComposeTab({
               </span>
               {items.map((t) => (
                 <button
-                  key={t.id} type="button" onClick={() => applyTemplate(t)}
+                  key={t.id} type="button"
+                  onClick={() => { setType(t.type); setTitle(t.title); setMessage(t.message); }}
                   className="px-3 py-1 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors"
                 >
                   {t.label}
@@ -1167,11 +1034,19 @@ type TabId = (typeof TABS)[number]['id'];
 export function MessagingClient({
   inbox, sentLog, onSendDirect, onSendBroadcast,
 }: MessagingClientProps) {
-  const [active, setActive]             = useState<TabId>('compose');
+  const [active,       setActive]       = useState<TabId>('compose');
   const [templateSeed, setTemplateSeed] = useState<Template | null>(null);
+  // FIX: This counter is the key mechanism. It increments on every template
+  // selection and is passed as `key` to ComposeTab. React unmounts+remounts
+  // ComposeTab when key changes, so useState initialisers re-run with the
+  // latest seed — no useEffect or synchronous setState inside an effect needed.
+  // Clicking the same template twice still increments the counter, so the form
+  // correctly resets even when the template ID hasn't changed.
+  const [composeKey,   setComposeKey]   = useState(0);
 
   const handleUseTemplate = (t: Template) => {
     setTemplateSeed(t);
+    setComposeKey((k) => k + 1);
     setActive('compose');
   };
 
@@ -1196,7 +1071,14 @@ export function MessagingClient({
         ))}
       </div>
       <div className="p-6">
-        {active === 'compose'   && <ComposeTab onSendDirect={onSendDirect} onSendBroadcast={onSendBroadcast} seed={templateSeed} />}
+        {active === 'compose' && (
+          <ComposeTab
+            key={composeKey}
+            onSendDirect={onSendDirect}
+            onSendBroadcast={onSendBroadcast}
+            seed={templateSeed}
+          />
+        )}
         {active === 'inbox'     && <InboxTab inbox={inbox} />}
         {active === 'history'   && <BroadcastHistoryTab sentLog={sentLog} />}
         {active === 'templates' && <TemplatesTab onUse={handleUseTemplate} />}

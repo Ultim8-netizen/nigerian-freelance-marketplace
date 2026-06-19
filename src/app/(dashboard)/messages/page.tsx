@@ -10,7 +10,6 @@ import { createClient } from '@/lib/supabase/client';
 import type { Profile, Conversation, Message, MessageInsert } from '@/types';
 import Image from 'next/image';
 
-// Extended types for component state
 interface MessageWithSender extends Message {
   sender: Profile | null;
 }
@@ -103,10 +102,8 @@ function ChatHeaderAvatar({ user }: { user: Profile | null }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function MessagesPage() {
-  // FIX (Bug 2): createClient() must not be called on every render — it returns
-  // a new object reference each time, which makes any useEffect that lists
-  // `supabase` as a dependency re-run on every render, creating an infinite
-  // fetch loop. useState initialiser runs exactly once.
+  // Stable Supabase client — createClient() in the render body returns a new
+  // object on every render; useState initialiser runs exactly once.
   const [supabase] = useState(() => createClient());
 
   const [conversations, setConversations] = useState<ConversationWithData[]>([]);
@@ -116,18 +113,10 @@ export default function MessagesPage() {
   const [loading, setLoading]             = useState(true);
   const [currentUserId, setCurrentUserId] = useState<string>('');
 
-  // Tracks the set of conversation IDs this user belongs to.
-  // Used inside the Realtime callback — a ref avoids making `conversations`
-  // a dependency of the Realtime useEffect, which would tear down and
-  // re-create the channel every time any message is received.
-  const convIdsRef = useRef<Set<string>>(new Set());
-
-  // Tracks the currently open conversation ID inside the Realtime callback
-  // so newly arriving messages can be marked read immediately if the
-  // conversation is already visible — without making selectedId a dep.
+  // Refs used inside the Realtime callback so the effect is not re-created
+  // whenever conversations or selectedId state changes.
+  const convIdsRef    = useRef<Set<string>>(new Set());
   const selectedIdRef = useRef<string | null>(null);
-
-  // Scroll anchor at the end of the messages list.
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // ── Init ───────────────────────────────────────────────────────────────────
@@ -148,7 +137,7 @@ export default function MessagesPage() {
         if (convError) throw convError;
         if (!convData) return;
 
-        const enrichedConversations = await Promise.all(
+        const enriched = await Promise.all(
           (convData as Conversation[]).map(async (conv) => {
             const otherUserId = conv.participant_1 === user.id
               ? conv.participant_2
@@ -184,10 +173,11 @@ export default function MessagesPage() {
           })
         );
 
-        setConversations(enrichedConversations);
-        if (enrichedConversations.length > 0) {
-          setSelectedId(enrichedConversations[0].id);
-          selectedIdRef.current = enrichedConversations[0].id;
+        setConversations(enriched);
+
+        if (enriched.length > 0) {
+          setSelectedId(enriched[0].id);
+          selectedIdRef.current = enriched[0].id;
         }
       } catch (error) {
         console.error('Error loading conversations:', error);
@@ -199,22 +189,17 @@ export default function MessagesPage() {
     void init();
   }, [supabase]);
 
-  // Keep convIdsRef current whenever the conversation list changes so the
-  // Realtime callback always filters correctly without being re-subscribed.
+  // Keep refs current after state changes so Realtime callbacks are always
+  // working with the latest values without being listed as dependencies.
   useEffect(() => {
     convIdsRef.current = new Set(conversations.map(c => c.id));
   }, [conversations]);
 
-  // Keep selectedIdRef current so the Realtime callback can check which
-  // conversation is open without selectedId being in the effect dep array.
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
   // ── Realtime: incoming messages ────────────────────────────────────────────
-  // Gap 3 FIX: Subscribe to message INSERTs once after the user is known.
-  // Channel is not recreated when conversations state updates because we use
-  // refs for the data the callback needs (convIdsRef, selectedIdRef).
   useEffect(() => {
     if (!currentUserId) return;
 
@@ -227,10 +212,71 @@ export default function MessagesPage() {
           const incoming = payload.new as Message;
           const convId   = incoming.conversation_id;
 
-          // Ignore events for conversations this user is not part of.
-          if (!convId || !convIdsRef.current.has(convId)) return;
+          if (!convId) return;
 
-          // Realtime payloads don't include join data — fetch sender profile.
+          // ── Gap D FIX: unknown conversation ──────────────────────────────
+          // When convId is not in convIdsRef, this may be a brand-new thread
+          // started by another user while the current user is on this page.
+          // Previously: silently discarded → user had to reload to see it.
+          // Now: verify the conversation belongs to this user, fetch it in
+          // full, and prepend it to state. convIdsRef is updated automatically
+          // by the useEffect([conversations]) above after setConversations.
+          if (!convIdsRef.current.has(convId)) {
+            const { data: newConv } = await supabase
+              .from('conversations')
+              .select('*')
+              .eq('id', convId)
+              .or(
+                `participant_1.eq.${currentUserId},participant_2.eq.${currentUserId}`
+              )
+              .single();
+
+            // Not our conversation — a different user's event leaked through.
+            // This should not happen with correct RLS but is a safe guard.
+            if (!newConv) return;
+
+            const otherUserId = newConv.participant_1 === currentUserId
+              ? newConv.participant_2
+              : newConv.participant_1;
+
+            const { data: otherProfile } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', otherUserId)
+              .single();
+
+            // Fetch all messages in the new conversation (including the
+            // triggering one) so the thread is complete from the start.
+            const { data: newMessages } = await supabase
+              .from('messages')
+              .select(`
+                id,
+                conversation_id,
+                sender_id,
+                message_text,
+                attachments,
+                is_read,
+                read_at,
+                created_at,
+                sender:sender_id(*)
+              `)
+              .eq('conversation_id', convId)
+              .order('created_at', { ascending: true });
+
+            const newConvWithData: ConversationWithData = {
+              ...(newConv as Conversation),
+              messages:  (newMessages || []) as MessageWithSender[],
+              otherUser: (otherProfile as Profile) ?? null,
+            };
+
+            // Prepend — new conversations belong at the top of the sidebar.
+            setConversations(prev => [newConvWithData, ...prev]);
+            return;
+          }
+
+          // ── Known conversation — append the incoming message ──────────────
+
+          // Realtime payloads don't include join data; fetch sender profile.
           const { data: senderProfile } = await supabase
             .from('profiles')
             .select('*')
@@ -242,9 +288,9 @@ export default function MessagesPage() {
             sender: (senderProfile as Profile) ?? null,
           };
 
-          // Gap 4 FIX (live arrival): if this conversation is currently open
-          // and the message is from the other party, mark it read immediately
-          // so the sender's receipt icon updates without requiring a re-click.
+          // If this conversation is currently open and the message is from
+          // the other party, mark it read immediately so the sender's
+          // receipt icon updates without requiring a re-click.
           if (
             incoming.sender_id !== currentUserId &&
             convId === selectedIdRef.current
@@ -261,8 +307,7 @@ export default function MessagesPage() {
           setConversations(prev =>
             prev.map(c => {
               if (c.id !== convId) return c;
-              // Dedup guard — protects against double-append if optimistic
-              // updates are added in future without removing this path.
+              // Dedup guard — protects against double-append on reconnect.
               if (c.messages.some(m => m.id === incoming.id)) return c;
               return { ...c, messages: [...c.messages, withSender] };
             })
@@ -275,25 +320,20 @@ export default function MessagesPage() {
   }, [supabase, currentUserId]);
 
   // ── Auto-scroll ────────────────────────────────────────────────────────────
-  // Gap 5 FIX: scroll to bottom whenever the message count in the selected
-  // conversation changes (new message received or sent).
   const selected = conversations.find(c => c.id === selectedId);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [selected?.messages.length]);
 
-  // ── Select conversation + mark as read ─────────────────────────────────────
-  // Gap 4 FIX (on open): mark all unread messages from the other party as read
-  // when the user clicks into a conversation. Optimistically patches local
-  // state so the sender's CheckCheck appears without waiting for a DB round-trip.
+  // ── Select conversation + mark unread messages as read ────────────────────
   const handleSelectConversation = useCallback(async (id: string) => {
     setSelectedId(id);
     selectedIdRef.current = id;
 
     if (!currentUserId) return;
 
-    // Fire-and-forget — non-critical path; local patch is the UX signal.
+    // Fire-and-forget — local patch is the UX signal; DB write is async.
     void supabase
       .from('messages')
       .update({ is_read: true, read_at: new Date().toISOString() })
@@ -317,10 +357,8 @@ export default function MessagesPage() {
   }, [supabase, currentUserId]);
 
   // ── Send message ───────────────────────────────────────────────────────────
-  // No manual re-fetch after insert — the Realtime subscription above receives
-  // the INSERT event and appends the message (including sender profile) for
-  // both the sender and recipient. Input is cleared immediately on submit;
-  // restored on error so the user's text is not lost.
+  // No manual re-fetch — the Realtime subscription appends the sent message.
+  // Input is cleared optimistically; restored on error.
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !selected || !currentUserId) return;
 
@@ -340,7 +378,6 @@ export default function MessagesPage() {
 
       if (insertError) throw insertError;
 
-      // Keep last_message_at current so the sidebar sort order stays correct.
       void supabase
         .from('conversations')
         .update({ last_message_at: new Date().toISOString() })
@@ -348,7 +385,7 @@ export default function MessagesPage() {
 
     } catch (error) {
       console.error('Error sending message:', error);
-      setMessageInput(text); // restore text on failure
+      setMessageInput(text);
     }
   };
 
@@ -381,6 +418,7 @@ export default function MessagesPage() {
 
   return (
     <div className="h-screen bg-white dark:bg-gray-900 flex overflow-hidden">
+
       {/* Sidebar */}
       <div className="w-80 bg-gray-50 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
         <div className="p-4 border-b border-gray-200 dark:border-gray-700">
@@ -526,7 +564,7 @@ export default function MessagesPage() {
                       </div>
                     </div>
                   ))}
-                  {/* Scroll anchor — scrollIntoView targets this on message count change */}
+                  {/* Scroll anchor */}
                   <div ref={messagesEndRef} />
                 </>
               )}

@@ -1,16 +1,15 @@
 // src/app/(dashboard)/notifications/page.tsx
-// NEW FILE: Full notifications page — was 404ing because the route didn't exist.
-// The nav was linking to /dashboard/notifications; corrected link now points here (/notifications).
-
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Bell, CheckCheck, Inbox } from 'lucide-react';
-import Link from 'next/link';
+import { NotificationLink } from '@/components/notifications/NotificationLink';
 
-// Server action: mark a single notification as read
+// Server action: mark a single notification as read.
+// Exported so it can be bound and passed to NotificationLink as a prop —
+// Next.js serializes server actions for client component consumption.
 async function markAsRead(notificationId: string) {
   'use server';
   const supabase = await createClient();
@@ -24,7 +23,7 @@ async function markAsRead(notificationId: string) {
   revalidatePath('/notifications');
 }
 
-// Server action: mark ALL notifications as read
+// Server action: mark ALL notifications as read.
 async function markAllRead() {
   'use server';
   const supabase = await createClient();
@@ -39,32 +38,27 @@ async function markAllRead() {
 }
 
 const TYPE_STYLES: Record<string, { dot: string; label: string }> = {
-  order_update:      { dot: 'bg-blue-500',   label: 'Order' },
-  new_order:         { dot: 'bg-green-500',  label: 'New Order' },
-  order_completed:   { dot: 'bg-emerald-500',label: 'Completed' },
-  new_message:       { dot: 'bg-purple-500', label: 'Message' },
-  payment_received:  { dot: 'bg-yellow-500', label: 'Payment' },
-  payment_success:   { dot: 'bg-yellow-500', label: 'Payment' },
-  proposal_accepted: { dot: 'bg-teal-500',   label: 'Proposal' },
+  order_update:      { dot: 'bg-blue-500',    label: 'Order'     },
+  new_order:         { dot: 'bg-green-500',   label: 'New Order' },
+  order_completed:   { dot: 'bg-emerald-500', label: 'Completed' },
+  new_message:       { dot: 'bg-purple-500',  label: 'Message'   },
+  payment_received:  { dot: 'bg-yellow-500',  label: 'Payment'   },
+  payment_success:   { dot: 'bg-yellow-500',  label: 'Payment'   },
+  proposal_accepted: { dot: 'bg-teal-500',    label: 'Proposal'  },
 };
 
-// FIX: accepts `string | null` — `type` is non-nullable in the schema but
-// defensive typing prevents future regressions.
 function getTypeStyle(type: string | null) {
   if (!type) return { dot: 'bg-gray-400', label: 'Notification' };
   return TYPE_STYLES[type] ?? { dot: 'bg-gray-400', label: 'Notification' };
 }
 
-// FIX: accepts `string | null` — `created_at` is typed as `string | null`
-// in the auto-generated Supabase schema (database.types.ts). Returns an
-// empty string when the value is null so the UI degrades gracefully.
 function formatTime(ts: string | null): string {
   if (!ts) return '';
-  const d = new Date(ts);
+  const d    = new Date(ts);
   const diff = Date.now() - d.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1)  return 'just now';
-  if (mins < 60) return `${mins}m ago`;
+  const mins  = Math.floor(diff / 60000);
+  if (mins < 1)   return 'just now';
+  if (mins < 60)  return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;
   if (hours < 48) return 'Yesterday';
@@ -116,12 +110,14 @@ export default async function NotificationsPage() {
       {notifications && notifications.length > 0 ? (
         <div className="space-y-2">
           {notifications.map((notif) => {
-            const style = getTypeStyle(notif.type);
+            const style         = getTypeStyle(notif.type);
+            // Bound server action — Next.js serializes this for client component
+            // consumption by NotificationLink. The binding captures notif.id so
+            // the client receives a zero-argument callable.
             const markReadAction = markAsRead.bind(null, notif.id);
 
             const cardContent = (
               <Card
-                key={notif.id}
                 className={`p-4 transition-all hover:shadow-md ${
                   !notif.is_read
                     ? 'bg-blue-50/60 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800'
@@ -146,7 +142,12 @@ export default async function NotificationsPage() {
                     </div>
                     <p className="text-xs text-gray-600 dark:text-gray-400">{notif.message}</p>
                   </div>
-                  {!notif.is_read && (
+
+                  {/* X dismiss button — only on non-linked unread notifications.
+                      Linked notifications are dismissed by NotificationLink on
+                      click. Showing the X on linked notifications creates two
+                      competing read paths on the same card. */}
+                  {!notif.is_read && !notif.link && (
                     <form action={markReadAction}>
                       <button
                         type="submit"
@@ -161,10 +162,18 @@ export default async function NotificationsPage() {
               </Card>
             );
 
+            // FIX (Gap C): previously used <Link href={notif.link}> which
+            // navigated immediately, bypassing markAsRead entirely.
+            // NotificationLink awaits markAsRead(), then calls router.push().
+            // If the server action throws, it still navigates.
             return notif.link ? (
-              <Link key={notif.id} href={notif.link}>
+              <NotificationLink
+                key={notif.id}
+                href={notif.link}
+                markAsRead={markReadAction}
+              >
                 {cardContent}
-              </Link>
+              </NotificationLink>
             ) : (
               <div key={notif.id}>{cardContent}</div>
             );

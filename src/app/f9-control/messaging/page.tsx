@@ -1,16 +1,14 @@
 // src/app/f9-control/messaging/page.tsx
-import { createClient } from '@/lib/supabase/server';
-import { revalidatePath } from 'next/cache';
-import { MessagingClient } from './MessagingClient';
-import type { NotificationInsert } from '@/types';
-
-// NotificationInsertExtended was removed. Both `scheduled_at` and
-// `delivery_method` already exist in notifications.Insert per database.types.ts.
-// The extension type and the `as unknown as Database[...]` cast it required
-// were masking type errors and providing no value.
+import { createClient }              from '@/lib/supabase/server';
+import { createAdminClient }         from '@/lib/supabase/admin';
+import { revalidatePath }            from 'next/cache';
+import { MessagingClient }           from './MessagingClient';
+import { dispatchNotificationInbox } from '@/lib/notifications/dispatch';
+import type { NotificationInsert }   from '@/types';
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
 
+/** Send (or schedule) a direct notification to a single user by email. */
 async function sendDirect(fd: FormData) {
   'use server';
   const recipientEmail = (fd.get('recipient_email') as string).trim();
@@ -47,9 +45,14 @@ async function sendDirect(fd: FormData) {
     scheduled_at:    scheduledAt,
   };
 
-  const { error: insertError } = await supabase
+  // Gap 1 FIX: select the notification ID back so we can pass it to
+  // dispatchNotificationInbox for dispatched_at stamping. Previously the
+  // insert discarded the return value and delivery_method was never acted on.
+  const { data: insertedNotif, error: insertError } = await supabase
     .from('notifications')
-    .insert(row);
+    .insert(row)
+    .select('id')
+    .single();
 
   if (insertError) {
     console.error('[sendDirect] notification insert error:', insertError);
@@ -66,24 +69,39 @@ async function sendDirect(fd: FormData) {
 
   if (logError) console.error('[sendDirect] audit log error:', logError);
 
+  // Gap 1 FIX: dispatch the inbox leg for immediate sends.
+  // Fire-and-forget (void) — does not block the server action response.
+  // dispatchNotificationInbox is a no-op for delivery_method='in_app'
+  // and for future-dated scheduled sends (cron at /api/cron/notifications
+  // handles those). adminClient is required because the inbox message
+  // INSERT must bypass RLS (sender = platform system user, not admin).
+  if (insertedNotif) {
+    void dispatchNotificationInbox({
+      adminClient:    createAdminClient(),
+      userId:         recipient.id,
+      message,
+      deliveryMethod,
+      scheduledAt,
+      notificationId: insertedNotif.id,
+    });
+  }
+
   revalidatePath('/f9-control/messaging');
 }
 
 /**
- * Broadcast (or schedule) a notification to a filtered audience.
+ * Broadcast (or schedule) a notification to a filtered audience segment.
  *
- * Supported audience segments:
- *   all        — all active users
+ * Supported audience values and their filter logic:
+ *   all        — all active users (no extra filter)
  *   freelancer — active users with user_type = 'freelancer'
  *   client     — active users with user_type = 'client'
  *   both       — active users with user_type = 'both'
- *   inactive   — active users whose most-recent user_devices.last_seen_at is
- *                older than `inactive_days` days
- *   low_trust  — active users with trust_score < `trust_threshold`
- *   unverified — active users who have not completed identity verification
- *                (identity_verified IS NULL OR identity_verified = false)
- *   state      — active users whose user_locations.state matches `state`,
- *                optionally narrowed to a specific `city`
+ *   inactive   — active users with no device activity for > inactive_days
+ *                (pre-queried from user_devices.last_seen_at)
+ *   low_trust  — active users with trust_score < trust_threshold
+ *   unverified — active users with identity_verified IS NULL OR = false
+ *   state      — active users in user_locations.state, optionally by city
  */
 async function sendBroadcast(fd: FormData) {
   'use server';
@@ -109,7 +127,7 @@ async function sendBroadcast(fd: FormData) {
   const { data: { user: admin }, error: authError } = await supabase.auth.getUser();
   if (authError || !admin) throw new Error('Unauthenticated');
 
-  // ── Pre-filter: segments that need a join query ─────────────────────────────
+  // ── Pre-filter: segments that require a join query ──────────────────────
 
   let preFilteredIds: string[] | null = null;
 
@@ -151,9 +169,7 @@ async function sendBroadcast(fd: FormData) {
       ),
     ];
 
-    if (preFilteredIds.length === 0) {
-      throw new Error('No inactive users found for the given window');
-    }
+    if (preFilteredIds.length === 0) throw new Error('No inactive users found for the given window');
   }
 
   if (audience === 'state' && targetState) {
@@ -162,9 +178,7 @@ async function sendBroadcast(fd: FormData) {
       .select('user_id')
       .eq('state', targetState);
 
-    if (targetCity) {
-      locationQuery = locationQuery.eq('city', targetCity);
-    }
+    if (targetCity) locationQuery = locationQuery.eq('city', targetCity);
 
     const { data: locationRows, error: locErr } = await locationQuery;
 
@@ -180,12 +194,10 @@ async function sendBroadcast(fd: FormData) {
     ];
 
     const locationLabel = targetCity ? `${targetCity}, ${targetState}` : targetState;
-    if (preFilteredIds.length === 0) {
-      throw new Error(`No users found in ${locationLabel}`);
-    }
+    if (preFilteredIds.length === 0) throw new Error(`No users found in ${locationLabel}`);
   }
 
-  // ── Main profiles query ─────────────────────────────────────────────────────
+  // ── Main profiles query ─────────────────────────────────────────────────
 
   let recipientQuery = supabase
     .from('profiles')
@@ -206,16 +218,12 @@ async function sendBroadcast(fd: FormData) {
       break;
 
     case 'low_trust':
-      // trust_score is nullable; .lt() excludes NULL which is correct —
-      // NULL means unscored, not low-trust.
       recipientQuery = recipientQuery.lt('trust_score', trustThreshold);
       break;
 
     case 'unverified':
-      // FIX (Error 6): identity_verified is boolean | null. New registrations
-      // have NULL (no default on this column); they are the primary target of
-      // a verification reminder. .eq('identity_verified', false) silently
-      // excluded them. .or() captures both explicit false and NULL rows.
+      // identity_verified is boolean | null. New registrations have NULL.
+      // .eq(false) silently excludes them — .or() captures both correctly.
       recipientQuery = recipientQuery.or(
         'identity_verified.is.null,identity_verified.eq.false'
       );
@@ -244,9 +252,14 @@ async function sendBroadcast(fd: FormData) {
     scheduled_at:    scheduledAt,
   }));
 
-  const { error: insertError } = await supabase
+  // Gap 1 FIX: select 'id, user_id' back from the bulk insert so we can
+  // pass each notification's ID to dispatchNotificationInbox for
+  // dispatched_at stamping. Previously the insert discarded the return
+  // value and delivery_method was never acted on for broadcasts.
+  const { data: insertedRows, error: insertError } = await supabase
     .from('notifications')
-    .insert(rows);
+    .insert(rows)
+    .select('id, user_id');
 
   if (insertError) {
     console.error('[sendBroadcast] bulk insert error:', insertError);
@@ -254,9 +267,7 @@ async function sendBroadcast(fd: FormData) {
   }
 
   const locationLabel = audience === 'state'
-    ? targetCity
-      ? `${targetCity}, ${targetState}`
-      : targetState ?? 'unknown state'
+    ? targetCity ? `${targetCity}, ${targetState}` : targetState ?? 'unknown state'
     : null;
 
   const scheduleNote  = scheduledAt ? ` | scheduled: ${scheduledAt}` : '';
@@ -266,10 +277,38 @@ async function sendBroadcast(fd: FormData) {
     admin_id:       admin.id,
     target_user_id: null,
     action_type:    'broadcast',
-    reason:         `[${type}] ${title} → audience: ${audienceLabel} (${recipients.length} users) | delivery: ${deliveryMethod}${scheduleNote}`,
+    reason:
+      `[${type}] ${title} → audience: ${audienceLabel} ` +
+      `(${recipients.length} users) | delivery: ${deliveryMethod}${scheduleNote}`,
   });
 
   if (logError) console.error('[sendBroadcast] audit log error:', logError);
+
+  // Gap 1 FIX: dispatch inbox leg for all recipients on immediate sends.
+  // Promise.allSettled: a single failure does not block other recipients.
+  // dispatchNotificationInbox is a no-op for delivery_method='in_app' and
+  // for future-dated sends, so scheduled broadcasts cost zero extra work here.
+  //
+  // NOTE: For audiences consistently > 100 users with delivery_method='inbox'
+  // or 'both' and no scheduledAt, consider offloading to a queue/worker
+  // to avoid serverless timeout limits. The 500-recipient cap provides an
+  // upper bound per action at current scale.
+  if (insertedRows && insertedRows.length > 0) {
+    const adminClient = createAdminClient();
+    await Promise.allSettled(
+      insertedRows.map((row) => {
+        if (!row.user_id) return Promise.resolve();
+        return dispatchNotificationInbox({
+          adminClient,
+          userId:         row.user_id,
+          message,
+          deliveryMethod,
+          scheduledAt,
+          notificationId: row.id,
+        });
+      })
+    );
+  }
 
   revalidatePath('/f9-control/messaging');
 }
