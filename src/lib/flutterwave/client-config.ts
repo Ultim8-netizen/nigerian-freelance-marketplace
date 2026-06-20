@@ -1,24 +1,29 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// src/lib/monnify/client-config.ts
+// src/lib/flutterwave/client-config.ts
 // CLIENT-SAFE: no secret keys, no 'server-only' imports.
-// ─────────────────────────────────────────────────────────────────────────────
+//
+// FIX: renamed every Monnify* symbol to Flutterwave* — leftover naming from
+// before the payment provider migration. NOTE: nothing in the codebase
+// currently imports this file (PaymentButton.tsx and usePayments.ts post
+// straight to /api/payments/initiate, which generates its own ref
+// server-side). This is a naming/compile fix, not new integration — flagging
+// this honestly rather than pretending it's wired up somewhere it isn't.
 
-/** "test" | "live" — driven by NEXT_PUBLIC_MONNIFY_ENV */
-export const MONNIFY_ENV =
-  (process.env.NEXT_PUBLIC_MONNIFY_ENV as 'test' | 'live') ?? 'test';
+/** "test" | "live" — driven by NEXT_PUBLIC_FLUTTERWAVE_ENV */
+export const FLUTTERWAVE_ENV =
+  (process.env.NEXT_PUBLIC_FLUTTERWAVE_ENV as 'test' | 'live') ?? 'test';
 
 /**
  * Client-safe interface for components that need to know the payment
  * environment and render appropriate UI (e.g. "TEST MODE" banners).
  */
-export interface MonnifyClientConfig {
+export interface FlutterwaveClientConfig {
   env: 'test' | 'live';
   isTestMode: boolean;
 }
 
-export const monnifyClientConfig: MonnifyClientConfig = {
-  env: MONNIFY_ENV,
-  isTestMode: MONNIFY_ENV !== 'live',
+export const flutterwaveClientConfig: FlutterwaveClientConfig = {
+  env: FLUTTERWAVE_ENV,
+  isTestMode: FLUTTERWAVE_ENV !== 'live',
 };
 
 /**
@@ -26,9 +31,11 @@ export const monnifyClientConfig: MonnifyClientConfig = {
  * Uses timestamp + Math.random — no crypto, no secrets.
  * Format: F9C-{timestamp}-{9 alphanum chars}
  *
- * Use this in the browser before handing off to the server;
- * the server will overwrite with its own generatePaymentRef() result
- * before sending to Monnify.
+ * Not currently consumed by any checkout flow — the server always
+ * generates and persists its own ref via
+ * FlutterwaveServerService.generatePaymentRef() in /api/payments/initiate.
+ * Kept for any future client-initiated flow that needs a provisional ref
+ * before the server round-trip resolves.
  */
 export function generateClientTxRef(): string {
   const rand = Math.random().toString(36).substring(2, 11);
@@ -36,6 +43,6 @@ export function generateClientTxRef(): string {
 }
 
 // Warn loudly in development if the env flag is missing
-if (typeof window !== 'undefined' && !process.env.NEXT_PUBLIC_MONNIFY_ENV) {
-  console.error('❌ NEXT_PUBLIC_MONNIFY_ENV is not set. Defaulting to "test".');
+if (typeof window !== 'undefined' && !process.env.NEXT_PUBLIC_FLUTTERWAVE_ENV) {
+  console.warn('NEXT_PUBLIC_FLUTTERWAVE_ENV is not set. Defaulting to "test".');
 }

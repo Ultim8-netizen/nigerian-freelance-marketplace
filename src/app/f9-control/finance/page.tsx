@@ -1,10 +1,52 @@
 // src/app/f9-control/finance/page.tsx
+//
+// FIX (root cause — confirmed against live RLS export): every privileged
+// read and write in this file previously used createClient() — the
+// session-scoped client bound to the logged-in admin's own RLS context.
+// Your actual policies are:
+//   withdrawals      — SELECT/INSERT only where user_id = auth.uid()
+//   transactions     — SELECT only for order participants
+//   escrow           — SELECT only for order participants
+//   platform_config  — no public SELECT at all (admin-only, service-role)
+//
+// Postgres RLS does not raise an error for an UPDATE/SELECT that simply
+// matches zero rows because of policy filtering — it returns empty/null
+// with no error. That means every read on this page returned nothing
+// relevant to "all pending withdrawals" / "the full ledger" / "active
+// escrow", and every write (approve, hold, release, freeze, cancel, status
+// override, gate toggle, threshold) silently affected 0 rows while the UI
+// reported success. The admin finance panel was non-functional end to end.
+//
+// Fix: use createAdminClient() (service role — bypasses RLS entirely) for
+// every table interaction in this file. createClient() (session-scoped) is
+// now used ONLY to resolve auth.getUser() — the admin client has no
+// cookie/session context and can't tell you who's logged in, so both
+// clients are still needed, just for different jobs.
+//
+// Also fixed: approveWithdrawal() was fetching
+// /api/admin/withdrawals/execute, but the route file lived at the typo'd
+// path /api/admin/withrawal/execute — every approval call 404'd. The route
+// now actually exists at the correct path (see the file provided alongside
+// this fix); delete the old src/app/api/admin/withrawal/ folder.
+//
+// Also fixed: every server action and the page load now call
+// requireStaffRole(adminClient, <id>, FINANCE_ROLES) before acting. Before
+// this, the only check anywhere in this file was "is someone logged in" —
+// execute/route.ts (one file over) already checked staff_roles, so this
+// file lacking the same check was itself an inconsistency within the same
+// domain, independent of whatever RLS or middleware does or doesn't cover.
 
-import { createClient }                 from '@/lib/supabase/server';
 import { revalidatePath }               from 'next/cache';
-import { FlutterwaveServerService }     from '@/lib/flutterwave/server-service';
+import { createClient }                 from '@/lib/supabase/server';
 import { createAdminClient }            from '@/lib/supabase/admin';
+import { FlutterwaveServerService }     from '@/lib/flutterwave/server-service';
+import { requireStaffRole }             from '@/lib/auth/require-staff-role';
 import FinanceClient                    from './FinanceClient';
+
+// Staff roles permitted to act on this page — mirrors the convention
+// already established in execute/route.ts. Centralized here so every
+// server action and the page load itself check the same list.
+const FINANCE_ROLES = ['admin', 'financial_analyst'];
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
 
@@ -12,28 +54,40 @@ import FinanceClient                    from './FinanceClient';
  * Approve a pending withdrawal.
  *
  * Flow:
- *   1. Set withdrawal status → 'approved'
- *   2. POST to /api/admin/withdrawals/execute to trigger the Flutterwave transfer
- *   3. Log the admin action
+ *   1. Set withdrawal status → 'approved' (admin client — withdrawals has no
+ *      UPDATE policy for the authenticated role at all).
+ *   2. POST to /api/admin/withdrawals/execute to trigger the Flutterwave transfer.
+ *   3. Log the admin action.
  */
 async function approveWithdrawal(fd: FormData) {
   'use server';
   const withdrawalId = fd.get('withdrawal_id') as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  const { error: updateErr } = await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FINANCE_ROLES);
+
+  const { data: updated, error: updateErr } = await adminClient
     .from('withdrawals')
     .update({ status: 'approved', processed_at: new Date().toISOString() })
-    .eq('id', withdrawalId);
+    .eq('id', withdrawalId)
+    .eq('status', 'pending') // only advance from pending — avoids re-approving
+    .select('id');
 
   if (updateErr) {
     throw new Error(`Failed to approve withdrawal: ${updateErr.message}`);
   }
+  if (!updated || updated.length === 0) {
+    throw new Error('Withdrawal was not in pending status — could not approve.');
+  }
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
 
+  // FIX: corrected path (was /api/admin/withdrawals/execute pointed at a
+  // route file that lived under the typo'd /api/admin/withrawal/ folder).
   const executeRes = await fetch(`${baseUrl}/api/admin/withdrawals/execute`, {
     method:      'POST',
     headers:     { 'Content-Type': 'application/json' },
@@ -47,7 +101,7 @@ async function approveWithdrawal(fd: FormData) {
     console.error('[approveWithdrawal] execute route error:', executeJson);
   }
 
-  await supabase.from('admin_action_logs').insert({
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'approve_withdrawal',
     reason:      `Withdrawal ${withdrawalId} approved — transfer ${executeJson?.transfer_ref ?? 'attempted'}`,
@@ -60,11 +114,15 @@ async function approveWithdrawal(fd: FormData) {
 async function holdWithdrawal(fd: FormData) {
   'use server';
   const withdrawalId = fd.get('withdrawal_id') as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FINANCE_ROLES);
+
+  const { error } = await adminClient
     .from('withdrawals')
     .update({
       status:         'held',
@@ -72,7 +130,9 @@ async function holdWithdrawal(fd: FormData) {
     })
     .eq('id', withdrawalId);
 
-  await supabase.from('admin_action_logs').insert({
+  if (error) throw new Error(`Failed to hold withdrawal: ${error.message}`);
+
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'hold_withdrawal',
     reason:      `Withdrawal ${withdrawalId} placed on 24h hold`,
@@ -83,47 +143,84 @@ async function holdWithdrawal(fd: FormData) {
 
 /**
  * Manually release an escrow entry.
+ *
+ * release_escrow_to_wallet is now SECURITY DEFINER (fixed via migration —
+ * see SQL provided alongside this fix) and atomically flips escrow.status
+ * to a terminal value as part of the same call, closing the double-credit
+ * path that existed when the RPC only touched the wallet.
  */
 async function releaseEscrow(fd: FormData) {
   'use server';
   const escrowId = fd.get('escrow_id') as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  const { data: escrow } = await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FINANCE_ROLES);
+
+  const { data: escrow, error: escrowFetchErr } = await adminClient
     .from('escrow')
-    .select('id, amount, order_id')
+    .select('id, amount, order_id, status')
     .eq('id', escrowId)
     .single();
 
-  if (!escrow || !escrow.order_id) {
-    await supabase
+  if (escrowFetchErr || !escrow) {
+    throw new Error(`Escrow entry not found: ${escrowFetchErr?.message ?? 'no row'}`);
+  }
+
+  if (!escrow.order_id) {
+    // FIX: escrow_status_check only permits 'held' | 'released_to_freelancer'
+    // | 'refunded_to_client' | 'disputed' — 'released' is not a valid value
+    // and this UPDATE would always fail the CHECK constraint. There is no
+    // marketplace-specific "released" status in this schema; using
+    // 'released_to_freelancer' here as the generic "payout completed" value
+    // is the only valid terminal-release state available. If marketplace
+    // escrow actually needs its own distinct status, that's a schema
+    // decision beyond what this fix can safely infer — flagging it rather
+    // than guessing further.
+    const { error } = await adminClient
       .from('escrow')
-      .update({ status: 'released', released_at: new Date().toISOString() })
-      .eq('id', escrowId);
+      .update({ status: 'released_to_freelancer', released_at: new Date().toISOString() })
+      .eq('id', escrowId)
+      .eq('status', escrow.status ?? 'held'); // guard against double-click
+
+    if (error) throw new Error(`Escrow release failed: ${error.message}`);
   } else {
-    const { data: order } = await supabase
+    const { data: order, error: orderFetchErr } = await adminClient
       .from('orders')
       .select('freelancer_id')
       .eq('id', escrow.order_id)
       .single();
 
-    if (order?.freelancer_id) {
-      await supabase.rpc('release_escrow_to_wallet', {
+    if (orderFetchErr || !order?.freelancer_id) {
+      // FIX: same as the no-order_id branch above — 'released' is not a
+      // valid escrow_status_check value. This branch is a defensive
+      // fallback (orders.freelancer_id is NOT NULL in the schema, so
+      // reaching here implies the order lookup itself failed) — corrected
+      // to a value the constraint actually permits regardless.
+      const { error } = await adminClient
+        .from('escrow')
+        .update({ status: 'released_to_freelancer', released_at: new Date().toISOString() })
+        .eq('id', escrowId)
+        .eq('status', escrow.status ?? 'held');
+
+      if (error) throw new Error(`Escrow release failed: ${error.message}`);
+    } else {
+      const { error: rpcError } = await adminClient.rpc('release_escrow_to_wallet', {
         p_order_id:      escrow.order_id,
         p_freelancer_id: order.freelancer_id,
         p_amount:        escrow.amount,
       });
-    } else {
-      await supabase
-        .from('escrow')
-        .update({ status: 'released', released_at: new Date().toISOString() })
-        .eq('id', escrowId);
+
+      if (rpcError) {
+        throw new Error(`Escrow release failed: ${rpcError.message}`);
+      }
     }
   }
 
-  await supabase.from('admin_action_logs').insert({
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'release_escrow',
     reason:      `Escrow ${escrowId} manually released`,
@@ -136,16 +233,22 @@ async function releaseEscrow(fd: FormData) {
 async function freezeEscrow(fd: FormData) {
   'use server';
   const escrowId = fd.get('escrow_id') as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FINANCE_ROLES);
+
+  const { error } = await adminClient
     .from('escrow')
     .update({ status: 'held' })
     .eq('id', escrowId);
 
-  await supabase.from('admin_action_logs').insert({
+  if (error) throw new Error(`Escrow freeze failed: ${error.message}`);
+
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'freeze_escrow',
     reason:      `Escrow ${escrowId} manually frozen`,
@@ -168,14 +271,17 @@ async function cancelEscrow(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  const { error } = await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FINANCE_ROLES);
+
+  const { error } = await adminClient
     .from('escrow')
     .update({ status: 'refunded_to_client' })
     .eq('id', escrowId);
 
   if (error) throw new Error(`Escrow cancel failed: ${error.message}`);
 
-  await supabase.from('admin_action_logs').insert({
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'cancel_escrow',
     reason:      `[${reason}] Escrow ${escrowId} cancelled and refunded to client`,
@@ -188,19 +294,10 @@ async function cancelEscrow(fd: FormData) {
  * Update a transaction's status manually, with full internal ledger reversal.
  *
  * When `new_status` is 'refunded', three reversal paths are attempted:
- *
- *   PATH A — Gateway payment (flutterwave_tx_ref present):
- *     Calls verifyTransactionByRef to obtain the numeric Flutterwave transaction
- *     ID (required by the refund endpoint), then calls refundTransaction.
- *
- *   PATH B — Internal wallet_credit reversal:
- *     Decrements wallets.balance by amount for recipient_user_id.
- *
- *   PATH C — Internal wallet_debit reversal:
- *     Increments wallets.balance by amount for recipient_user_id.
- *
- *   PATH D — All other types:
- *     Status marked 'refunded' for audit trail only.
+ *   PATH A — Gateway payment (flutterwave_tx_ref present): refund via Flutterwave.
+ *   PATH B — Internal wallet_credit reversal: decrement wallet balance.
+ *   PATH C — Internal wallet_debit reversal: increment wallet balance.
+ *   PATH D — All other types: status marked 'refunded' for audit trail only.
  */
 async function updateTransactionStatus(fd: FormData) {
   'use server';
@@ -214,8 +311,11 @@ async function updateTransactionStatus(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FINANCE_ROLES);
+
   if (newStatus === 'refunded') {
-    const { data: tx, error: txFetchError } = await supabase
+    const { data: tx, error: txFetchError } = await adminClient
       .from('transactions')
       .select('transaction_type, recipient_user_id, amount, flutterwave_tx_ref')
       .eq('id', txId)
@@ -226,8 +326,6 @@ async function updateTransactionStatus(fd: FormData) {
     }
 
     // ── PATH A: Gateway payment reversal via Flutterwave ──────────────────
-    // Flutterwave's refund endpoint requires the numeric transaction ID, not the
-    // tx_ref string. We call verifyTransactionByRef first to obtain it.
     if (tx.flutterwave_tx_ref) {
       const verified = await FlutterwaveServerService.verifyTransactionByRef(
         tx.flutterwave_tx_ref,
@@ -236,8 +334,6 @@ async function updateTransactionStatus(fd: FormData) {
 
     // ── PATH B: Internal wallet_credit reversal ───────────────────────────
     } else if (tx.transaction_type === 'wallet_credit' && tx.recipient_user_id) {
-      const adminClient = createAdminClient();
-
       const { data: wallet, error: walletFetchErr } = await adminClient
         .from('wallets')
         .select('balance')
@@ -262,8 +358,6 @@ async function updateTransactionStatus(fd: FormData) {
 
     // ── PATH C: Internal wallet_debit reversal ────────────────────────────
     } else if (tx.transaction_type === 'wallet_debit' && tx.recipient_user_id) {
-      const adminClient = createAdminClient();
-
       const { data: wallet, error: walletFetchErr } = await adminClient
         .from('wallets')
         .select('balance')
@@ -292,14 +386,14 @@ async function updateTransactionStatus(fd: FormData) {
     }
   }
 
-  const { error: updateError } = await supabase
+  const { error: updateError } = await adminClient
     .from('transactions')
     .update({ status: newStatus })
     .eq('id', txId);
 
   if (updateError) throw new Error(`Status update failed: ${updateError.message}`);
 
-  await supabase.from('admin_action_logs').insert({
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'update_transaction_status',
     reason:      `[${reason}] Transaction ${txId} status set to '${newStatus}'`,
@@ -312,11 +406,15 @@ async function updateTransactionStatus(fd: FormData) {
 async function toggleWithdrawalGate(fd: FormData) {
   'use server';
   const enabled  = fd.get('enabled') === 'true';
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FINANCE_ROLES);
+
+  const { error } = await adminClient
     .from('platform_config')
     .upsert(
       {
@@ -329,7 +427,9 @@ async function toggleWithdrawalGate(fd: FormData) {
       { onConflict: 'key' },
     );
 
-  await supabase.from('admin_action_logs').insert({
+  if (error) throw new Error(`Failed to toggle withdrawal gate: ${error.message}`);
+
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'toggle_withdrawal_gate',
     reason:      `Withdrawals ${enabled ? 'resumed' : 'paused'} by admin`,
@@ -354,7 +454,10 @@ async function setWithdrawalGateThreshold(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  const { error } = await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FINANCE_ROLES);
+
+  const { error } = await adminClient
     .from('platform_config')
     .upsert(
       {
@@ -369,7 +472,7 @@ async function setWithdrawalGateThreshold(fd: FormData) {
 
   if (error) throw new Error(`Failed to save threshold: ${error.message}`);
 
-  await supabase.from('admin_action_logs').insert({
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'set_withdrawal_gate_threshold',
     reason:      threshold > 0
@@ -389,7 +492,18 @@ interface PageProps {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function AdminFinancePage({ searchParams }: PageProps) {
+  // Used ONLY to confirm there's a logged-in session for this render — every
+  // actual data read below uses the admin client, since none of these
+  // queries would return anything meaningful under the authenticated role's
+  // RLS policies (see file header).
   const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error('Unauthenticated');
+  }
+
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, user.id, FINANCE_ROLES);
 
   const sp = await searchParams;
 
@@ -417,7 +531,7 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
     user_id: { full_name: string | null; trust_score: number | null } | null;
   };
 
-  const { data: withdrawals } = await supabase
+  const { data: withdrawals } = await adminClient
     .from('withdrawals')
     .select('id, amount, bank_name, account_number, account_name, status, failure_reason, created_at, user_id(full_name, trust_score)')
     .eq('status', 'pending')
@@ -443,7 +557,7 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
   let matchedProfileIds: string[] = [];
 
   if (filter.q) {
-    const { data: profiles, error: profileErr } = await supabase
+    const { data: profiles, error: profileErr } = await adminClient
       .from('profiles')
       .select('id')
       .or(`full_name.ilike.%${filter.q}%,email.ilike.%${filter.q}%`)
@@ -458,7 +572,7 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
   let transactions: TransactionWithUser[] = [];
 
   if (!userSearchEmpty) {
-    let txQuery = supabase
+    let txQuery = adminClient
       .from('transactions')
       .select(
         'id, transaction_ref, transaction_type, amount, currency, status, order_id, created_at, paid_at, recipient_user_id(full_name, email)'
@@ -489,6 +603,10 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
     transactions = txData ?? [];
   }
 
+  // NOTE: your RPCs (process_successful_payment / process_marketplace_payment)
+  // write status = 'successful', not 'completed'. 'successful' is included
+  // here so admins can filter/find it; see FinanceClient.tsx for the
+  // matching badge-colour fix.
   const knownTypes = Array.from(
     new Set([
       ...transactions.map((t) => t.transaction_type),
@@ -498,18 +616,24 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
 
   // ── Active escrow entries ────────────────────────────────────────────────
 
-  const { data: escrowEntries } = await supabase
+  // FIX: 'funded' removed from the filter. Confirmed against every RPC in
+  // your live schema (process_successful_payment, process_marketplace_payment,
+  // complete_order_with_payment, release_escrow_to_wallet) — none of them
+  // ever write escrow.status = 'funded'. The only non-terminal value any
+  // function produces is 'held'. The 'funded' branch was dead — filtering
+  // on it changed nothing, it's just removed now for clarity.
+  const { data: escrowEntries } = await adminClient
     .from('escrow')
     .select('id, amount, status, order_id, marketplace_order_id, created_at, released_at')
-    .in('status', ['funded', 'held'])
+    .eq('status', 'held')
     .order('created_at', { ascending: false })
     .limit(100);
 
-  const { data: escrowTotal } = await supabase.rpc('get_escrow_total');
+  const { data: escrowTotal } = await adminClient.rpc('get_escrow_total');
 
   // ── Withdrawal gate state ────────────────────────────────────────────────
 
-  const { data: withdrawalGateConfig } = await supabase
+  const { data: withdrawalGateConfig } = await adminClient
     .from('platform_config')
     .select('enabled')
     .eq('key', 'withdrawals_paused')
@@ -517,7 +641,7 @@ export default async function AdminFinancePage({ searchParams }: PageProps) {
 
   const withdrawalsPaused = withdrawalGateConfig?.enabled ?? false;
 
-  const { data: withdrawalThresholdConfig } = await supabase
+  const { data: withdrawalThresholdConfig } = await adminClient
     .from('platform_config')
     .select('value')
     .eq('key', 'withdrawal_gate_threshold')

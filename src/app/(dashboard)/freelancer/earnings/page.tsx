@@ -19,8 +19,20 @@
 //      Cron Rule 4 (cron/route.ts) queries hold_release_at <= now() and
 //      promotes matching rows to status='pending', completing the auto-lift loop.
 //
+// FIX (Check 1 signal — confirmed via live trigger export): the wallets table
+// has a generic `update_wallets_updated_at` BEFORE UPDATE trigger that bumps
+// `updated_at` on EVERY wallet write — debits on withdrawal completion,
+// wallet freezes, bank-detail changes (which also separately stamp
+// bank_details_updated_at), refunds, everything. Using `updated_at` as a
+// proxy for "this wallet was just funded" produces false positives any time
+// a wallet was touched for an unrelated reason. A dedicated
+// `last_credited_at` column (added via migration, stamped only when
+// balance increases — see SQL provided alongside this fix) replaces it.
+//
 // MIGRATION REQUIRED (run once in Supabase SQL editor before deploying):
 //   ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS hold_release_at TIMESTAMPTZ;
+//   ALTER TABLE wallets ADD COLUMN IF NOT EXISTS last_credited_at TIMESTAMPTZ;
+//   (+ the update_wallet_last_credited() trigger — see migration SQL.)
 
 import { createClient }         from '@/lib/supabase/server';
 import { createAdminClient }    from '@/lib/supabase/admin';
@@ -45,10 +57,6 @@ import {
 } from 'lucide-react';
 
 // ─── Hold duration constants ──────────────────────────────────────────────────
-// These are the auto-release offsets written into hold_release_at at insert
-// time. They are spec-defined constants, not admin-configurable thresholds.
-// Cron Rule 4 uses hold_release_at directly — it has no dependency on these
-// values at release time.
 
 const HOLD_24H_MS = 24 * 60 * 60 * 1000;
 const HOLD_48H_MS = 48 * 60 * 60 * 1000;
@@ -98,11 +106,26 @@ async function initiateWithdrawal(formData: FormData) {
   const WITHDRAWAL_GATE_THRESHOLD = config[CONFIG_KEYS.WITHDRAWAL_GATE_THRESHOLD];
 
   // ── Fetch wallet ──────────────────────────────────────────────────────────
+  // FIX: select last_credited_at instead of updated_at for the "was this
+  // wallet just funded" signal (see file header). Cast to a manual type
+  // until database.types.ts is regenerated to include the new column —
+  // same scoped-cast convention already used elsewhere in this codebase
+  // (e.g. cron/automation/route.ts's process_referral_reward call).
   const { data: wallet } = await supabase
     .from('wallets')
-    .select('id, balance, updated_at, account_name, account_number, bank_name, bank_details_updated_at')
+    .select('id, balance, last_credited_at, account_name, account_number, bank_name, bank_details_updated_at')
     .eq('user_id', user.id)
-    .single();
+    .single() as {
+      data: {
+        id: string;
+        balance: number | null;
+        last_credited_at: string | null;
+        account_name: string | null;
+        account_number: string | null;
+        bank_name: string | null;
+        bank_details_updated_at: string | null;
+      } | null;
+    };
 
   // ── Fetch trust score ─────────────────────────────────────────────────────
   const { data: profile } = await supabase
@@ -135,21 +158,18 @@ async function initiateWithdrawal(formData: FormData) {
   const hasCompletedOrders = (completedOrderCount ?? 0) > 0;
 
   // ── Determine hold status + auto-release timestamp ────────────────────────
-  //
-  // hold_release_at encodes WHEN the cron should auto-lift this hold:
-  //   NULL  → admin manual review required; cron Rule 4 will never touch it.
-  //   value → cron Rule 4 promotes to 'pending' once this timestamp passes.
-  //
-  // The value is stamped at INSERT time so the release offset is fixed
-  // relative to when the withdrawal was requested, not when the cron runs.
 
   let withdrawalStatus: string  = 'pending';
   let holdReason:       string | null = null;
   let holdReleaseAt:    string | null = null;
 
-  const now             = Date.now();
-  const walletUpdatedAt = wallet?.updated_at
-    ? new Date(wallet.updated_at).getTime()
+  const now = Date.now();
+
+  // FIX: lastCreditedAt replaces walletUpdatedAt. last_credited_at is only
+  // stamped by the new trigger when balance increases — it is never bumped
+  // by debits, freezes, or bank-detail edits, unlike updated_at.
+  const lastCreditedAt = wallet?.last_credited_at
+    ? new Date(wallet.last_credited_at).getTime()
     : null;
 
   // Check 0 — Admin gate threshold: manual review only, no auto-release.
@@ -162,13 +182,13 @@ async function initiateWithdrawal(formData: FormData) {
       `An admin will review and approve it shortly.`;
   }
 
-  // Check 1 — Wallet funded within window AND zero completed orders → 24h auto-release.
-  if (!holdReason && !hasCompletedOrders && walletUpdatedAt !== null) {
-    if (now - walletUpdatedAt < WALLET_FUND_HOLD_MS) {
+  // Check 1 — Wallet credited within window AND zero completed orders → 24h auto-release.
+  if (!holdReason && !hasCompletedOrders && lastCreditedAt !== null) {
+    if (now - lastCreditedAt < WALLET_FUND_HOLD_MS) {
       withdrawalStatus = 'held';
       holdReleaseAt    = new Date(now + HOLD_24H_MS).toISOString();
       holdReason       =
-        `Withdrawal held for 24 hours: your wallet was funded within the last ` +
+        `Withdrawal held for 24 hours: your wallet was credited within the last ` +
         `${config[CONFIG_KEYS.WALLET_FUND_HOLD_HOURS]} hour(s) and you have no completed ` +
         `orders on record. This is an automated fraud-prevention hold.`;
     }
@@ -176,7 +196,7 @@ async function initiateWithdrawal(formData: FormData) {
 
   // Check 2 — Bank details updated within window (unconditional) → 24h auto-release.
   const bankDetailsUpdatedAt = wallet?.bank_details_updated_at
-    ? new Date(wallet.bank_details_updated_at as string).getTime()
+    ? new Date(wallet.bank_details_updated_at).getTime()
     : null;
 
   if (!holdReason && bankDetailsUpdatedAt !== null) {
@@ -198,11 +218,6 @@ async function initiateWithdrawal(formData: FormData) {
   }
 
   // ── Insert withdrawal record ───────────────────────────────────────────────
-  // hold_release_at is written at creation time so the cron can query it
-  // without needing to know the original hold type or duration.
-  // The validate_withdrawal_balance BEFORE INSERT trigger validates balance.
-  // The sync_wallet_on_withdrawal AFTER UPDATE trigger only fires on
-  // status='completed', so inserting as 'held' or 'pending' is wallet-safe.
   const { error: insertError } = await supabase.from('withdrawals').insert({
     user_id:         user.id,
     wallet_id:       wallet?.id ?? null,
@@ -221,14 +236,6 @@ async function initiateWithdrawal(formData: FormData) {
   }
 
   // ── Dual-channel hold notification ────────────────────────────────────────
-  //
-  // Both channels fire concurrently. Neither failure breaks the redirect —
-  // the withdrawal row is already committed.
-  //
-  // Channel 1 — notifications row (bell icon / push).
-  // Channel 2 — F9 inbox message via platform system account.
-  //             adminClient (service role) bypasses RLS. See
-  //             src/lib/messaging/system-message.ts for full rationale.
 
   if (withdrawalStatus === 'held' && holdReason) {
     await Promise.all([

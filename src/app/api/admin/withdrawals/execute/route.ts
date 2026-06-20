@@ -1,4 +1,12 @@
 // src/app/api/admin/withdrawals/execute/route.ts
+//
+// FIX (path): this file was previously at
+// src/app/api/admin/withrawal/execute/route.ts (typo — "withrawal", missing
+// the "d"). finance/page.tsx's approveWithdrawal() fetches
+// `${baseUrl}/api/admin/withdrawals/execute` (correctly spelled), so every
+// admin approval call was 404ing against the old path. DELETE
+// src/app/api/admin/withrawal/ once this file is in place.
+//
 // Executes the actual Flutterwave bank transfer for an approved withdrawal.
 //
 // Called by approveWithdrawal() in finance/page.tsx after the withdrawal row
@@ -6,13 +14,13 @@
 // lean and puts the transfer logic in a proper API route with auth guards.
 //
 // IDEMPOTENCY: If this route is called twice with the same withdrawal_id, the
-// second call detects status='processing' and returns early without re-calling
-// Flutterwave, preventing duplicate disbursements.
+// second call detects status='processing'/'completed' and returns early
+// without re-calling Flutterwave, preventing duplicate disbursements.
 //
 // WALLET DEDUCTION: Deliberately absent here. The existing
-// sync_wallet_on_withdrawal_complete DB trigger fires when status →
-// 'completed' (set by the Flutterwave transfer.completed webhook handler).
-// This route never touches wallet.balance directly.
+// sync_wallet_on_withdrawal DB trigger fires when status → 'completed' (set
+// by the Flutterwave transfer.completed webhook handler). This route never
+// touches wallet.balance directly.
 //
 // IN-FLIGHT GUARD: Before calling Flutterwave we sum every other withdrawal
 // for this user that is currently in 'approved' or 'processing' state and verify:
@@ -20,16 +28,39 @@
 // This prevents a second concurrent withdrawal from being approved against
 // the same undeducted balance, closing the window between 'processing' and
 // 'completed' (when the trigger fires).
+//
+// FIX (race with webhook): status is now flipped to 'processing' BEFORE
+// calling Flutterwave, not after. For instant-settling rails
+// (Opay/Kuda/PalmPay/Moniepoint can complete in milliseconds), the
+// transfer.completed webhook could previously arrive before the
+// post-call 'processing' write landed, finding the row still 'approved' and
+// silently failing to advance it (see the matching fix in
+// webhooks/flutterwave/route.ts, which also widened its own guard). Writing
+// 'processing' first — atomically, guarded by .eq('status','approved') so a
+// concurrent double-click can't fire two transfers — closes most of the
+// remaining window.
+//
+// FIX: flutterwave_transfer_id is now a real column (added via migration —
+// see the SQL provided alongside this fix). Until `database.types.ts` is
+// regenerated, the field is written via a narrowly-scoped cast (see below),
+// matching the pattern already used elsewhere in this codebase for
+// not-yet-generated columns/RPCs.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient }      from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
+import { requireStaffRole, UnauthorizedError } from '@/lib/auth/require-staff-role';
 
 // ── Nigerian bank code map ────────────────────────────────────────────────────
 // CBN codes are gateway-agnostic — identical for Flutterwave v3.
 // Must cover every bank in the earnings page dropdown exactly.
 // Missing bank = failed transfer at Flutterwave.
+//
+// NOTE: not independently verified against Flutterwave's live /v3/banks/NG
+// response (FlutterwaveServerService.getNigerianBanks() exists for exactly
+// this purpose but isn't called anywhere). Recommend a one-time diff before
+// relying on this in production, particularly the fintech entries.
 
 const BANK_CODES: Record<string, string> = {
   'Access Bank':   '044',
@@ -66,6 +97,15 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 2. Verify caller has admin / financial_analyst role ─────────────────
+    // FIX: now uses the shared requireStaffRole() helper (see
+    // src/lib/auth/require-staff-role.ts) instead of an inline duplicate of
+    // this exact check — the same logic previously existed only here, while
+    // finance/page.tsx and flags/page.tsx had no equivalent at all. Centralizing
+    // it means a future change to the role-check rule only needs to happen
+    // once. UnauthorizedError is caught specifically (rather than falling
+    // through to the generic catch block at the bottom of this file) so the
+    // existing 403 JSON contract for this route is preserved exactly as it
+    // was — only its implementation moved.
     const supabase    = await createClient();
     const adminClient = createAdminClient();
 
@@ -77,22 +117,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { data: staffRole } = await adminClient
-      .from('staff_roles')
-      .select('role_type, is_active')
-      .eq('user_id', admin.id)
-      .single();
-
-    const allowedRoles = ['admin', 'financial_analyst'];
-    if (
-      !staffRole ||
-      !staffRole.is_active ||
-      !allowedRoles.includes(staffRole.role_type ?? '')
-    ) {
-      return NextResponse.json(
-        { success: false, error: 'Forbidden: admin or financial_analyst role required' },
-        { status: 403 }
-      );
+    try {
+      await requireStaffRole(adminClient, admin.id, ['admin', 'financial_analyst']);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        return NextResponse.json(
+          { success: false, error: 'Forbidden: admin or financial_analyst role required' },
+          { status: 403 }
+        );
+      }
+      throw err;
     }
 
     // ── 3. Fetch withdrawal row ─────────────────────────────────────────────
@@ -178,20 +212,6 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 6. In-flight balance guard ──────────────────────────────────────────
-    //
-    // The trigger deducts wallet.balance only when a withdrawal reaches
-    // 'completed' (fired by the Flutterwave transfer.completed webhook).
-    // Between 'processing' and 'completed' the balance has not yet been
-    // reduced. A second admin approval in that window would find the full
-    // balance still available, enabling a double-spend.
-    //
-    // We prevent this by summing every other 'approved' or 'processing'
-    // withdrawal for this user. The current withdrawal may only proceed if:
-    //   wallet.balance >= this_amount + in_flight_sum
-    //
-    // The `.neq('id', withdrawalId)` excludes the row we are about to
-    // execute — which is still 'approved' at this point.
-
     const effectiveUserId: string | null = withdrawal.user_id ?? wallet.user_id;
 
     if (!effectiveUserId) {
@@ -254,12 +274,37 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 8. Generate unique transfer reference ───────────────────────────────
-    // Format: PAYOUT-{withdrawalId}-{timestamp}
-    // Both components are needed: withdrawalId for traceability,
-    // timestamp to guarantee uniqueness if Flutterwave rejects exact duplicates.
     const transferRef = `PAYOUT-${withdrawalId}-${Date.now()}`;
 
-    // ── 9. Call Flutterwave ─────────────────────────────────────────────────
+    // ── 9. Reserve the row BEFORE calling Flutterwave ───────────────────────
+    // Flip to 'processing' first, guarded by .eq('status','approved') so a
+    // concurrent double-call can't both pass. This shrinks the race window
+    // with the transfer.completed webhook described above. .select('id')
+    // lets us detect a lost race here too — if 0 rows come back, someone
+    // else already advanced this withdrawal.
+    const { data: reserved, error: reserveErr } = await adminClient
+      .from('withdrawals')
+      .update({ status: 'processing', flutterwave_transfer_ref: transferRef })
+      .eq('id', withdrawalId)
+      .eq('status', 'approved')
+      .select('id');
+
+    if (reserveErr) {
+      console.error('[execute-withdrawal] failed to reserve withdrawal:', reserveErr.message);
+      return NextResponse.json(
+        { success: false, error: 'Failed to reserve withdrawal for processing' },
+        { status: 500 }
+      );
+    }
+
+    if (!reserved || reserved.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'Withdrawal was already advanced by a concurrent request' },
+        { status: 409 }
+      );
+    }
+
+    // ── 10. Call Flutterwave ─────────────────────────────────────────────────
     let flutterwaveResult: Awaited<ReturnType<typeof FlutterwaveServerService.initiateTransfer>>;
     let transferFailed = false;
     let transferError  = '';
@@ -271,8 +316,6 @@ export async function POST(request: NextRequest) {
         narration:                'F9 Earnings Withdrawal',
         destinationBankCode:      bankCode,
         destinationAccountNumber: withdrawal.account_number,
-        // account_name is stored on the withdrawal row at request time;
-        // sent as beneficiary_name to Flutterwave for receipt traceability.
         destinationAccountName:   withdrawal.account_name ?? undefined,
         currency:                 'NGN',
       });
@@ -282,32 +325,26 @@ export async function POST(request: NextRequest) {
       flutterwaveResult   = { status: 'FAILED', reference: transferRef };
     }
 
-    // ── 10. Handle Flutterwave response ─────────────────────────────────────
-    // Flutterwave transfer statuses: NEW | PENDING | SUCCESSFUL | FAILED
+    // ── 11. Handle Flutterwave response ─────────────────────────────────────
     const acceptedStatuses = ['NEW', 'PENDING', 'SUCCESSFUL'];
 
     if (!transferFailed && acceptedStatuses.includes(flutterwaveResult.status)) {
-      // Transfer accepted — mark as processing.
+      // Already 'processing' from step 9. Only the transfer_id (known only
+      // after the call resolves) needs writing now.
       //
-      // flutterwave_transfer_ref  — the human-readable PAYOUT-{id}-{ts} string
-      //                             used as the join key in the transfer.completed
-      //                             webhook to flip status → 'completed'.
-      // flutterwave_transfer_id   — Flutterwave's internal numeric transfer ID
-      //                             returned in the POST /v3/transfers response.
-      //                             Stored for support lookups and reconciliation;
-      //                             may be undefined if Flutterwave omits it on
-      //                             NEW/PENDING responses (handled gracefully).
-      await adminClient
-        .from('withdrawals')
-        .update({
-          status:                   'processing',
-          flutterwave_transfer_ref: flutterwaveResult.reference,
-          // Only write if Flutterwave returned an ID — column must be nullable.
-          ...(flutterwaveResult.transferId
-            ? { flutterwave_transfer_id: flutterwaveResult.transferId }
-            : {}),
-        })
-        .eq('id', withdrawalId);
+      // flutterwave_transfer_id — Flutterwave's internal numeric transfer ID.
+      // Column added via migration; cast with `as Record<string, unknown>`
+      // until database.types.ts is regenerated to include it (do not hand-
+      // edit that file — see project convention already used for
+      // process_referral_reward in cron/automation/route.ts).
+      if (flutterwaveResult.transferId) {
+        await adminClient
+          .from('withdrawals')
+          .update({
+            flutterwave_transfer_id: flutterwaveResult.transferId,
+          } as Record<string, unknown>)
+          .eq('id', withdrawalId);
+      }
 
       // Audit log
       void adminClient.from('audit_logs').insert({
@@ -343,6 +380,7 @@ export async function POST(request: NextRequest) {
 
     // Transfer failed — mark withdrawal as failed.
     // Wallet balance is NOT touched (trigger only fires on 'completed').
+    // Row is currently 'processing' (set in step 9) — advance it to 'failed'.
     const failureReason = transferFailed
       ? `Flutterwave transfer error: ${transferError}`
       : `Flutterwave returned status: ${flutterwaveResult.status}`;

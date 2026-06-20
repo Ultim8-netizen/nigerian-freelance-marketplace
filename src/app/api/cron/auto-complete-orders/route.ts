@@ -8,9 +8,25 @@
 //
 // Uses createServiceClient() (service role) because RLS would block
 // cross-user reads in a cron context.
-
+//
+// FIX: createServiceClient is not exported by '@/lib/supabase/server' — that
+// module only exports `createClient` (the session-cookie-bound client; see
+// its source). createServiceClient lives in '@/lib/supabase/service' (a
+// re-export of createAdminClient from '@/lib/supabase/admin'). The previous
+// import would either fail to compile or resolve to `undefined`, throwing
+// at runtime the moment this route ran.
+//
+// FIX: optional rating params (p_communication_rating, p_quality_rating,
+// p_professionalism_rating) are typed `number | undefined` in the generated
+// RPC signature, not `number | null`. Passing `null` failed type checking.
+// These keys are omitted entirely rather than set to null, which Supabase's
+// RPC call treats identically to passing `undefined` for an optional param.
+//
+// FIX: rpcResult is typed as Supabase's `Json` union, which does not
+// sufficiently overlap with `CompletionResult` for a direct `as` cast.
+// Routed the cast through `unknown` first.
 import { NextRequest, NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/service';
 import { logger } from '@/lib/logger';
 
 interface CompletionResult {
@@ -71,9 +87,8 @@ export async function POST(request: NextRequest) {
         // Rating 5 = auto-approved; review text makes this auditable
         p_client_rating: 5,
         p_client_review: 'Auto-approved: review period expired after 7 days',
-        p_communication_rating: null,
-        p_quality_rating: null,
-        p_professionalism_rating: null,
+        // Optional sub-ratings omitted (not null) to satisfy the
+        // `number | undefined` RPC param types.
       }
     );
 
@@ -84,7 +99,7 @@ export async function POST(request: NextRequest) {
       continue;
     }
 
-    const result = rpcResult as CompletionResult;
+    const result = rpcResult as unknown as CompletionResult;
 
     if (!result?.success) {
       const errMsg = result?.error ?? 'RPC returned success=false';

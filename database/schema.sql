@@ -7010,3 +7010,158 @@ WHERE email = 'eldergod263@gmail.com'
 SELECT sr.*, p.email, p.full_name
 FROM staff_roles sr
 JOIN profiles p ON p.id = sr.user_id;
+
+
+
+-- ════════════════════════════════════════════════════════════════════════
+-- CRITICAL — privilege escalation fix
+-- Platform-wide, NOT specific to Domain 7 — found while verifying
+-- flags/page.tsx's RLS chain, but affects every table gated by
+-- profiles.user_type = 'admin' (admin_action_logs, contest_tickets,
+-- staff_roles, and the profiles admin-UPDATE policy itself).
+--
+-- VULNERABILITY (confirmed from your live policies and function bodies):
+--   "Users can update own profile"  (UPDATE, auth.uid() = id, with_check: null)
+--   "Users can insert their own profile" (INSERT, with_check: auth.uid() = id)
+-- Neither policy restricts what value user_type can be set to. Neither
+-- guard_admin_account_status() nor protect_f9_identity() (the only two
+-- triggers on profiles besides the generic updated_at/trust_level ones)
+-- blocked this. Any authenticated user could run:
+--
+--   UPDATE profiles SET user_type = 'admin' WHERE id = auth.uid();
+--
+-- or set user_type: 'admin' on their very first profile-creation INSERT,
+-- and immediately pass every profiles.user_type='admin' RLS check in your
+-- schema — full admin_action_logs access, contest_tickets management,
+-- staff_roles management (including granting themselves or accomplices
+-- further roles), and unrestricted profiles editing for any user.
+--
+-- FIX: extend protect_f9_identity() (already correctly wired to fire on
+-- both INSERT and UPDATE) to reject user_type = 'admin' whenever
+-- auth.role() IS NOT NULL — i.e. whenever the write comes through the
+-- Supabase API (anon, authenticated, or service_role) rather than a direct
+-- SQL editor / migration connection, where there is no Auth JWT and
+-- auth.role() returns NULL. This blocks the escalation path through every
+-- application route, including a hypothetically compromised service-role
+-- key — the only way to grant 'admin' going forward is for you to run it
+-- by hand here.
+--
+-- Deliberately narrow: only blocks escalating TO 'admin'. Demotion FROM
+-- admin is a different risk class (sabotage/lockout, not privilege
+-- escalation) and is not addressed here.
+-- ════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION public.protect_f9_identity()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF LOWER(NEW.full_name) IN ('f9', 'f 9', 'f-9', 'admin', 'administrator', 'ultim8') THEN
+        RAISE EXCEPTION 'This identity is reserved for platform systems.';
+    END IF;
+
+    -- TG_OP is checked before any reference to OLD — OLD is unassigned on
+    -- INSERT and dereferencing a field on it would itself raise an error.
+    IF NEW.user_type = 'admin' AND auth.role() IS NOT NULL THEN
+        IF TG_OP = 'INSERT' THEN
+            RAISE EXCEPTION
+              'F9: user_type cannot be set to admin through the application API — this must be done directly via the SQL editor or a migration.'
+              USING ERRCODE = 'insufficient_privilege';
+        ELSIF TG_OP = 'UPDATE' AND NEW.user_type IS DISTINCT FROM OLD.user_type THEN
+            RAISE EXCEPTION
+              'F9: user_type cannot be changed to admin through the application API — this must be done directly via the SQL editor or a migration.'
+              USING ERRCODE = 'insufficient_privilege';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$function$;
+
+-- ── Verification ────────────────────────────────────────────────────────────
+-- After running the above, confirm the guard actually fires. This should
+-- raise the exception (run this as a normal authenticated test user, NOT
+-- via the SQL editor's superuser/postgres connection, or auth.role() will
+-- be NULL and the guard won't trigger — which is correct, expected
+-- behavior for a direct SQL connection, not a bug):
+--
+--   UPDATE profiles SET user_type = 'admin' WHERE id = auth.uid();
+--   -- Expect: ERROR: F9: user_type cannot be changed to admin through the
+--   -- application API...
+--
+-- To actually grant admin (the only path that should work going forward),
+-- run directly in the SQL editor:
+--
+--   UPDATE profiles SET user_type = 'admin' WHERE email = 'your-actual-email@example.com';
+
+
+-- ════════════════════════════════════════════════════════════════════════
+-- Domain 7 — final verification batch fixes
+-- Run in the Supabase SQL editor, after the earlier domain7_migration.sql
+-- and critical_privilege_escalation_fix.sql.
+-- ════════════════════════════════════════════════════════════════════════
+ 
+-- 1. CRITICAL: withdrawals_status_check does not permit 'held' or
+--    'approved' — every hold-branch INSERT in earnings/page.tsx and every
+--    approveWithdrawal() UPDATE in finance/page.tsx has been structurally
+--    incapable of succeeding. This is independent of every other fix in
+--    this audit; it sits underneath all of them.
+ALTER TABLE withdrawals DROP CONSTRAINT withdrawals_status_check;
+ALTER TABLE withdrawals ADD CONSTRAINT withdrawals_status_check
+  CHECK (status = ANY (ARRAY[
+    'pending', 'held', 'approved', 'processing', 'completed', 'failed', 'cancelled'
+  ]::text[]));
+ 
+-- 2. CRITICAL: transactions_status_check does not permit 'refunded' —
+--    updateTransactionStatus()'s entire refund-reversal flow performs the
+--    real money movement (Flutterwave refund call, or wallet balance
+--    adjustment) and only fails on the final status write, meaning a retry
+--    after the visible error can double-refund.
+ALTER TABLE transactions DROP CONSTRAINT transactions_status_check;
+ALTER TABLE transactions ADD CONSTRAINT transactions_status_check
+  CHECK (status = ANY (ARRAY[
+    'pending', 'successful', 'failed', 'cancelled', 'refunded'
+  ]::text[]));
+ 
+-- 3. update_wallet_on_withdrawal_complete(): add a user_id fallback
+--    matching the defensive pattern execute/route.ts already uses for the
+--    same wallet_id-may-be-null possibility, add a row-count check so a
+--    withdrawal can never silently flip to 'completed' without actually
+--    deducting any wallet, and remove the GREATEST(0, ...) clamp so a
+--    genuine balance violation hits your existing wallets_balance_check
+--    constraint and aborts loudly instead of being silently zeroed and
+--    losing the evidence of what went wrong.
+--
+--    Wired correctly into existing error handling: this fires inside the
+--    same transaction as the UPDATE on withdrawals that flips status to
+--    'completed'. If it raises, that UPDATE rolls back, surfaces as
+--    updateErr in webhooks/flutterwave/route.ts's handleTransferCompleted()
+--    (which already logs to security_logs with severity 'high' on that
+--    exact failure path) — no application code changes needed for this to
+--    be caught correctly.
+CREATE OR REPLACE FUNCTION public.update_wallet_on_withdrawal_complete()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+  v_rows_affected INTEGER;
+BEGIN
+  IF NEW.status = 'completed' AND OLD.status != 'completed' THEN
+    UPDATE wallets
+    SET total_withdrawn = total_withdrawn + NEW.amount,
+        balance          = balance - NEW.amount,
+        updated_at       = NOW()
+    WHERE id = NEW.wallet_id
+       OR (NEW.wallet_id IS NULL AND user_id = NEW.user_id);
+ 
+    GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
+ 
+    IF v_rows_affected = 0 THEN
+      RAISE EXCEPTION
+        'update_wallet_on_withdrawal_complete: no matching wallet for withdrawal % (wallet_id=%, user_id=%)',
+        NEW.id, NEW.wallet_id, NEW.user_id;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$function$;

@@ -28,7 +28,15 @@ export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
       auth: 'required',
-      rateLimit: 'api',
+      // FIX: was 'api' (100 req/min) — wildly looser than ImageUploader's
+      // own stated client-side cap of 20 uploads/hour, making that cap
+      // purely cosmetic (clear localStorage, get another 100/min from the
+      // server). 'fileUpload' (20/hour) is the limiter this codebase
+      // already defines specifically for this purpose — see
+      // rateLimiterConfigs.fileUpload in lib/api/middleware.ts — and this
+      // endpoint is the actual gate before a real upload can happen, so it
+      // belongs here, matching the client's intended cap 1:1.
+      rateLimit: 'fileUpload',
     });
 
     if (error || !user) return error || NextResponse.json(
@@ -52,10 +60,7 @@ export async function POST(request: NextRequest) {
     // IMPORTANT: only sign params actually sent to Cloudinary by the client
     // (see formData in src/lib/cloudinary/upload.ts: file, signature,
     // timestamp, api_key, folder). upload_preset is intentionally NOT signed
-    // here because the client never sends it for signed uploads — Cloudinary
-    // recomputes the signature from what it actually receives, and if the
-    // signed payload and the transmitted payload don't match exactly, every
-    // upload is rejected with "Invalid Signature".
+    // here because the client never sends it for signed uploads.
     const signature = cloudinary.utils.api_sign_request(
       { timestamp, folder },
       process.env.CLOUDINARY_API_SECRET!

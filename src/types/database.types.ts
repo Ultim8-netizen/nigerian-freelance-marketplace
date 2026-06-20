@@ -2016,6 +2016,7 @@ export type Database = {
           frozen_at: string | null
           id: string
           is_frozen: boolean
+          last_credited_at: string | null
           pending_clearance: number | null
           total_earned: number | null
           total_withdrawn: number | null
@@ -2032,6 +2033,7 @@ export type Database = {
           frozen_at?: string | null
           id?: string
           is_frozen?: boolean
+          last_credited_at?: string | null
           pending_clearance?: number | null
           total_earned?: number | null
           total_withdrawn?: number | null
@@ -2048,6 +2050,7 @@ export type Database = {
           frozen_at?: string | null
           id?: string
           is_frozen?: boolean
+          last_credited_at?: string | null
           pending_clearance?: number | null
           total_earned?: number | null
           total_withdrawn?: number | null
@@ -2105,6 +2108,7 @@ export type Database = {
           bank_name: string
           created_at: string | null
           failure_reason: string | null
+          flutterwave_transfer_id: string | null
           flutterwave_transfer_ref: string | null
           hold_release_at: string | null
           id: string
@@ -2120,6 +2124,7 @@ export type Database = {
           bank_name: string
           created_at?: string | null
           failure_reason?: string | null
+          flutterwave_transfer_id?: string | null
           flutterwave_transfer_ref?: string | null
           hold_release_at?: string | null
           id?: string
@@ -2135,6 +2140,7 @@ export type Database = {
           bank_name?: string
           created_at?: string | null
           failure_reason?: string | null
+          flutterwave_transfer_id?: string | null
           flutterwave_transfer_ref?: string | null
           hold_release_at?: string | null
           id?: string

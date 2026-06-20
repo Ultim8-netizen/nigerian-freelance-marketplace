@@ -36,12 +36,17 @@ export function OptimizedImage({
   sizes,
   objectFit = 'cover',
 }: OptimizedImageProps) {
-  // Local paths (e.g. '/avatar-placeholder.png' served from /public) are not
-  // Cloudinary assets — render them with plain next/image instead of trying
-  // to build a cld.image() transform out of a relative path.
-  const isLocalPath = !src.includes('cloudinary.com') && !src.startsWith('http');
+  if (!src) return null;
 
-  if (isLocalPath) {
+  const isCloudinaryUrl = src.includes('cloudinary.com');
+  const isExternalUrl = src.startsWith('http') && !isCloudinaryUrl;
+  const isLocalPath = src.startsWith('/');
+
+  // Anything Cloudinary doesn't host — a local /public path, or an external
+  // URL from some other CDN — renders via plain next/image. Cloudinary can
+  // only transform assets it actually hosts; routing these through
+  // cld.image() would silently produce a broken image URL.
+  if (isLocalPath || isExternalUrl) {
     return (
       <Image
         src={src}
@@ -54,6 +59,8 @@ export function OptimizedImage({
     );
   }
 
+  // Remaining case: a Cloudinary secure_url, or a bare public ID passed
+  // directly with no scheme. extractPublicId() handles both.
   const publicId = extractPublicId(src);
 
   if (!publicId) {

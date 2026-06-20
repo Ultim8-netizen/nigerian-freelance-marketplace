@@ -14,6 +14,17 @@
 //   365 d). Pre-fetching the full year once avoids round-trips when the admin
 //   switches ranges; aggregation + filtering happen entirely client-side.
 //
+// FIX (confirmed via live RPC export): both transaction queries below
+// previously filtered .eq('status', 'success'). Every RPC that writes a
+// successful payment status in this codebase
+// (process_successful_payment, process_marketplace_payment) writes
+// status = 'successful' — never 'success'. That single-character mismatch
+// meant these two queries matched zero rows, always, regardless of how
+// much money actually moved through the platform — the Financial Flow
+// Volume chart and the Geography transaction-volume-by-state chart have
+// been silently empty since they were written. Corrected to 'successful'
+// to match the value your functions actually write.
+//
 // QUERIES:
 //   • profiles          — user growth + geography (user count by state)
 //   • marketplace_orders — order status breakdown
@@ -29,7 +40,20 @@
 //                         for the Geography section transaction-volume-by-state
 //                         chart. Uses recipient_user_id FK -> profiles(location).
 
+// FIX (found during final pass — this page previously had NO auth check at
+// all, not even confirming a session exists): createAdminClient() was used
+// for every query, with no preceding auth.getUser() call anywhere in the
+// file. Combined with createAdminClient() bypassing RLS entirely, this
+// meant ANY request that could reach this route — authenticated or not —
+// would receive a full year of platform financial and user data: revenue,
+// withdrawal volume, dispute outcomes, verification rates, geography
+// breakdowns. Added the same auth + requireStaffRole gate used in
+// finance/page.tsx and flags/page.tsx for consistency across every
+// /f9-control surface.
+
+import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { requireStaffRole } from '@/lib/auth/require-staff-role';
 import {
   AnalyticsClient,
   type ProfileRow,
@@ -44,10 +68,24 @@ import {
   type GeoTransactionRow,
 } from '@/components/admin/AnalyticsClient';
 
+// Read-only financial/operational dashboard — same conservative default as
+// flags/page.tsx. Widen if you introduce an analyst-tier staff role.
+const ANALYTICS_ROLES = ['admin'];
+
 const YEAR_AGO = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
 
 export default async function AnalyticsPage() {
-  const supabase = createAdminClient();
+  // Used ONLY to confirm there's a logged-in session and resolve who they
+  // are — every actual data read below uses the admin client, same pattern
+  // as finance/page.tsx and flags/page.tsx.
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error('Unauthenticated');
+  }
+
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, user.id, ANALYTICS_ROLES);
 
   const [
     profilesRes,
@@ -62,39 +100,39 @@ export default async function AnalyticsPage() {
     securityLogsRes,
     geoTransactionsRes,
   ] = await Promise.all([
-    supabase
+    adminClient
       .from('profiles')
       .select('created_at, user_type, location, account_status')
       .gte('created_at', YEAR_AGO),
 
-    supabase
+    adminClient
       .from('marketplace_orders')
       .select('created_at, status')
       .gte('created_at', YEAR_AGO),
 
-    supabase
+    adminClient
       .from('transactions')
       .select('created_at, amount, transaction_type, status')
       .gte('created_at', YEAR_AGO)
-      .eq('status', 'success'),
+      .eq('status', 'successful'),
 
-    supabase
+    adminClient
       .from('withdrawals')
       .select('created_at, amount, status')
       .gte('created_at', YEAR_AGO),
 
-    supabase
+    adminClient
       .from('disputes')
       .select('created_at, status')
       .gte('created_at', YEAR_AGO),
 
-    supabase
+    adminClient
       .from('contest_tickets')
       .select('created_at, status')
       .gte('created_at', YEAR_AGO),
 
     // All active profiles — trust level pie + verification completion rates.
-    supabase
+    adminClient
       .from('profiles')
       .select(
         'trust_level, onboarding_completed, identity_verified, liveness_verified, phone_verified, student_verified, account_status'
@@ -102,19 +140,19 @@ export default async function AnalyticsPage() {
       .eq('account_status', 'active'),
 
     // Service orders with category join, client_id, amount, cleared_at.
-    supabase
+    adminClient
       .from('orders')
       .select('created_at, status, amount, client_id, cleared_at, service_id(category)')
       .gte('created_at', YEAR_AGO),
 
     // Escrow entries for turnover + payment-to-release timing.
-    supabase
+    adminClient
       .from('escrow')
       .select('created_at, released_at, status, amount')
       .gte('created_at', YEAR_AGO),
 
     // Security logs for flag volume over time.
-    supabase
+    adminClient
       .from('security_logs')
       .select('created_at, event_type, severity')
       .gte('created_at', YEAR_AGO),
@@ -123,11 +161,11 @@ export default async function AnalyticsPage() {
     // recipient_user_id(location) uses the transactions_recipient_user_id_fkey
     // FK to profiles, returning { location: string | null } per row.
     // Only successful transactions. Client aggregates by location, top 10.
-    supabase
+    adminClient
       .from('transactions')
       .select('created_at, amount, recipient_user_id(location)')
       .gte('created_at', YEAR_AGO)
-      .eq('status', 'success'),
+      .eq('status', 'successful'),
   ]);
 
   return (

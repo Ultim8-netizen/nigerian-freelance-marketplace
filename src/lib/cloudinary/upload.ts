@@ -26,7 +26,6 @@ interface SignatureResponse {
  * Validate image file before upload
  */
 export function validateImage(file: File): ValidationResult {
-  // Check file type
   const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
   if (!validTypes.includes(file.type)) {
     return {
@@ -35,7 +34,6 @@ export function validateImage(file: File): ValidationResult {
     };
   }
 
-  // Check file size (5MB limit)
   const maxSize = 5 * 1024 * 1024; // 5MB
   if (file.size > maxSize) {
     return {
@@ -94,7 +92,7 @@ export async function uploadImage(
 
     const result = await response.json();
 
-    return {
+    const uploadResult: UploadResult = {
       url: result.secure_url,
       publicId: result.public_id,
       width: result.width,
@@ -102,6 +100,23 @@ export async function uploadImage(
       format: result.format,
       bytes: result.bytes,
     };
+
+    // Best-effort usage tracking. Signed uploads go directly from the
+    // browser to Cloudinary, so this confirm ping is the only point our
+    // server learns an upload happened and how large it was — see
+    // /api/cloudinary/confirm and lib/cloudinary/monitoring.ts. A tracking
+    // failure must never surface as an upload failure: the upload itself
+    // has already succeeded by this point, and the caller already has a
+    // valid result to use.
+    fetch('/api/cloudinary/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bytes: uploadResult.bytes }),
+    }).catch((err) => {
+      console.error('Failed to record Cloudinary usage:', err);
+    });
+
+    return uploadResult;
   } catch (error: unknown) {
     console.error('Cloudinary upload error:', error);
     const message = error instanceof Error 
@@ -126,14 +141,10 @@ export async function uploadMultipleImages(
  * Delete an uploaded image from Cloudinary via the server-side delete route.
  *
  * Pass a public ID, not a full URL — use extractPublicId() from
- * '@/lib/cloudinary/config' to derive it from a stored secure_url first:
- *
- *   const publicId = extractPublicId(storedImageUrl);
- *   if (publicId) await deleteCloudinaryImage(publicId);
+ * '@/lib/cloudinary/config' to derive it from a stored secure_url first.
  *
  * Throws on failure — callers that treat deletion as best-effort cleanup
- * (e.g. after already removing the image from local form state) should
- * catch and log rather than let this block the UI.
+ * should catch and log rather than let this block the UI.
  */
 export async function deleteCloudinaryImage(publicId: string): Promise<boolean> {
   if (!publicId) return false;
@@ -192,7 +203,6 @@ export async function compressImage(
         let width = img.width;
         let height = img.height;
         
-        // Calculate new dimensions while maintaining aspect ratio
         if (width > maxWidth) {
           height = (height * maxWidth) / width;
           width = maxWidth;

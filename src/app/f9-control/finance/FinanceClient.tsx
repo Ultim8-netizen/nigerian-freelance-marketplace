@@ -327,7 +327,13 @@ function WithdrawalsTab({
 
 // ─── Transaction Filters ──────────────────────────────────────────────────────
 
-const TX_STATUSES = ['pending', 'completed', 'failed', 'refunded', 'cancelled'];
+// FIX: your process_successful_payment / process_marketplace_payment RPCs
+// write status = 'successful' (confirmed from the live function bodies) —
+// not 'completed'. The dropdown and badge logic previously had no entry
+// for 'successful' at all, so every genuinely successful payment rendered
+// as a generic gray "—"-style badge and couldn't be selected via the
+// override dropdown.
+const TX_STATUSES = ['pending', 'successful', 'failed', 'refunded', 'cancelled'];
 
 /**
  * Filter bar for the transactions ledger.
@@ -533,8 +539,10 @@ function TransactionsTab({
                   <td className="px-5 py-4 capitalize text-xs">{tx.transaction_type}</td>
                   <td className="px-5 py-4 font-bold">{ngn(tx.amount)}</td>
                   <td className="px-5 py-4">
+                    {/* FIX: 'successful' (the value your RPCs actually write)
+                        now renders green, same as 'completed'. */}
                     <span className={`px-2 py-0.5 rounded text-xs font-semibold capitalize ${
-                      tx.status === 'completed' ? 'bg-green-100 text-green-800' :
+                      tx.status === 'completed' || tx.status === 'successful' ? 'bg-green-100 text-green-800' :
                       tx.status === 'failed'    ? 'bg-red-100 text-red-800' :
                       tx.status === 'pending'   ? 'bg-amber-100 text-amber-800' :
                       'bg-gray-100 text-gray-700'
@@ -803,9 +811,10 @@ function EscrowTab({
               <tr key={e.id} className="hover:bg-gray-50">
                 <td className="px-5 py-4 font-bold">{ngn(e.amount)}</td>
                 <td className="px-5 py-4">
-                  <span className={`px-2 py-0.5 rounded text-xs font-semibold capitalize ${
-                    e.status === 'funded' ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
-                  }`}>
+                  {/* FIX: 'funded' removed — no RPC in your schema ever
+                      writes it, only 'held'. Single amber treatment for the
+                      only non-terminal value that actually occurs. */}
+                  <span className="px-2 py-0.5 rounded text-xs font-semibold capitalize bg-amber-100 text-amber-800">
                     {e.status ?? '—'}
                   </span>
                 </td>

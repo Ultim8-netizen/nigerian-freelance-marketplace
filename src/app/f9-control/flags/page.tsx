@@ -1,10 +1,46 @@
+// src/app/f9-control/flags/page.tsx
+//
+// FIX (preventative — same pattern proven broken in finance/page.tsx): every
+// write in this file previously used createClient() (the session-scoped,
+// RLS-bound client) for privileged writes to contest_tickets, security_logs
+// (via admin_action_logs), profiles, and notifications. I don't have a live
+// RLS export for those four tables the way I had one for
+// withdrawals/escrow/transactions/platform_config, so I can't say with the
+// same certainty that this was silently no-op'ing — but:
+//   1. The exact same author/pattern produced a confirmed, severe version of
+//      this bug one file over (f9-control/finance/page.tsx), where
+//      createAdminClient() was already imported and used in exactly one
+//      isolated path but not applied consistently.
+//   2. Switching to createAdminClient() for these writes is strictly safe
+//      regardless of what those policies turn out to be — service role
+//      bypasses RLS entirely, so it can only succeed where the session
+//      client would have succeeded, never the reverse.
+// createClient() (session-scoped) is kept ONLY for auth.getUser().
+//
+// RESOLVED: every server action and the page load now call
+// requireStaffRole(adminClient, <id>, FLAGS_ROLES) before acting — see
+// src/lib/auth/require-staff-role.ts. This closes the gap regardless of
+// what src/middleware.ts does or doesn't gate at the route level; the
+// check now lives at the data-access layer, which is correct defense in
+// depth even if middleware already covers this route group.
+
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { requireStaffRole } from '@/lib/auth/require-staff-role';
 import { revalidatePath } from 'next/cache';
 import type { Tables } from '@/types';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { FlagsActionBar } from './FlagsActionBar';
+
+// Conservative default: only 'admin' is a confirmed staff_roles role_type
+// in this codebase for trust & safety actions (suspending users, reversing
+// contested actions). Unlike FINANCE_ROLES in finance/page.tsx, I have no
+// evidence a 'trust_safety_analyst' or similar role_type exists yet — if
+// you add one, extend this list rather than widening it to something
+// invented.
+const FLAGS_ROLES = ['admin'];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,16 +58,22 @@ type SecurityLogWithUser = Omit<Tables<'security_logs'>, 'user_id'> & {
 async function dismissTicket(fd: FormData) {
   'use server';
   const ticketId = fd.get('ticket_id') as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FLAGS_ROLES);
+
+  const { error } = await adminClient
     .from('contest_tickets')
     .update({ status: 'dismissed', reviewed_by: admin.id })
     .eq('id', ticketId);
 
-  await supabase.from('admin_action_logs').insert({
+  if (error) throw new Error(`Failed to dismiss ticket: ${error.message}`);
+
+  await adminClient.from('admin_action_logs').insert({
     admin_id:    admin.id,
     action_type: 'dismiss_ticket',
     reason:      `Contest ticket ${ticketId} dismissed — action stands`,
@@ -50,17 +92,23 @@ async function reverseTicket(fd: FormData) {
   'use server';
   const ticketId     = fd.get('ticket_id') as string;
   const targetUserId = fd.get('user_id')   as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FLAGS_ROLES);
+
+  const { error } = await adminClient
     .from('contest_tickets')
     .update({ status: 'reversed', reviewed_by: admin.id })
     .eq('id', ticketId);
 
+  if (error) throw new Error(`Failed to reverse ticket: ${error.message}`);
+
   if (targetUserId) {
-    await supabase.from('notifications').insert({
+    await adminClient.from('notifications').insert({
       user_id: targetUserId,
       type:    'contest_reversed',
       title:   'Your Contest Was Successful',
@@ -68,7 +116,7 @@ async function reverseTicket(fd: FormData) {
     });
   }
 
-  await supabase.from('admin_action_logs').insert({
+  await adminClient.from('admin_action_logs').insert({
     admin_id:       admin.id,
     target_user_id: targetUserId || null,
     action_type:    'reverse_ticket',
@@ -83,12 +131,16 @@ async function dismissFlag(fd: FormData) {
   'use server';
   const flagId       = fd.get('flag_id') as string;
   const targetUserId = fd.get('user_id') as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FLAGS_ROLES);
+
   // security_logs has no status column — audit log is sufficient for reviewed state.
-  await supabase.from('admin_action_logs').insert({
+  await adminClient.from('admin_action_logs').insert({
     admin_id:       admin.id,
     target_user_id: targetUserId || null,
     action_type:    'dismiss_flag',
@@ -119,7 +171,10 @@ async function suspendFlaggedUser(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, admin.id, FLAGS_ROLES);
+
+  const { error } = await adminClient
     .from('profiles')
     .update({
       account_status:    'suspended',
@@ -131,14 +186,16 @@ async function suspendFlaggedUser(fd: FormData) {
     })
     .eq('id', userId);
 
-  await supabase.from('notifications').insert({
+  if (error) throw new Error(`Failed to suspend user: ${error.message}`);
+
+  await adminClient.from('notifications').insert({
     user_id: userId,
     type:    'account_suspended',
     title:   'Account Suspended',
     message: 'Your account has been suspended following a security review. Please contact support.',
   });
 
-  await supabase.from('admin_action_logs').insert({
+  await adminClient.from('admin_action_logs').insert({
     admin_id:       admin.id,
     target_user_id: userId,
     action_type:    'suspend',
@@ -151,15 +208,24 @@ async function suspendFlaggedUser(fd: FormData) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function AdminFlagsPage() {
+  // Used ONLY to confirm there's a logged-in session — see file header on
+  // why every actual table read below uses the admin client.
   const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error('Unauthenticated');
+  }
 
-  const { data: tickets } = await supabase
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, user.id, FLAGS_ROLES);
+
+  const { data: tickets } = await adminClient
     .from('contest_tickets')
     .select('*, user_id(full_name, id)')
     .eq('status', 'pending')
     .order('created_at', { ascending: false }) as { data: ContestTicketWithUser[] | null };
 
-  const { data: flags } = await supabase
+  const { data: flags } = await adminClient
     .from('security_logs')
     .select('*, user_id(full_name, id)')
     .in('severity', ['high', 'critical'])

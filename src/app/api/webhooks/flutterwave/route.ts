@@ -160,7 +160,8 @@ export async function POST(request: NextRequest) {
 
     // ── 5b. Outbound disbursement — settled ───────────────────────────────────
     // data.status === 'SUCCESSFUL': wallet deduction trigger fires via the
-    // sync_wallet_on_withdrawal_complete DB trigger when row flips to 'completed'.
+    // sync_wallet_on_withdrawal AFTER UPDATE trigger when row flips to
+    // 'completed'.
     case 'transfer.completed':
       return handleTransferCompleted(payload, adminClient);
 
@@ -187,7 +188,7 @@ async function handleChargeCompleted(
   adminClient: ReturnType<typeof createServiceClient>,
 ): Promise<NextResponse> {
   const eventData = payload.data as FlutterwaveChargeData;
-  const { id: flwTransactionId, tx_ref, amount_settled } = eventData;
+  const { id: flwTransactionId, tx_ref } = eventData;
 
   try {
     const { data: transaction, error: txError } = await adminClient
@@ -227,6 +228,13 @@ async function handleChargeCompleted(
       return NextResponse.json({ received: true });
     }
 
+    // FIX: use verified.amountPaid (the re-verified, server-to-server figure)
+    // instead of the webhook payload's amount_settled. The code previously
+    // re-verified the transaction and then ignored the result, passing the
+    // payload's own amount through to the RPC — defeating the stated purpose
+    // of re-verification ("never trust the webhook payload amount... alone").
+    const amountToCredit = verified.amountPaid;
+
     let rpcError: { message: string } | null = null;
 
     if (transaction.order_id && !transaction.marketplace_order_id) {
@@ -235,7 +243,7 @@ async function handleChargeCompleted(
         p_transaction_id: transaction.id,
         p_order_id:       transaction.order_id,
         p_flw_tx_id:      String(flwTransactionId),
-        p_amount:         amount_settled,
+        p_amount:         amountToCredit,
       });
       rpcError = res.error;
     } else if (transaction.marketplace_order_id) {
@@ -244,7 +252,7 @@ async function handleChargeCompleted(
         p_transaction_id: transaction.id,
         p_order_id:       transaction.marketplace_order_id,
         p_flw_tx_id:      String(flwTransactionId),
-        p_amount:         amount_settled,
+        p_amount:         amountToCredit,
       });
       rpcError = res.error;
     } else {
@@ -257,7 +265,7 @@ async function handleChargeCompleted(
           transaction_id:     transaction.id,
           tx_ref,
           flw_transaction_id: flwTransactionId,
-          amount_settled,
+          amount_settled:     amountToCredit,
         } as Json,
       });
       return NextResponse.json({ received: true });
@@ -302,10 +310,6 @@ async function handleChargeCompleted(
 // Both event types are routed here. data.status distinguishes the outcome:
 //   SUCCESSFUL → flip withdrawal to 'completed', fire wallet deduction trigger.
 //   FAILED     → flip withdrawal to 'failed', wallet balance preserved.
-//
-// transfer.failed arrives with data.status === 'FAILED' just like the FAILED
-// branch inside transfer.completed, so no additional logic is needed — the
-// status branches below cover both entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleTransferCompleted(
@@ -345,13 +349,23 @@ async function handleTransferCompleted(
         return NextResponse.json({ received: true, message: 'Already completed' });
       }
 
-      // This transition fires sync_wallet_on_withdrawal_complete trigger.
-      // Wallet deduction happens here — nowhere else.
+      // FIX (race with execute/route.ts): execute/route.ts now writes
+      // status='processing' BEFORE calling Flutterwave rather than after,
+      // but for instant-settling rails (Opay/Kuda/PalmPay/Moniepoint can
+      // settle in milliseconds) this webhook can still race ahead of that
+      // write landing. The guard previously required .eq('status',
+      // 'processing') — if this webhook arrived while the row was still
+      // 'approved' (execute's pre-call write not yet committed), the update
+      // would match 0 rows, return no error, and the completion event would
+      // be silently dropped: money moved, but the row never reaches
+      // 'completed' and the wallet-deduction trigger never fires.
+      // Widened to exclude only the terminal states, so it advances
+      // regardless of which write lands first.
       const { error: updateErr } = await adminClient
         .from('withdrawals')
         .update({ status: 'completed' })
         .eq('id', withdrawal.id)
-        .eq('status', 'processing'); // only advance from 'processing'
+        .not('status', 'in', '(completed,failed)');
 
       if (updateErr) {
         console.error('[Flutterwave Webhook] Failed to mark withdrawal completed:', updateErr.message);
@@ -401,11 +415,12 @@ async function handleTransferCompleted(
           ? 'Flutterwave transfer.failed — hard rejection by receiving bank or clearing network'
           : 'Flutterwave transfer.completed FAILED — transfer rejected by receiving bank or clearing';
 
+      // Same widened guard as the SUCCESSFUL branch above — see comment there.
       const { error: updateErr } = await adminClient
         .from('withdrawals')
         .update({ status: 'failed', failure_reason: failureReason })
         .eq('id', withdrawal.id)
-        .eq('status', 'processing');
+        .not('status', 'in', '(completed,failed)');
 
       if (updateErr) {
         console.error('[Flutterwave Webhook] Failed to mark withdrawal failed:', updateErr.message);

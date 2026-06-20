@@ -90,6 +90,25 @@ async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Validate the currency field on a raw Flutterwave verification payload.
+ * FIX: previously only verifyTransactionByRef performed this check.
+ * verifyTransaction (the numeric-ID path used by the webhook — the PRIMARY
+ * verification path for every inbound payment) had no such guard, despite
+ * the webhook handler's own comment explicitly stating "never trust the
+ * webhook payload amount or status alone." Centralised here so both
+ * verification methods enforce it identically.
+ */
+function assertNgn(raw: Record<string, unknown>): void {
+  if (raw.currency !== 'NGN') {
+    throw new FlutterwaveError(
+      `Unexpected currency from Flutterwave: ${String(raw.currency)}`,
+      422,
+      raw,
+    );
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Core fetch — no token exchange; secret key sent on every request
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,6 +223,11 @@ export class FlutterwaveServerService {
    * Verify a transaction by its Flutterwave numeric transaction ID.
    * Retries up to 3 times — safe to call from the webhook handler.
    * Flutterwave: GET /v3/transactions/{id}/verify
+   *
+   * FIX: now validates currency === 'NGN' before returning, matching
+   * verifyTransactionByRef. This is the path the webhook (the primary,
+   * highest-volume verification route) actually uses, so this check was
+   * previously missing from the path that needed it most.
    */
   static async verifyTransaction(
     transactionId: number | string,
@@ -212,6 +236,8 @@ export class FlutterwaveServerService {
       `/transactions/${transactionId}/verify`,
       { method: 'GET' },
     );
+
+    assertNgn(raw);
 
     return {
       paymentStatus: raw.status as FlutterwaveVerifyResponse['paymentStatus'],
@@ -240,21 +266,7 @@ export class FlutterwaveServerService {
       { method: 'GET' },
     );
 
-    // Validate the three critical fields Flutterwave requires us to check
-    // before trusting a webhook/manual verify call:
-    //   1. status === 'successful'
-    //   2. currency === 'NGN'
-    //   3. amount is present (amount_settled is the settled figure post-fees)
-    //
-    // Callers receive paymentStatus and can make their own trust decisions.
-    // We do NOT throw on non-successful here — the caller checks paymentStatus.
-    if (raw.currency !== 'NGN') {
-      throw new FlutterwaveError(
-        `Unexpected currency from Flutterwave: ${String(raw.currency)}`,
-        422,
-        raw,
-      );
-    }
+    assertNgn(raw);
 
     return {
       paymentStatus: raw.status as FlutterwaveVerifyResponse['paymentStatus'],
@@ -368,6 +380,13 @@ export class FlutterwaveServerService {
    * Fetch the list of Nigerian banks supported by Flutterwave.
    * Normalised to { code, name }[] to match the shape consumers already expect.
    * Flutterwave: GET /v3/banks/NG
+   *
+   * NOTE: this method is unused by the rest of the domain — execute/route.ts
+   * hardcodes a BANK_CODES map instead. Recommend hitting this once and
+   * diffing against that hardcoded map (especially the fintech entries —
+   * Opay/Kuda/PalmPay/Moniepoint) before going live; a wrong bank code
+   * produces a misdirected or failed payout, which is expensive to recover
+   * from. I can't verify those codes myself without live API access.
    */
   static async getNigerianBanks(): Promise<{ code: string; name: string }[]> {
     const raw = await flutterwaveFetch<{ code: string; name: string }[]>(
