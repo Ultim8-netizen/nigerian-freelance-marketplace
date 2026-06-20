@@ -4,14 +4,12 @@
 'use client';
 
 import { AdvancedImage, lazyload, responsive, placeholder } from '@cloudinary/react';
-import { cld } from '@/lib/cloudinary/config';
+import { cld, extractPublicId } from '@/lib/cloudinary/config';
 import { fill, scale } from '@cloudinary/url-gen/actions/resize';
 import { auto } from '@cloudinary/url-gen/qualifiers/quality';
 import { auto as autoFormat } from '@cloudinary/url-gen/qualifiers/format';
 import { format } from '@cloudinary/url-gen/actions/delivery';
 import { quality } from '@cloudinary/url-gen/actions/delivery';
-import { CloudinaryMonitor } from '@/lib/cloudinary/monitoring';
-import { useEffect } from 'react';
 import Image from 'next/image';
 
 interface OptimizedImageProps {
@@ -38,35 +36,29 @@ export function OptimizedImage({
   sizes,
   objectFit = 'cover',
 }: OptimizedImageProps) {
-  // Track transformation usage
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      CloudinaryMonitor.trackTransformation();
-    }
-  }, [src]);
+  // Local paths (e.g. '/avatar-placeholder.png' served from /public) are not
+  // Cloudinary assets — render them with plain next/image instead of trying
+  // to build a cld.image() transform out of a relative path.
+  const isLocalPath = !src.includes('cloudinary.com') && !src.startsWith('http');
 
-  // If not a Cloudinary image, use Next.js Image component
-  if (!src.includes('cloudinary.com') && !src.startsWith('http')) {
-    const isCloudinaryPublicId = !src.startsWith('http');
-    
-    if (!isCloudinaryPublicId) {
-      return (
-        <Image
-          src={src}
-          alt={alt}
-          width={width || 800}
-          height={height || 600}
-          className={className}
-          style={{ objectFit }}
-        />
-      );
-    }
+  if (isLocalPath) {
+    return (
+      <Image
+        src={src}
+        alt={alt}
+        width={width || 800}
+        height={height || 600}
+        className={className}
+        style={{ objectFit }}
+      />
+    );
   }
 
-  // Extract public ID from URL or use as-is
-  const publicId = src.includes('cloudinary.com')
-    ? src.split('/upload/').pop()?.split('.')[0] || src
-    : src;
+  const publicId = extractPublicId(src);
+
+  if (!publicId) {
+    return null;
+  }
 
   // Build Cloudinary image with transformations
   let image = cld.image(publicId);

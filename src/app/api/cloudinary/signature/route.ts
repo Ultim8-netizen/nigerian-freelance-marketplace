@@ -12,6 +12,18 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// Must match the folders this platform's uploader components actually pass
+// to uploadImage() in src/lib/cloudinary/upload.ts:
+//   - ImageUploader.tsx        → 'marketplace/services'
+//   - ProfileImageUploader.tsx → 'marketplace/profiles'
+//   - default                  → 'marketplace'
+const allowedFolders = [
+  'marketplace',
+  'marketplace/services',
+  'marketplace/profiles',
+  'marketplace/products',
+];
+
 export async function POST(request: NextRequest) {
   try {
     const { user, error } = await applyMiddleware(request, {
@@ -28,7 +40,6 @@ export async function POST(request: NextRequest) {
     const { folder = 'marketplace' } = body;
 
     // Validate folder name
-    const allowedFolders = ['marketplace', 'services', 'profiles', 'products'];
     if (!allowedFolders.includes(folder)) {
       return NextResponse.json(
         { success: false, error: 'Invalid folder' },
@@ -37,12 +48,16 @@ export async function POST(request: NextRequest) {
     }
 
     const timestamp = Math.round(new Date().getTime() / 1000);
+
+    // IMPORTANT: only sign params actually sent to Cloudinary by the client
+    // (see formData in src/lib/cloudinary/upload.ts: file, signature,
+    // timestamp, api_key, folder). upload_preset is intentionally NOT signed
+    // here because the client never sends it for signed uploads — Cloudinary
+    // recomputes the signature from what it actually receives, and if the
+    // signed payload and the transmitted payload don't match exactly, every
+    // upload is rejected with "Invalid Signature".
     const signature = cloudinary.utils.api_sign_request(
-      {
-        timestamp,
-        folder,
-        upload_preset: process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET,
-      },
+      { timestamp, folder },
       process.env.CLOUDINARY_API_SECRET!
     );
 

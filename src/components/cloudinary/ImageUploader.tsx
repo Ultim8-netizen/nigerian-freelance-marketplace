@@ -5,8 +5,8 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Image from 'next/image';
-import { uploadImage, validateImage } from '@/lib/cloudinary/upload';
-import { getCardImageUrl } from '@/lib/cloudinary/config';
+import { uploadImage, validateImage, deleteCloudinaryImage } from '@/lib/cloudinary/upload';
+import { getCardImageUrl, extractPublicId } from '@/lib/cloudinary/config';
 import { Button } from '@/components/ui/button';
 import { X, Upload, Loader2, AlertCircle, ImagePlus, Check } from 'lucide-react';
 
@@ -269,9 +269,20 @@ export function ImageUploader({
       const confirmed = confirm('Remove cover image? The next image will become the cover.');
       if (!confirmed) return;
     }
-    
+
+    const removedUrl = images[index];
     const newImages = images.filter((_, i) => i !== index);
     onImagesChange(newImages);
+
+    // Best-effort cleanup: the image is already gone from the listing's form
+    // state regardless of whether Cloudinary cleanup succeeds, so a failure
+    // here must never block or revert the UI removal — just log it.
+    const publicId = extractPublicId(removedUrl);
+    if (publicId) {
+      deleteCloudinaryImage(publicId).catch((err) => {
+        console.error('Failed to delete image from Cloudinary:', err);
+      });
+    }
   };
 
   // Reorder images (make selected image the cover)

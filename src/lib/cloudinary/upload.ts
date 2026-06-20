@@ -1,8 +1,6 @@
 // src/lib/cloudinary/upload.ts
 // Client-side Cloudinary upload utilities with signed uploads
 
-// Removed unused import: import { cloudinaryConfig } from './config';
-
 interface UploadResult {
   url: string;
   publicId: string;
@@ -105,7 +103,6 @@ export async function uploadImage(
       bytes: result.bytes,
     };
   } catch (error: unknown) {
-    // Fix: Using unknown and checking type instead of 'any'
     console.error('Cloudinary upload error:', error);
     const message = error instanceof Error 
       ? error.message 
@@ -123,6 +120,37 @@ export async function uploadMultipleImages(
 ): Promise<UploadResult[]> {
   const uploadPromises = files.map((file) => uploadImage(file, folder));
   return Promise.all(uploadPromises);
+}
+
+/**
+ * Delete an uploaded image from Cloudinary via the server-side delete route.
+ *
+ * Pass a public ID, not a full URL — use extractPublicId() from
+ * '@/lib/cloudinary/config' to derive it from a stored secure_url first:
+ *
+ *   const publicId = extractPublicId(storedImageUrl);
+ *   if (publicId) await deleteCloudinaryImage(publicId);
+ *
+ * Throws on failure — callers that treat deletion as best-effort cleanup
+ * (e.g. after already removing the image from local form state) should
+ * catch and log rather than let this block the UI.
+ */
+export async function deleteCloudinaryImage(publicId: string): Promise<boolean> {
+  if (!publicId) return false;
+
+  const response = await fetch('/api/cloudinary/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ publicId }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Failed to delete image');
+  }
+
+  const result = await response.json();
+  return Boolean(result.success);
 }
 
 /**

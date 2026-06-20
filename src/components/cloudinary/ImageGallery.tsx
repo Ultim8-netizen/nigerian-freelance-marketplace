@@ -3,7 +3,7 @@
 
 import { useState, useEffect } from 'react';
 import { AdvancedImage, lazyload, responsive } from '@cloudinary/react';
-import { cld } from '@/lib/cloudinary/config';
+import { cld, extractPublicId } from '@/lib/cloudinary/config';
 import { fill, limitFit } from '@cloudinary/url-gen/actions/resize';
 import { auto } from '@cloudinary/url-gen/qualifiers/quality';
 import { auto as autoFormat } from '@cloudinary/url-gen/qualifiers/format';
@@ -55,17 +55,9 @@ export function ImageGallery({ images, alt }: ImageGalleryProps) {
     if (e.key === 'ArrowRight') goToNext();
   };
 
-  // Helper to get public ID from URL or use as-is
-  const getPublicId = (imageUrl: string): string => {
-    if (imageUrl.includes('cloudinary.com')) {
-      return imageUrl.split('/upload/').pop()?.split('.')[0] || imageUrl;
-    }
-    return imageUrl;
-  };
-
   // Generate card image (400x300)
   const getCardImage = (imageUrl: string) => {
-    const publicId = getPublicId(imageUrl);
+    const publicId = extractPublicId(imageUrl);
     return cld.image(publicId)
       .resize(fill().width(400).height(300))
       .delivery(format(autoFormat()))
@@ -74,7 +66,7 @@ export function ImageGallery({ images, alt }: ImageGalleryProps) {
 
   // Generate full image (1200px width)
   const getFullImage = (imageUrl: string) => {
-    const publicId = getPublicId(imageUrl);
+    const publicId = extractPublicId(imageUrl);
     return cld.image(publicId)
       .resize(limitFit().width(1200))
       .delivery(format(autoFormat()))

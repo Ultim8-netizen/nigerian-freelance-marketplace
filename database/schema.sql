@@ -6991,3 +6991,22 @@ $$;
 
 -- Grant execute to authenticated users (same pattern as increment_proposals_count)
 GRANT EXECUTE ON FUNCTION decrement_proposals_count(uuid) TO authenticated;
+
+
+
+-- Seed your own staff_roles row. Safe to run even if a row already exists
+-- for you (the NOT EXISTS guard prevents a duplicate insert) — I don't have
+-- constraint data confirming a unique index on user_id, so this avoids
+-- assuming ON CONFLICT would work.
+INSERT INTO staff_roles (user_id, role_type, is_active)
+SELECT id, 'admin', true
+FROM profiles
+WHERE email = 'eldergod263@gmail.com'
+  AND NOT EXISTS (
+    SELECT 1 FROM staff_roles WHERE staff_roles.user_id = profiles.id
+  );
+
+-- Confirm it landed
+SELECT sr.*, p.email, p.full_name
+FROM staff_roles sr
+JOIN profiles p ON p.id = sr.user_id;

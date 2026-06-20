@@ -5,7 +5,7 @@
 
 import { useState, useRef } from 'react';
 import { AdvancedImage, lazyload } from '@cloudinary/react';
-import { cld } from '@/lib/cloudinary/config';
+import { cld, extractPublicId } from '@/lib/cloudinary/config';
 import { fill } from '@cloudinary/url-gen/actions/resize';
 import { autoGravity } from '@cloudinary/url-gen/qualifiers/gravity';
 import { AutoFocus } from '@cloudinary/url-gen/qualifiers/autoFocus';
@@ -14,7 +14,7 @@ import { auto } from '@cloudinary/url-gen/qualifiers/quality';
 import { auto as autoFormat } from '@cloudinary/url-gen/qualifiers/format';
 import { format } from '@cloudinary/url-gen/actions/delivery';
 import { quality } from '@cloudinary/url-gen/actions/delivery';
-import { uploadImage, validateImage } from '@/lib/cloudinary/upload';
+import { uploadImage, validateImage, deleteCloudinaryImage } from '@/lib/cloudinary/upload';
 import { Button } from '@/components/ui/button';
 import { Camera, Loader2 } from 'lucide-react';
 
@@ -30,6 +30,7 @@ export function ProfileImageUploader({
   onRemove,
 }: ProfileImageUploaderProps) {
   const [isUploading, setIsUploading] = useState(false);
+  const [isRemoving, setIsRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -60,19 +61,36 @@ export function ProfileImageUploader({
     }
   };
 
-  // Helper to get public ID from URL
-  const getPublicId = (imageUrl: string): string => {
-    if (imageUrl.includes('cloudinary.com')) {
-      return imageUrl.split('/upload/').pop()?.split('.')[0] || imageUrl;
+  const handleRemove = async () => {
+    if (!currentImage) {
+      onRemove?.();
+      return;
     }
-    return imageUrl;
+
+    setError(null);
+    setIsRemoving(true);
+
+    try {
+      const publicId = extractPublicId(currentImage);
+      if (publicId) {
+        await deleteCloudinaryImage(publicId);
+      }
+    } catch (err) {
+      // Cloudinary cleanup failing should never block the user from removing
+      // the photo from their profile — log for ops visibility and proceed.
+      console.error('Failed to delete profile image from Cloudinary:', err);
+    } finally {
+      setIsRemoving(false);
+      onRemove?.();
+    }
   };
 
+  // Helper to get public ID from URL
   // Generate profile thumbnail
   const getProfileThumbnail = () => {
     if (!currentImage) return null;
     
-    const publicId = getPublicId(currentImage);
+    const publicId = extractPublicId(currentImage);
     return cld.image(publicId)
       .resize(
         fill()
@@ -140,7 +158,8 @@ export function ProfileImageUploader({
           type="button"
           variant="ghost"
           size="sm"
-          onClick={onRemove}
+          onClick={handleRemove}
+          loading={isRemoving}
           className="text-red-600 hover:text-red-700"
         >
           Remove Photo

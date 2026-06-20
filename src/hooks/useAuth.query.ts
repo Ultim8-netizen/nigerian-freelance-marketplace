@@ -119,14 +119,23 @@ export function useAuth() {
             break;
 
           case 'SIGNED_OUT':
-            // Clear all auth-related data
+            // Clear all auth-related data. Use prefix-only keys (no trailing
+            // `undefined`) so TanStack Query's partial key matching actually
+            // finds the cached entries.
+            //
+            // FIX: authQueryKeys.profile(undefined) produces the literal key
+            // ['auth', 'profile', undefined] — a 3-element array. Partial
+            // matching compares element-by-element up to the filter key's
+            // length, and `undefined !== '<actual-user-uuid>'` at index 2,
+            // so this never matched the real cached entry
+            // ['auth', 'profile', '<uuid>']. The same applied to wallet.
+            // Net effect: stale profile/wallet data survived any SIGNED_OUT
+            // event that didn't go through this hook's own logout() mutation
+            // (which separately calls queryClient.clear()) — e.g. session
+            // expiry, suspension, or a sign-out triggered from another tab.
             queryClient.setQueryData(authQueryKeys.session, null);
-            queryClient.removeQueries({
-              queryKey: authQueryKeys.profile(undefined),
-            });
-            queryClient.removeQueries({
-              queryKey: authQueryKeys.wallet(undefined),
-            });
+            queryClient.removeQueries({ queryKey: ['auth', 'profile'] });
+            queryClient.removeQueries({ queryKey: ['auth', 'wallet'] });
             break;
 
           case 'PASSWORD_RECOVERY':
