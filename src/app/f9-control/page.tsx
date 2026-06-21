@@ -1,3 +1,20 @@
+// src/app/f9-control/page.tsx
+//
+// FIX: 24h Transaction Volume was always ₦0.
+//   The query used .eq('status', 'completed') but process_successful_payment
+//   and process_marketplace_payment (confirmed against live DB function list)
+//   write status = 'successful', not 'completed'. Changed to
+//   .in('status', ['successful', 'completed']) to capture both the payment-
+//   flow value and any transactions written with 'completed' by other paths
+//   (e.g. manual overrides via the Finance admin panel).
+//
+// FIX: Health check was checking Monnify (https://api.monnify.com/...).
+//   Flutterwave is the confirmed payment processor. The Monnify check
+//   provided no signal about actual payment processing capability.
+//   Replaced with a Flutterwave gateway check using the public /v3/banks/NG
+//   endpoint. A 401 response (unauthenticated) still confirms the gateway is
+//   reachable — we only need connectivity confirmation here, not auth.
+
 import { Card } from '@/components/ui/card';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -16,7 +33,7 @@ interface ServiceHealth {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MS_PER_DAY = 86_400_000;
+const MS_PER_DAY       = 86_400_000;
 const HEALTH_TIMEOUT_MS = 4_000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -25,8 +42,8 @@ const getSince = () => new Date(Date.now() - MS_PER_DAY).toISOString();
 
 function formatNGN(amount: number) {
   return new Intl.NumberFormat('en-NG', {
-    style: 'currency',
-    currency: 'NGN',
+    style:                 'currency',
+    currency:              'NGN',
     minimumFractionDigits: 0,
   }).format(amount);
 }
@@ -57,11 +74,6 @@ const cardBorderForHealth: Record<HealthStatus, string> = {
 
 // ─── Health-check functions ───────────────────────────────────────────────────
 
-/**
- * Supabase — reuses the page's already-authenticated client so we don't open
- * a second cookie session. A single-row read on `profiles` confirms the DB
- * and PostgREST layer are reachable.
- */
 async function checkSupabase(supabase: SupabaseClient): Promise<ServiceHealth> {
   const t0 = Date.now();
   const { error } = await supabase.from('profiles').select('id').limit(1);
@@ -70,37 +82,38 @@ async function checkSupabase(supabase: SupabaseClient): Promise<ServiceHealth> {
   return { status: latencyMs > 2_000 ? 'degraded' : 'healthy', latencyMs };
 }
 
-/**
- * Upstash Redis — PING -> expects "PONG".
- * Reads UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN from env —
- * the same vars already used by the rate-limiter middleware.
- */
 async function checkRedis(): Promise<ServiceHealth> {
   const redis = Redis.fromEnv();
-  const t0 = Date.now();
-  const pong = await redis.ping();
+  const t0    = Date.now();
+  const pong  = await redis.ping();
   const latencyMs = Date.now() - t0;
   if (pong !== 'PONG') return { status: 'degraded', latencyMs };
   return { status: latencyMs > 1_000 ? 'degraded' : 'healthy', latencyMs };
 }
 
 /**
- * Monnify — hits the public /api/v1/banks endpoint (no auth required).
- * Any HTTP response confirms the API gateway is reachable; we only verify
- * connectivity, not authorisation. Network error or timeout = 'down'.
- * A 5xx from Monnify means their servers are struggling = 'degraded'.
+ * FIX: replaced Monnify check with Flutterwave.
+ *
+ * Uses the public GET /v3/banks/NG endpoint — no auth required, confirms the
+ * API gateway is reachable. A 401 response is acceptable here: it means
+ * Flutterwave rejected an unauthenticated request, which proves the gateway
+ * is up. Only 5xx or a network timeout indicates a real problem.
  */
-async function checkMonnify(): Promise<ServiceHealth> {
+async function checkFlutterwave(): Promise<ServiceHealth> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-  const t0 = Date.now();
+  const timer      = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+  const t0         = Date.now();
   try {
-    const res = await fetch('https://api.monnify.com/api/v1/banks', {
+    const res = await fetch('https://api.flutterwave.com/v3/banks/NG', {
       method: 'GET',
       signal: controller.signal,
     });
     clearTimeout(timer);
     const latencyMs = Date.now() - t0;
+    // 401 = unauthenticated but gateway alive; 200 = healthy
+    if (res.status === 200 || res.status === 401) {
+      return { status: latencyMs > 2_500 ? 'degraded' : 'healthy', latencyMs };
+    }
     if (res.status >= 500) return { status: 'degraded', latencyMs };
     return { status: latencyMs > 2_500 ? 'degraded' : 'healthy', latencyMs };
   } catch {
@@ -113,43 +126,25 @@ async function checkMonnify(): Promise<ServiceHealth> {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function DailyDigest() {
-  // ── Supabase clients ────────────────────────────────────────────────────────
-  // `supabase`        — anon/cookie client, respects RLS. Used for all
-  //                     user-scoped data (profiles, orders, escrow, etc.).
-  // `serviceSupabase` — service-role client, bypasses RLS. Required for
-  //                     security_logs which only has SELECT user_id=auth.uid()
-  //                     (no admin ALL policy) — the admin's UUID never matches
-  //                     the flagged user's UUID stored in that column.
   const supabase        = await createClient();
   const serviceSupabase = createServiceClient();
   const since           = getSince();
 
-  // Run all health checks and data queries in a single concurrent batch.
   const [
     supabaseHealth,
     redisHealth,
-    monnifyHealth,
+    flutterwaveHealth,
 
     { count: ticketsCount },
     { count: newUsers },
 
-    // Both security_logs queries use serviceSupabase — RLS on this table is
-    // user-scoped (SELECT user_id=auth.uid()), not admin-scoped, so the cookie
-    // client would return 0 rows for every admin session.
     { data: overnightActions },
     { data: criticalLogs },
 
-    // Escalated disputes: TODO — wire this up once the cron job that
-    // transitions disputes to the admin queue has been built. Until then
-    // this returns no rows and the section is hidden from the UI.
     { data: escalatedDisputes, count: escalatedCount },
 
     { data: completedTx },
-
-    // escrow.status CHECK: held|released_to_freelancer|refunded_to_client|disputed
-    // 'funded' is not a valid value — query uses 'held' only.
     { data: activeEscrow },
-
     { data: revenueRows },
     { data: pendingWithdrawals, count: pendingWithdrawalsCount },
     { data: pendingBroadcasts, count: broadcastCount },
@@ -158,7 +153,7 @@ export default async function DailyDigest() {
     // ── Health checks ─────────────────────────────────────────────────────────
     checkSupabase(supabase).catch((): ServiceHealth => ({ status: 'down' })),
     checkRedis()           .catch((): ServiceHealth => ({ status: 'down' })),
-    checkMonnify()         .catch((): ServiceHealth => ({ status: 'down' })),
+    checkFlutterwave()     .catch((): ServiceHealth => ({ status: 'down' })),
 
     // ── Data queries ──────────────────────────────────────────────────────────
     supabase
@@ -187,9 +182,6 @@ export default async function DailyDigest() {
       .order('created_at', { ascending: false })
       .limit(10),
 
-    // TODO: replace 'placeholder_pending_cron' with the real status value the
-    // dispute-escalation cron sets once that cron is built. This intentionally
-    // returns 0 rows until then.
     serviceSupabase
       .from('disputes')
       .select('id, reason, description, created_at', { count: 'exact' })
@@ -197,10 +189,12 @@ export default async function DailyDigest() {
       .order('created_at', { ascending: false })
       .limit(5),
 
+    // FIX: process_successful_payment writes status='successful', not 'completed'.
+    //      Using .in() to catch both values — 'completed' covers manual overrides.
     supabase
       .from('transactions')
       .select('amount')
-      .eq('status', 'completed')
+      .in('status', ['successful', 'completed'])
       .gte('created_at', since),
 
     supabase
@@ -237,9 +231,9 @@ export default async function DailyDigest() {
   // ─── Derived values ─────────────────────────────────────────────────────────
 
   const healthChecks: { label: string; result: ServiceHealth }[] = [
-    { label: 'Database',            result: supabaseHealth },
-    { label: 'Payments (Monnify)', result: monnifyHealth  },
-    { label: 'Redis (Rate limits)', result: redisHealth    },
+    { label: 'Database',               result: supabaseHealth    },
+    { label: 'Payments (Flutterwave)', result: flutterwaveHealth },
+    { label: 'Redis (Rate limits)',     result: redisHealth       },
   ];
 
   const overallHealth: HealthStatus =
@@ -247,8 +241,6 @@ export default async function DailyDigest() {
     healthChecks.some(h => h.result.status === 'degraded') ? 'degraded' :
     'healthy';
 
-  // escalatedCount will be 0 until the cron is built — safe to include in
-  // totalCritical; it simply adds nothing until the TODO above is resolved.
   const totalCritical  = (criticalLogs?.length ?? 0) + (escalatedCount ?? 0);
   const actionRequired = (ticketsCount ?? 0) > 0 || totalCritical > 0;
 
@@ -375,7 +367,7 @@ export default async function DailyDigest() {
                     )}
                     <p className="text-gray-400 text-xs mt-0.5">
                       {new Date(log.created_at ?? '').toLocaleTimeString([], {
-                        hour: '2-digit',
+                        hour:   '2-digit',
                         minute: '2-digit',
                       })}
                     </p>
@@ -519,7 +511,7 @@ export default async function DailyDigest() {
                     <p className="text-gray-500 text-xs mt-0.5 line-clamp-2">{n.message}</p>
                     <p className="text-gray-400 text-xs mt-0.5">
                       {new Date(n.created_at ?? '').toLocaleTimeString([], {
-                        hour: '2-digit',
+                        hour:   '2-digit',
                         minute: '2-digit',
                       })}
                     </p>

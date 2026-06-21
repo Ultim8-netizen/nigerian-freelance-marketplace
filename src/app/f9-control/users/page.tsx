@@ -1,555 +1,335 @@
-import { notFound } from 'next/navigation';
-import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+// src/app/f9-control/users/page.tsx
+//
+// User Directory — paginated, filterable listing of all platform profiles.
+//
+// FIX (critical): This file was previously a broken copy of users/[id]/page.tsx.
+// It imported params: Promise<{ id: string }> which does not exist at the
+// /f9-control/users route, causing id to always be undefined, which caused
+// the .eq('id', undefined) query to match no rows, which caused notFound()
+// to fire on every single request to this page — permanent 404.
+//
+// Additionally, UsersFilterBar.tsx was fully implemented but imported nowhere
+// because the listing page it was built for didn't exist. Fixed here.
+//
+// QUERY NOTES:
+//   - adminClient is used even though profiles has a public SELECT policy
+//     (true qual). This is intentional: the admin panel should never depend
+//     on user-facing RLS to determine what data is visible. Service role
+//     also ensures future policy changes cannot accidentally restrict the
+//     admin view.
+//   - The 'verified=none' filter uses .or() chains because PostgREST's
+//     .or() on a single field appends an AND to the outer query, not an OR
+//     across fields. Two separate .or() calls on two separate columns
+//     produces: WHERE (col_a IS NULL OR col_a = false) AND (col_b IS NULL OR col_b = false)
+//     which is "not verified on either check" — correct for the intent.
+//   - Pagination uses .range(from, to) which is 0-indexed inclusive on both ends.
+//   - TYPE FIX (root cause): the .select() column list MUST be a single
+//     unbroken string literal. @supabase/postgrest-js parses the .select()
+//     argument at the TYPE level via template-literal matching to build the
+//     typed Row shape. The `+` string concatenation previously used here
+//     produces a value of type `string` (not a literal type — TS does not
+//     preserve literal-ness across the `+` operator), which causes that
+//     type-level parser to fail and fall back to `GenericStringError`,
+//     poisoning every downstream property access on the query result.
+//     Writing the column list as one literal restores correct typing.
+//     No runtime/SQL change — purely a TS fix.
+
+import { createClient }      from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { UserProfileTabs } from '@/app/f9-control/users/[id]/UserProfileTabs';
-import Link from 'next/link';
-import { ChevronLeft } from 'lucide-react';
+import { requireStaffRole }  from '@/lib/auth/require-staff-role';
+import Link                  from 'next/link';
+import { Card }              from '@/components/ui/card';
+import { Badge }             from '@/components/ui/badge';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { UsersFilterBar }    from './UsersFilterBar';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+const PAGE_SIZE   = 25;
+const ADMIN_ROLES = ['admin'];
 
-const MODERATOR_MAX_SUSPENSION_DAYS = 30;
+interface PageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
 
-/**
- * Order statuses that are considered "active" and must be cancelled on ban.
- * Sources:
- *  - get_user_stats function: active_orders uses 'awaiting_delivery' | 'delivered'
- *  - process_successful_payment sets 'awaiting_delivery' (post-payment active state)
- *  - 'pending' is the pre-payment state, also cancellable
- * Terminal statuses ('completed', 'cancelled') are intentionally excluded.
- */
-const ACTIVE_ORDER_STATUSES = ['pending', 'awaiting_delivery', 'delivered'] as const;
+export default async function AdminUsersPage({ searchParams }: PageProps) {
+  // ── Auth guard ────────────────────────────────────────────────────────────
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Unauthenticated');
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, user.id, ADMIN_ROLES);
 
-/**
- * Returns true if the acting user is a full admin.
- * Moderators (staff_roles entries) are NOT admins.
- */
-async function isActingUserAdmin(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  actorId: string,
-): Promise<boolean> {
-  const { data } = await supabase
+  // ── Parse search params ───────────────────────────────────────────────────
+  const sp = await searchParams;
+
+  function sp_str(key: string): string {
+    const v = sp[key];
+    return typeof v === 'string' ? v.trim() : '';
+  }
+
+  const filter = {
+    q:          sp_str('q'),
+    role:       sp_str('role'),
+    status:     sp_str('status'),
+    verified:   sp_str('verified'),
+    location:   sp_str('location'),
+    university: sp_str('university'),
+    trust_min:  sp_str('trust_min'),
+    trust_max:  sp_str('trust_max'),
+  };
+
+  const page = Math.max(1, Number(sp_str('page') || '1'));
+  const from = (page - 1) * PAGE_SIZE;
+  const to   = from + PAGE_SIZE - 1;
+
+  // ── Build query ───────────────────────────────────────────────────────────
+  // NOTE: single string literal — do not split/concatenate this with `+`.
+  // See TYPE FIX note at top of file for why that breaks the inferred Row type.
+  let query = adminClient
     .from('profiles')
-    .select('user_type')
-    .eq('id', actorId)
-    .single();
-  return data?.user_type === 'admin';
-}
+    .select(
+      'id, full_name, email, user_type, account_status, trust_score, trust_level, created_at, identity_verified, liveness_verified, student_verified, location, university',
+      { count: 'exact' },
+    )
+    .order('created_at', { ascending: false })
+    .range(from, to);
 
-/**
- * Returns true if the target user is an admin.
- * Admin accounts are "unblockable" — no suspension, ban, freeze, or
- * trust-score manipulation may be applied to them.
- */
-async function isTargetAdmin(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  targetId: string,
-): Promise<boolean> {
-  const { data } = await supabase
-    .from('profiles')
-    .select('user_type')
-    .eq('id', targetId)
-    .single();
-  return data?.user_type === 'admin';
-}
+  if (filter.q)          query = query.ilike('full_name', `%${filter.q}%`);
+  if (filter.role)       query = query.eq('user_type', filter.role);
+  if (filter.status)     query = query.eq('account_status', filter.status);
+  if (filter.location)   query = query.ilike('location', `%${filter.location}%`);
+  if (filter.university) query = query.ilike('university', `%${filter.university}%`);
 
-/**
- * Computes the suspended_until timestamp.
- *
- * Rules:
- *  - Admin, durationDays === 0  → null (indefinite)
- *  - Admin, durationDays > 0   → now + durationDays (uncapped)
- *  - Moderator, any value       → now + min(durationDays || MAX, MAX)
- *
- * Returns { suspendedUntil, effectiveDays } so callers can log what was applied.
- */
-function computeSuspension(
-  durationDays: number,
-  isAdmin: boolean,
-): { suspendedUntil: string | null; effectiveDays: number | null } {
-  if (isAdmin && durationDays === 0) {
-    // Explicit indefinite — admin privilege only
-    return { suspendedUntil: null, effectiveDays: null };
+  if (filter.trust_min && !isNaN(Number(filter.trust_min))) {
+    query = query.gte('trust_score', Number(filter.trust_min));
+  }
+  if (filter.trust_max && !isNaN(Number(filter.trust_max))) {
+    query = query.lte('trust_score', Number(filter.trust_max));
   }
 
-  const raw = durationDays > 0 ? durationDays : MODERATOR_MAX_SUSPENSION_DAYS;
-  const effectiveDays = isAdmin ? raw : Math.min(raw, MODERATOR_MAX_SUSPENSION_DAYS);
-  const until = new Date();
-  until.setDate(until.getDate() + effectiveDays);
-
-  return { suspendedUntil: until.toISOString(), effectiveDays };
-}
-
-// ─── Server Actions ───────────────────────────────────────────────────────────
-
-async function warnUser(fd: FormData) {
-  'use server';
-  const userId = fd.get('user_id') as string;
-  const reason = fd.get('reason') as string;
-  const supabase = await createClient();
-  const { data: { user: admin } } = await supabase.auth.getUser();
-  if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
-  if (await isTargetAdmin(supabase, userId)) return;
-
-  await supabase.from('notifications').insert({
-    user_id: userId,
-    type: 'admin_warning',
-    title: 'Official Warning',
-    message: reason,
-  });
-
-  await supabase.from('admin_action_logs').insert({
-    admin_id:       admin.id,
-    target_user_id: userId,
-    action_type:    'warn',
-    reason,
-  });
-
-  revalidatePath(`/f9-control/users/${userId}`);
-}
-
-async function suspendUser(fd: FormData) {
-  'use server';
-  const userId      = fd.get('user_id') as string;
-  const reason      = fd.get('reason') as string;
-  const durationDays = Number(fd.get('duration_days') ?? 7);
-
-  const supabase = await createClient();
-  const { data: { user: admin } } = await supabase.auth.getUser();
-  if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
-  if (await isTargetAdmin(supabase, userId)) return;
-
-  const isAdmin = await isActingUserAdmin(supabase, admin.id);
-  const { suspendedUntil, effectiveDays } = computeSuspension(durationDays, isAdmin);
-
-  const wasCapApplied = !isAdmin && durationDays !== effectiveDays;
-  const durationNote = effectiveDays === null
-    ? 'indefinite'
-    : `${effectiveDays} day${effectiveDays !== 1 ? 's' : ''}${wasCapApplied ? ` (capped from ${durationDays}d — moderator limit)` : ''}`;
-
-  await supabase.from('profiles').update({
-    account_status:    'suspended',
-    suspension_reason: reason,
-    suspended_until:   suspendedUntil,
-  }).eq('id', userId);
-
-  await supabase.from('notifications').insert({
-    user_id: userId,
-    type: 'account_suspended',
-    title: 'Account Suspended',
-    message: effectiveDays === null
-      ? `Your account has been suspended indefinitely. Reason: ${reason}`
-      : `Your account has been suspended for ${effectiveDays} day${effectiveDays !== 1 ? 's' : ''}. Reason: ${reason}`,
-  });
-
-  await supabase.from('admin_action_logs').insert({
-    admin_id:       admin.id,
-    target_user_id: userId,
-    action_type:    'suspend',
-    reason:         `${reason} [Duration: ${durationNote}]`,
-  });
-
-  revalidatePath(`/f9-control/users/${userId}`);
-}
-
-/**
- * Permanently bans a user.
- *
- * All four spec steps are enforced:
- *  1. Account disabled  → profiles.account_status = 'banned'
- *  2. Wallet frozen     → wallets.is_frozen = true, wallets.frozen_at = now()
- *                         Must use adminClient — wallets has no cross-user
- *                         UPDATE RLS policy for the anon key. Sets the explicit
- *                         DB flag rather than relying on the profile ban to
- *                         implicitly block all wallet pathways.
- *  3. Active orders cancelled → adminClient (same RLS reason as wallet)
- *  4. User notified     → ban notification + one per cancelled-order counterparty
- */
-async function banUser(fd: FormData) {
-  'use server';
-  const userId = fd.get('user_id') as string;
-  const reason = fd.get('reason') as string;
-
-  const supabase    = await createClient();
-  const adminClient = await createAdminClient(); // service role — bypasses RLS
-
-  const { data: { user: admin } } = await supabase.auth.getUser();
-  if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
-  if (await isTargetAdmin(supabase, userId)) return;
-
-  // ── Step 1: Disable account ──────────────────────────────────────────────
-  await supabase.from('profiles').update({
-    account_status:    'banned',
-    suspension_reason: reason,
-    suspended_until:   null,
-  }).eq('id', userId);
-
-  // ── Step 2: Freeze wallet ────────────────────────────────────────────────
-  // Sets is_frozen = true and records the timestamp on the wallets row.
-  //
-  // Why adminClient: wallets has no cross-user UPDATE RLS policy for the anon
-  // key, identical to the constraint on orders below.
-  //
-  // Why match by user_id: the admin page does not expose the wallet's internal
-  // UUID; user_id is the canonical FK and the 1:1 FK guarantees at most one row.
-  //
-  // Error handling: we capture the error but do NOT abort — the account is
-  // already banned. A wallet row without is_frozen = true is a degraded state
-  // that must be surfaced in the audit log rather than silently swallowed.
-  const { error: walletFreezeError } = await adminClient
-    .from('wallets')
-    .update({
-      is_frozen: true,
-      frozen_at: new Date().toISOString(),
-    })
-    .eq('user_id', userId);
-
-  if (walletFreezeError) {
-    console.error('[banUser] wallet freeze error:', walletFreezeError);
+  // Verification filter — each branch targets the specific column.
+  // 'none' requires that BOTH liveness AND identity are unverified (two
+  // chained .or() calls produce two independent AND conditions).
+  switch (filter.verified) {
+    case 'liveness':
+      query = query.eq('liveness_verified', true);
+      break;
+    case 'identity':
+      query = query.eq('identity_verified', true);
+      break;
+    case 'student':
+      query = query.eq('student_verified', true);
+      break;
+    case 'none':
+      query = query
+        .or('identity_verified.is.null,identity_verified.eq.false')
+        .or('liveness_verified.is.null,liveness_verified.eq.false');
+      break;
   }
 
-  // ── Step 3: Cancel all active orders ────────────────────────────────────
-  // Must use adminClient — orders has no admin UPDATE RLS policy.
-  // We fetch first to know which orders were cancelled so we can notify
-  // each order's counterparty.
-  const { data: activeOrders } = await adminClient
-    .from('orders')
-    .select('id, client_id, freelancer_id')
-    .or(`client_id.eq.${userId},freelancer_id.eq.${userId}`)
-    .in('status', ACTIVE_ORDER_STATUSES);
+  const { data: users, count, error } = await query;
 
-  if (activeOrders && activeOrders.length > 0) {
-    const orderIds = activeOrders.map((o) => o.id);
+  if (error) console.error('[users/page] query error:', error);
 
-    await adminClient
-      .from('orders')
-      .update({ status: 'cancelled' })
-      .in('id', orderIds);
+  const total      = count ?? 0;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
 
-    // ── Step 4 (partial): Notify each order's counterparty ───────────────
-    // The banned user receives a single consolidated notification below.
-    // Each counterparty gets one notification per affected order.
-    const counterpartyNotifications = activeOrders.map((order) => {
-      const counterpartyId =
-        order.client_id === userId ? order.freelancer_id : order.client_id;
-      return {
-        user_id: counterpartyId,
-        type:    'order_cancelled',
-        title:   'Order Cancelled',
-        message: `An order you were part of has been cancelled because the other party's account was banned by the F9 team.`,
-      };
-    });
-
-    await supabase.from('notifications').insert(counterpartyNotifications);
+  // ── Pagination URL helper ─────────────────────────────────────────────────
+  function pageUrl(p: number): string {
+    const params = new URLSearchParams();
+    if (filter.q)          params.set('q',          filter.q);
+    if (filter.role)       params.set('role',       filter.role);
+    if (filter.status)     params.set('status',     filter.status);
+    if (filter.verified)   params.set('verified',   filter.verified);
+    if (filter.location)   params.set('location',   filter.location);
+    if (filter.university) params.set('university', filter.university);
+    if (filter.trust_min)  params.set('trust_min',  filter.trust_min);
+    if (filter.trust_max)  params.set('trust_max',  filter.trust_max);
+    if (p > 1)             params.set('page',       String(p));
+    const qs = params.toString();
+    return `/f9-control/users${qs ? `?${qs}` : ''}`;
   }
 
-  // ── Step 4 (primary): Notify the banned user ─────────────────────────────
-  await supabase.from('notifications').insert({
-    user_id: userId,
-    type:    'account_banned',
-    title:   'Account Banned',
-    message: reason,
-  });
-
-  // ── Audit log ────────────────────────────────────────────────────────────
-  const cancelledCount = activeOrders?.length ?? 0;
-  const walletNote     = walletFreezeError
-    ? ' [wallet freeze FAILED — check server logs]'
-    : ' [wallet frozen]';
-
-  await supabase.from('admin_action_logs').insert({
-    admin_id:       admin.id,
-    target_user_id: userId,
-    action_type:    'ban',
-    reason:         `${reason}${walletNote}${cancelledCount > 0 ? ` [${cancelledCount} active order${cancelledCount !== 1 ? 's' : ''} cancelled]` : ''}`,
-  });
-
-  revalidatePath(`/f9-control/users/${userId}`);
-}
-
-async function freezeWallet(fd: FormData) {
-  'use server';
-  const userId = fd.get('user_id') as string;
-  const reason = fd.get('reason') as string;
-  const supabase = await createClient();
-  const { data: { user: admin } } = await supabase.auth.getUser();
-  if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
-  if (await isTargetAdmin(supabase, userId)) return;
-
-  await supabase.from('profiles').update({
-    account_status:    'suspended',
-    suspension_reason: `Wallet frozen: ${reason}`,
-    suspended_until:   null,
-  }).eq('id', userId);
-
-  await supabase.from('security_logs').insert({
-    user_id:     userId,
-    event_type:  'wallet_frozen_by_admin',
-    severity:    'critical',
-    description: reason,
-  });
-
-  await supabase.from('notifications').insert({
-    user_id: userId,
-    type: 'account_frozen',
-    title: 'Wallet Frozen',
-    message: `Your wallet has been frozen by the F9 team. Reason: ${reason}`,
-  });
-
-  await supabase.from('admin_action_logs').insert({
-    admin_id:       admin.id,
-    target_user_id: userId,
-    action_type:    'freeze_wallet',
-    reason,
-  });
-
-  revalidatePath(`/f9-control/users/${userId}`);
-}
-
-async function overrideTrustScore(fd: FormData) {
-  'use server';
-  const userId      = fd.get('user_id') as string;
-  const scoreChange = Number(fd.get('score_change'));
-  const reason      = fd.get('reason') as string;
-  if (isNaN(scoreChange)) return;
-
-  const supabase = await createClient();
-  const { data: { user: admin } } = await supabase.auth.getUser();
-  if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
-  if (await isTargetAdmin(supabase, userId)) return;
-
-  await supabase.rpc('add_trust_score_event', {
-    p_user_id:      userId,
-    p_event_type:   'admin_override',
-    p_score_change: scoreChange,
-    p_notes:        reason,
-  });
-
-  await supabase.from('admin_action_logs').insert({
-    admin_id:       admin.id,
-    target_user_id: userId,
-    action_type:    'override_trust_score',
-    reason:         `${scoreChange >= 0 ? '+' : ''}${scoreChange} — ${reason}`,
-  });
-
-  revalidatePath(`/f9-control/users/${userId}`);
-}
-
-/**
- * Appends a freeform private note to admin_action_logs.
- *
- * Notes are stored with action_type = 'private_note' and are:
- *  - Never surfaced to the target user (admin_action_logs RLS is admin-only)
- *  - Never sent as a notification (no notification insert)
- *  - Visible only in the Admin Notes tab of this profile view
- *
- * There is no unblockable guard here — admins may annotate any profile,
- * including other admin accounts, for internal record-keeping purposes.
- */
-async function addPrivateNote(fd: FormData) {
-  'use server';
-  const userId = fd.get('user_id') as string;
-  const note   = (fd.get('note') as string)?.trim();
-  if (!note) return;
-
-  const supabase = await createClient();
-  const { data: { user: admin } } = await supabase.auth.getUser();
-  if (!admin) return;
-
-  await supabase.from('admin_action_logs').insert({
-    admin_id:       admin.id,
-    target_user_id: userId,
-    action_type:    'private_note',
-    reason:         note,
-    // Private notes are informational — mark non-reversible so the
-    // "Reversed" badge never appears on them in the Admin Notes tab.
-    reversible_until: null,
-  });
-
-  revalidatePath(`/f9-control/users/${userId}`);
-}
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
-
-export default async function AdminUserProfilePage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const supabase = await createClient();
-
-  // ── Profile ────────────────────────────────────────────────────────────────
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', id)
-    .single();
-
-  if (!profile) notFound();
-
-  // ── Activity ───────────────────────────────────────────────────────────────
-  const { data: orders } = await supabase
-    .from('orders')
-    .select('*')
-    .or(`client_id.eq.${id},freelancer_id.eq.${id}`)
-    .order('created_at', { ascending: false })
-    .limit(20);
-
-  const { data: disputes } = await supabase
-    .from('disputes')
-    .select('*')
-    .or(`raised_by.eq.${id},against.eq.${id}`)
-    .order('created_at', { ascending: false })
-    .limit(20);
-
-  // ── Financials ─────────────────────────────────────────────────────────────
-  const { data: wallet } = await supabase
-    .from('wallets')
-    .select('*')
-    .eq('user_id', id)
-    .single();
-
-  const { data: withdrawals } = await supabase
-    .from('withdrawals')
-    .select('*')
-    .eq('user_id', id)
-    .order('created_at', { ascending: false })
-    .limit(20);
-
-  // ── Transactions ───────────────────────────────────────────────────────────
-  // The transactions table links a user in two ways:
-  //
-  //   1. recipient_user_id = id  — the user received money (escrow release,
-  //                                 wallet top-up, refund, etc.)
-  //   2. order_id ∈ user's orders — the user was the paying client on a
-  //                                 service/job order payment. The transactions
-  //                                 table has no direct payer FK; the client
-  //                                 relationship lives on orders.client_id.
-  //
-  // We resolve both legs independently then deduplicate by id so a transaction
-  // that matches both conditions (e.g. freelancer paid into their own order) is
-  // only shown once.
-  //
-  // Limit 30 per leg → at most 60 rows before dedup; after dedup ≤ 60 but
-  // typically far fewer. Sorted descending so newest rows survive dedup.
-
-  const orderIds = (orders ?? []).map((o) => o.id);
-
-  const [{ data: txByRecipient }, { data: txByOrder }] = await Promise.all([
-    // Leg 1: transactions where this user is the named recipient
-    supabase
-      .from('transactions')
-      .select('*')
-      .eq('recipient_user_id', id)
-      .order('created_at', { ascending: false })
-      .limit(30),
-
-    // Leg 2: transactions linked to orders the user participated in as client
-    // Skip the query entirely when the user has no orders — avoids an empty .in()
-    // which Supabase would reject or return all rows on some driver versions.
-    orderIds.length > 0
-      ? supabase
-          .from('transactions')
-          .select('*')
-          .in('order_id', orderIds)
-          .order('created_at', { ascending: false })
-          .limit(30)
-      : Promise.resolve({ data: [] as import('@/types').Tables<'transactions'>[] }),
-  ]);
-
-  // Deduplicate: build a Map keyed by id; leg 1 wins on collision (recipient
-  // rows are the most directly relevant to the user).
-  const txMap = new Map<string, import('@/types').Tables<'transactions'>>();
-  for (const tx of [...(txByOrder ?? []), ...(txByRecipient ?? [])]) {
-    txMap.set(tx.id, tx);
+  // ── Trust score badge colour ──────────────────────────────────────────────
+  function trustColour(score: number | null): string {
+    const s = score ?? 0;
+    if (s >= 70) return 'bg-green-100 text-green-800';
+    if (s >= 40) return 'bg-amber-100 text-amber-800';
+    return 'bg-red-100 text-red-800';
   }
-  // Re-sort the merged set by created_at descending
-  const transactions = Array.from(txMap.values()).sort(
-    (a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime(),
-  );
 
-  // ── Flags & History ────────────────────────────────────────────────────────
-  const { data: securityLogs } = await supabase
-    .from('security_logs')
-    .select('*')
-    .eq('user_id', id)
-    .order('created_at', { ascending: false })
-    .limit(30);
-
-  const { data: trustEvents } = await supabase
-    .from('trust_score_events')
-    .select('*')
-    .eq('user_id', id)
-    .order('created_at', { ascending: false })
-    .limit(30);
-
-  // ── Security ───────────────────────────────────────────────────────────────
-  // Spec: show the last 5 login sessions (IP / device) only.
-  const { data: devices } = await supabase
-    .from('user_devices')
-    .select('*')
-    .eq('user_id', id)
-    .order('last_seen_at', { ascending: false })
-    .limit(5);
-
-  const { data: auditLogs } = await supabase
-    .from('audit_logs')
-    .select('*')
-    .eq('user_id', id)
-    .order('created_at', { ascending: false })
-    .limit(30);
-
-  // ── Admin Notes ────────────────────────────────────────────────────────────
-  const { data: adminNotes } = await supabase
-    .from('admin_action_logs')
-    .select('*')
-    .eq('target_user_id', id)
-    .order('created_at', { ascending: false })
-    .limit(30);
-
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      {/* Breadcrumb */}
-      <Link
-        href="/f9-control/users"
-        className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline"
-      >
-        <ChevronLeft size={14} />
-        Back to User Directory
-      </Link>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-gray-900">Users</h1>
+        <p className="text-sm text-gray-500">
+          {total.toLocaleString()} user{total !== 1 ? 's' : ''} total
+        </p>
+      </div>
 
-      <UserProfileTabs
-        profile={profile}
-        orders={orders ?? []}
-        disputes={disputes ?? []}
-        wallet={wallet ?? null}
-        withdrawals={withdrawals ?? []}
-        transactions={transactions}
-        securityLogs={securityLogs ?? []}
-        trustEvents={trustEvents ?? []}
-        devices={devices ?? []}
-        auditLogs={auditLogs ?? []}
-        adminNotes={adminNotes ?? []}
-        onWarn={warnUser}
-        onSuspend={suspendUser}
-        onBan={banUser}
-        onFreeze={freezeWallet}
-        onOverrideTrust={overrideTrustScore}
-        onAddNote={addPrivateNote}
-      />
+      {/* Filter bar — Client Component; reads/writes URL search params */}
+      <UsersFilterBar />
+
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                {['User', 'Role', 'Status', 'Trust', 'Verified', 'Location', 'Joined'].map((h) => (
+                  <th key={h} className="px-5 py-3 text-xs font-medium text-gray-500">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+
+            <tbody className="divide-y divide-gray-100">
+              {!users || users.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-400 italic">
+                    {error
+                      ? 'Failed to load users — check server logs.'
+                      : 'No users match the current filters.'}
+                  </td>
+                </tr>
+              ) : (
+                users.map((u) => (
+                  <tr key={u.id} className="hover:bg-gray-50 transition-colors">
+                    {/* Name + email */}
+                    <td className="px-5 py-4">
+                      <Link
+                        href={`/f9-control/users/${u.id}`}
+                        className="font-medium text-blue-600 hover:underline"
+                      >
+                        {u.full_name}
+                      </Link>
+                      <p className="text-xs text-gray-400 mt-0.5 truncate max-w-[200px]">
+                        {u.email}
+                      </p>
+                    </td>
+
+                    {/* Role */}
+                    <td className="px-5 py-4">
+                      <span className="capitalize text-xs font-medium text-gray-700">
+                        {u.user_type}
+                      </span>
+                    </td>
+
+                    {/* Account status */}
+                    <td className="px-5 py-4">
+                      <Badge
+                        variant={
+                          u.account_status === 'active'
+                            ? 'success'
+                            : u.account_status === 'suspended'
+                              ? 'outline'
+                              : 'destructive'
+                        }
+                        className="capitalize text-xs"
+                      >
+                        {u.account_status}
+                      </Badge>
+                    </td>
+
+                    {/* Trust score */}
+                    <td className="px-5 py-4">
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${trustColour(u.trust_score)}`}>
+                        {u.trust_score ?? 0}
+                      </span>
+                    </td>
+
+                    {/* Verification badges */}
+                    <td className="px-5 py-4">
+                      <div className="flex gap-1 flex-wrap">
+                        {u.liveness_verified && (
+                          <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                            Liveness
+                          </span>
+                        )}
+                        {u.identity_verified && (
+                          <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
+                            ID
+                          </span>
+                        )}
+                        {u.student_verified && (
+                          <span className="text-xs bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded">
+                            Student
+                          </span>
+                        )}
+                        {!u.liveness_verified && !u.identity_verified && !u.student_verified && (
+                          <span className="text-xs text-gray-400 italic">None</span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Location */}
+                    <td className="px-5 py-4 text-xs text-gray-500">
+                      {u.location ?? '—'}
+                    </td>
+
+                    {/* Joined date */}
+                    <td className="px-5 py-4 text-xs text-gray-500 whitespace-nowrap">
+                      {u.created_at
+                        ? new Date(u.created_at).toLocaleDateString('en-NG', {
+                            day:   '2-digit',
+                            month: 'short',
+                            year:  'numeric',
+                          })
+                        : '—'}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between text-sm">
+            <p className="text-gray-500">
+              Showing {(from + 1).toLocaleString()}–{Math.min(to + 1, total).toLocaleString()} of{' '}
+              {total.toLocaleString()}
+            </p>
+            <div className="flex items-center gap-2">
+              {page > 1 ? (
+                <Link
+                  href={pageUrl(page - 1)}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors text-xs font-medium"
+                >
+                  <ChevronLeft size={13} />
+                  Prev
+                </Link>
+              ) : (
+                <span className="flex items-center gap-1 px-3 py-1.5 rounded border border-gray-200 text-gray-300 text-xs font-medium cursor-not-allowed">
+                  <ChevronLeft size={13} />
+                  Prev
+                </span>
+              )}
+
+              <span className="px-3 py-1.5 text-gray-700 font-medium text-xs">
+                {page} / {totalPages}
+              </span>
+
+              {page < totalPages ? (
+                <Link
+                  href={pageUrl(page + 1)}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors text-xs font-medium"
+                >
+                  Next
+                  <ChevronRight size={13} />
+                </Link>
+              ) : (
+                <span className="flex items-center gap-1 px-3 py-1.5 rounded border border-gray-200 text-gray-300 text-xs font-medium cursor-not-allowed">
+                  Next
+                  <ChevronRight size={13} />
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

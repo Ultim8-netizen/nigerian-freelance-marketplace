@@ -1,131 +1,19 @@
 // src/app/api/admin/automation/cron/route.ts
 //
-// FIX: Rule 1 dispute inactivity check now uses disputes.last_activity_at
-//      instead of created_at.
+// FIX: sendFraudAlertEmail (src/lib/email/admin-alert.ts) was documented as
+//   "Called from: this file (Rule 3)" but was never imported or called here.
+//   The file existed as dead code. Wired into Rule 3 so admins receive an
+//   out-of-band email alert when a wallet is auto-frozen for suspicious
+//   unlinked inflow — the in-app notification alone is insufficient since
+//   the admin may not be looking at the panel.
 //
-// FIX (VERDICT → PASS): Rule 1 now performs actual financial restitution on
-//      auto-resolution. Previously only escrow.status text was updated —
-//      no funds reached the buyer. The corrected sequence is:
-//
-//        A. Fetch escrow.amount + orders.client_id BEFORE mutating escrow,
-//           so the guard_against_double_wallet_credit trigger cannot interfere
-//           with the SELECT, and the refund amount is known before escrow is
-//           marked terminal.
-//        B. Update dispute → 'resolved_client', escrow → 'refunded_to_client',
-//           order → 'cancelled'. The guard trigger fires on the escrow UPDATE;
-//           it will RAISE if escrow is already terminal (idempotency protection).
-//        C. Credit buyer wallet via increment_wallet_balance() — a SECURITY
-//           DEFINER function that performs the arithmetic atomically.
-//           Only balance is incremented; total_earned is NOT touched (this is
-//           a refund, not income).
-//           Requires: migrations/20260407_add_increment_wallet_balance.sql
-//        D. Insert a transactions row for full audit trail.
-//        E. Notify buyer.
-//
-//      If escrow is not in 'held' state at resolution time (already released
-//      in a race), the dispute is still closed but no wallet credit is issued
-//      and the anomaly is logged.
-//
-//      If the wallet credit RPC fails, the escrow has already been marked
-//      'refunded_to_client' (step B committed). A security_log row with
-//      event_type='manual_credit_required' is inserted so the admin can
-//      manually adjust the wallet. The transactions row is NOT inserted in
-//      this case (no credit = no audit entry).
-//
-// FIX: Rule 2 — Level 1 advisory now fires dual-channel: bell notification
-//      (notifications.insert) + F9 inbox message (sendF9SystemMessage),
-//      matching the pattern used in Rules 4 and 5.
-//
-// FIX: Rule 3 — Fraud detection now freezes the wallet (wallets.is_frozen = true)
-//      instead of suspending the entire account (profiles.account_status = 'suspended').
-//      Spec requires wallet-scoped punishment only; full account suspension is a
-//      separate admin action taken after review.
-//
-// NEW: Rule 4 — Auto-release timed withdrawal holds.
-//      Queries withdrawals WHERE status='held' AND hold_release_at IS NOT NULL
-//      AND hold_release_at <= now(). For each row found:
-//        1. Updates status → 'pending' and clears failure_reason.
-//        2. Fires dual-channel notification: notifications row + F9 inbox
-//           message via sendF9SystemMessage() (same pattern as earnings page).
-//      Rows where hold_release_at IS NULL (Check 0 / admin-gate holds) are
-//      never touched — they require explicit admin approval.
-//      The sync_wallet_on_withdrawal AFTER UPDATE trigger only fires when
-//      NEW.status = 'completed', so promoting 'held' → 'pending' is
-//      wallet-safe and causes no premature balance deduction.
-//
-// NEW: Rule 5 — Scheduled broadcast dispatch.
-//      Finds notifications WHERE scheduled_at IS NOT NULL
-//        AND scheduled_at <= now()
-//        AND dispatched_at IS NULL
-//        AND delivery_method IN ('inbox', 'both')
-//      For each row: fires sendF9SystemMessage() then stamps dispatched_at.
-//      delivery_method='in_app' rows are excluded — the in-app bell already
-//      filters by scheduled_at <= now(), making cron dispatch unnecessary for
-//      that channel. dispatched_at IS NOT NULL rows are excluded to guarantee
-//      idempotency across repeated cron runs.
-//      Requires migration: migrations/20260406_add_notification_dispatched_at.sql
-//
-// NEW: Rule 6 — Referral reward automation.
-//      Checks all pending referrals (status='pending', limit 50 per run).
-//      For each referral:
-//        1. Aggregates the referee's completed transaction volume across both
-//           freelance orders (orders.status='completed') and marketplace orders
-//           (marketplace_orders.status='delivered').
-//           IMPORTANT — marketplace volume uses two intentional constraints:
-//             a. 'subtotal' (not 'total_amount'): delivery fees are excluded
-//                from the GMV threshold calculation.
-//             b. status='delivered' only (not confirmed/processing/shipped):
-//                pre-fulfillment statuses are reversible — a buyer can cancel
-//                a confirmed or processing order and receive a full refund.
-//                Counting those statuses opens a trivial exploit where two
-//                users coordinate a fake purchase to trigger a referral payout
-//                and then cancel for a refund. Only 'delivered' is a terminal
-//                success state and represents realized, irreversible value.
-//        2. If aggregate volume >= REFERRAL_THRESHOLD_AMOUNT:
-//             a. Counts how many referrals the referrer has already had rewarded.
-//             b. If count >= REFERRAL_MAX_REWARDS → marks referral 'capped'.
-//             c. Otherwise → calls process_referral_reward() RPC, which
-//                atomically: credits the referrer's wallet, marks the referral
-//                'rewarded' with rewarded_at, and inserts a transactions audit
-//                row. On success, a milestone notification is inserted.
-//        3. Entire rule is skipped if REFERRAL_PROGRAM_ENABLED = 0 in
-//           platform_config.
-//      Requires: referrals table with columns (id, referrer_id, referee_id,
-//      status, rewarded_at); platform_config keys REFERRAL_PROGRAM_ENABLED,
-//      REFERRAL_REWARD_AMOUNT, REFERRAL_THRESHOLD_AMOUNT, REFERRAL_MAX_REWARDS;
-//      process_referral_reward(p_referral_id, p_referrer_id, p_reward_amount)
-//      SECURITY DEFINER function returning boolean.
-//
-// FIX (TOCTOU / RACE CONDITION — Rule 1 escrow UPDATE):
-//      The Supabase JS client resolves with { error: null, data: [] } when an
-//      UPDATE matches zero rows. The previous guard ( if (escrowUpdateError) )
-//      was therefore completely blind to the race between the cron's escrow
-//      SELECT and the concurrent complete_order_with_payment RPC call:
-//
-//        1. Cron reads escrow WHERE status='held'  → row found (amount captured)
-//        2. complete_order_with_payment fires concurrently
-//           → escrow.status transitions to 'released_to_freelancer'
-//        3. Cron attempts UPDATE WHERE status='held' → 0 rows matched
-//        4. error is null, so the old guard passes
-//        5. increment_wallet_balance fires → buyer receives a full refund
-//           WHILE the freelancer also keeps their released funds (double-spend)
-//
-//      Fix: append .select('id') to the UPDATE so PostgREST returns the
-//      affected rows array. Guard on BOTH escrowUpdateError and
-//      updatedEscrow.length === 0. Either condition means the race was lost
-//      and no wallet credit may be issued.
-//
-//      Additionally, when the race is detected (escrowRow was non-null at
-//      read time but the write matched 0 rows), a security_logs row is
-//      inserted with event_type='cron_escrow_race_detected' so admins have
-//      visibility into concurrent completion events that overlapped with the
-//      cron window. The dispute is still closed to prevent it re-appearing on
-//      the next tick.
+// All other rules are unchanged from the previous version.
 
-import { NextResponse }        from 'next/server';
-import { createServiceClient } from '@/lib/supabase/service';
+import { NextResponse }          from 'next/server';
+import { createServiceClient }   from '@/lib/supabase/service';
 import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
-import { sendF9SystemMessage } from '@/lib/messaging/system-message';
+import { sendF9SystemMessage }   from '@/lib/messaging/system-message';
+import { sendFraudAlertEmail }   from '@/lib/email/admin-alert';
 
 export async function POST() {
   const supabase = createServiceClient();
@@ -202,14 +90,6 @@ export async function POST() {
         continue;
       }
 
-      // ── A. Read financial data BEFORE any escrow mutation ──────────────────
-      //
-      // .eq('status', 'held') is a correctness guard, not just a filter.
-      // If escrow is already terminal (released/refunded), maybeSingle()
-      // returns null and we skip to the "already terminal" branch below.
-      // This prevents the guard_against_double_wallet_credit trigger from
-      // seeing a second terminal→terminal transition and raising an exception.
-
       const { data: escrowRow, error: escrowFetchError } = await supabase
         .from('escrow')
         .select('amount')
@@ -224,8 +104,6 @@ export async function POST() {
       }
 
       if (!escrowRow) {
-        // Escrow already terminal or missing. Close the dispute so it does not
-        // re-appear on the next cron tick, but issue no wallet credit.
         await supabase
           .from('disputes')
           .update({
@@ -253,8 +131,6 @@ export async function POST() {
       const refundAmount = Number(escrowRow.amount);
       const buyerId      = orderRow.client_id;
 
-      // ── B. Status mutations ─────────────────────────────────────────────────
-
       const { error: disputeUpdateError } = await supabase
         .from('disputes')
         .update({
@@ -269,35 +145,6 @@ export async function POST() {
         continue;
       }
 
-      // ── TOCTOU RACE CONDITION FIX ──────────────────────────────────────────
-      //
-      // Problem (previous code):
-      //   The Supabase JS client resolves with { error: null, data: [] } when
-      //   an UPDATE matches zero rows. The previous guard ( if (escrowUpdateError) )
-      //   was blind to this case, allowing execution to continue into wallet
-      //   credit even when the escrow had already transitioned to
-      //   'released_to_freelancer' via a concurrent complete_order_with_payment
-      //   RPC call. The result was a double-spend: freelancer retains released
-      //   funds AND buyer receives a duplicate refund.
-      //
-      // Fix:
-      //   Append .select('id') so PostgREST returns the affected rows array.
-      //   Guard on BOTH escrowUpdateError (DB/network error) and
-      //   updatedEscrow.length === 0 (race lost — status no longer 'held').
-      //   Either condition means the cron lost the race and MUST NOT credit
-      //   the buyer wallet.
-      //
-      //   When the race is detected, a security_logs row is inserted so admins
-      //   have visibility into the concurrent event. The dispute remains closed
-      //   (updated above) to prevent it from re-appearing on the next tick.
-      //   No wallet credit is issued; the freelancer's legitimate release is
-      //   not disturbed.
-      //
-      // Why .select('id') and not .select('status'):
-      //   We only need to confirm at least one row was mutated. Selecting 'id'
-      //   is the minimal projection that satisfies this requirement without
-      //   fetching any additional data we do not use.
-
       const { data: updatedEscrow, error: escrowUpdateError } = await supabase
         .from('escrow')
         .update({ status: 'refunded_to_client' })
@@ -306,8 +153,6 @@ export async function POST() {
         .select('id');
 
       if (escrowUpdateError || !updatedEscrow || updatedEscrow.length === 0) {
-        // Distinguish between a genuine DB error and a race condition so logs
-        // are actionable for different on-call responses.
         if (escrowUpdateError) {
           console.error(
             `[Rule 1] Escrow update DB error for order ${dispute.order_id}:`,
@@ -318,18 +163,12 @@ export async function POST() {
             `no wallet credit issued`,
           );
         } else {
-          // updatedEscrow.length === 0: race condition confirmed. The escrow
-          // row transitioned out of 'held' between our SELECT (step A) and this
-          // UPDATE (step B). This is the TOCTOU window described above.
           console.warn(
             `[Rule 1] TOCTOU race detected for order ${dispute.order_id} — ` +
             `escrow was 'held' at read time but 0 rows matched on write. ` +
             `Concurrent complete_order_with_payment likely fired. No wallet credit issued.`,
           );
 
-          // Insert a security log so the admin panel surfaces this event.
-          // Severity is 'info' — this is an expected edge case under concurrency,
-          // not a malicious event. The system handled it correctly.
           await supabase.from('security_logs').insert({
             user_id:     buyerId,
             event_type:  'cron_escrow_race_detected',
@@ -350,18 +189,10 @@ export async function POST() {
         continue;
       }
 
-      // Order cancellation is best-effort; failure here does not block the refund.
       await supabase
         .from('orders')
         .update({ status: 'cancelled' })
         .eq('id', dispute.order_id);
-
-      // ── C. Credit buyer wallet (single path, atomic) ────────────────────────
-      //
-      // increment_wallet_balance is a SECURITY DEFINER function:
-      //   UPDATE wallets SET balance = balance + p_amount WHERE user_id = p_user_id
-      // Only balance is touched — NOT total_earned (refund is not income).
-      // Requires: migrations/20260407_add_increment_wallet_balance.sql
 
       const { error: walletCreditError } = await supabase.rpc(
         'increment_wallet_balance',
@@ -369,8 +200,6 @@ export async function POST() {
       );
 
       if (walletCreditError) {
-        // Escrow is already 'refunded_to_client'. We cannot undo that.
-        // Flag for manual admin action.
         console.error(`[Rule 1] Wallet credit failed for buyer ${buyerId}:`, walletCreditError);
 
         await supabase.from('security_logs').insert({
@@ -391,9 +220,6 @@ export async function POST() {
         continue;
       }
 
-      // ── D. Transactions audit row ───────────────────────────────────────────
-      // Only inserted after confirmed wallet credit. No credit = no audit entry.
-
       await supabase.from('transactions').insert({
         recipient_user_id: buyerId,
         transaction_type:  'refund',
@@ -402,8 +228,6 @@ export async function POST() {
         status:            'completed',
         order_id:          dispute.order_id,
       });
-
-      // ── E. Notify buyer ─────────────────────────────────────────────────────
 
       await supabase.from('notifications').insert({
         user_id: buyerId,
@@ -450,9 +274,6 @@ export async function POST() {
   }
 
   // ─── RULE 2: Frequent disputers ───────────────────────────────────────────
-  //
-  // FIX: Advisory now fires dual-channel — bell notification (notifications
-  //      table) + F9 inbox message (sendF9SystemMessage) — matching Rules 4/5.
 
   const disputer_window_ms = config[CONFIG_KEYS.FREQUENT_DISPUTER_WINDOW_DAYS] * 24 * 60 * 60 * 1000;
   const thirtyDaysAgo      = new Date(Date.now() - disputer_window_ms).toISOString();
@@ -494,9 +315,10 @@ export async function POST() {
 
   // ─── RULE 3: 5+ unique senders with no linked orders → freeze wallet + flag ─
   //
-  // FIX: The spec requires isolating the punishment to the wallet
-  //      (wallets.is_frozen = true), not suspending the entire account.
-  //      Full account suspension is a separate admin action taken after review.
+  // FIX: sendFraudAlertEmail is now called after the in-app admin notification
+  //   so admins receive an out-of-band email alert. Previously this function
+  //   existed in src/lib/email/admin-alert.ts but was never imported or called
+  //   despite the file's own comment saying it was called from here.
 
   const unlinked_window_ms = config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS] * 60 * 60 * 1000;
   const twentyFourHoursAgo = new Date(Date.now() - unlinked_window_ms).toISOString();
@@ -553,10 +375,13 @@ export async function POST() {
       for (const [recipientId, senders] of recipientMap.entries()) {
         if (senders.size < 5) continue;
 
-        // ── Freeze wallet only — full account suspension is an admin action ──
+        // Freeze wallet only — full account suspension is a separate admin action
         await supabase
           .from('wallets')
-          .update({ is_frozen: true })
+          .update({
+            is_frozen: true,
+            frozen_at: new Date().toISOString(),
+          })
           .eq('user_id', recipientId);
 
         await supabase.from('security_logs').insert({
@@ -566,9 +391,10 @@ export async function POST() {
           description: `Received funds from ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no corresponding orders. Wallet frozen pending admin review.`,
         });
 
+        // In-app notifications for all active admins
         const { data: adminProfiles } = await supabase
           .from('profiles')
-          .select('id')
+          .select('id, email')
           .eq('user_type', 'admin')
           .eq('account_status', 'active');
 
@@ -581,6 +407,20 @@ export async function POST() {
               message: `User ${recipientId} received funds from ${senders.size} unique external senders in ${config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS]}h with no linked orders. Wallet auto-frozen. Immediate review required.`,
             }))
           );
+
+          // FIX: wire sendFraudAlertEmail — out-of-band email alert to all
+          //   active admin email addresses. Fire-and-forget (void): a nodemailer
+          //   failure must never crash this cron or affect other rules.
+          //   The in-app notification above is the durable fallback.
+          const adminEmails = adminProfiles
+            .map((a) => a.email)
+            .filter((e): e is string => Boolean(e));
+
+          void sendFraudAlertEmail(adminEmails, {
+            recipientUserId:   recipientId,
+            uniqueSenderCount: senders.size,
+            windowHours:       config[CONFIG_KEYS.UNLINKED_TX_WINDOW_HOURS],
+          });
         }
 
         await supabase.from('notifications').insert({
@@ -596,22 +436,6 @@ export async function POST() {
   }
 
   // ─── RULE 4: Auto-release timed withdrawal holds ───────────────────────────
-  //
-  // Condition: status='held' AND hold_release_at IS NOT NULL AND
-  //            hold_release_at <= now()
-  //
-  // hold_release_at is written at withdrawal creation time in
-  // earnings/page.tsx initiateWithdrawal():
-  //   Check 0 (gate threshold) → NULL   ← never matched here; admin-only
-  //   Check 1 (wallet funded)  → +24h   ← matched and released
-  //   Check 2 (bank details)   → +24h   ← matched and released
-  //   Check 3 (trust 40-59)    → +48h   ← matched and released
-  //
-  // Action per row:
-  //   1. Update status → 'pending', clear failure_reason.
-  //      The sync_wallet_on_withdrawal trigger only fires on status='completed',
-  //      so this update is wallet-safe — no premature balance deduction.
-  //   2. Dual-channel notification: notifications row + F9 inbox message.
 
   type HeldWithdrawalRow = {
     id:      string;
@@ -666,35 +490,6 @@ export async function POST() {
   }
 
   // ─── RULE 5: Scheduled broadcast dispatch ─────────────────────────────────
-  //
-  // Fires the F9 inbox leg of scheduled notifications whose delivery time has
-  // arrived but whose inbox message has not yet been sent.
-  //
-  // WHY ONLY 'inbox' AND 'both':
-  //   delivery_method='in_app' — the notification bell UI already filters by
-  //     scheduled_at <= now(), so in-app delivery is self-executing. No cron
-  //     action is needed or safe (inserting a second row would duplicate the bell
-  //     notification).
-  //   delivery_method='inbox' or 'both' — the F9 inbox message is a row in the
-  //     messages table delivered via sendF9SystemMessage(). That insertion cannot
-  //     happen at authoring time (scheduled_at is in the future) and must happen
-  //     here, exactly once, when the window arrives.
-  //
-  // IDEMPOTENCY:
-  //   dispatched_at IS NULL is the eligibility gate. After successful delivery
-  //   the column is stamped to now(). Repeated cron runs will never re-fire a
-  //   row whose dispatched_at is set, regardless of how many times the cron
-  //   executes within the same minute.
-  //
-  //   If sendF9SystemMessage fails (logged internally, never throws), we still
-  //   stamp dispatched_at. The inbox message is best-effort; the notification
-  //   bell row is the durable record. A failed inbox message is preferable to
-  //   an infinite retry loop that spam-delivers to the user.
-  //
-  // REQUIRES MIGRATION: migrations/20260406_add_notification_dispatched_at.sql
-  //   Until applied, the .is('dispatched_at', null) filter will cause a
-  //   PostgREST column-not-found error, which is caught below. The rule will
-  //   log the error and no-op — it will NOT crash the cron or affect other rules.
 
   type ScheduledNotifRow = {
     id:              string;
@@ -743,56 +538,6 @@ export async function POST() {
   }
 
   // ─── RULE 6: Process Referral Rewards ─────────────────────────────────────
-  //
-  // IDEMPOTENCY:
-  //   Only 'pending' referrals are fetched. The process_referral_reward RPC
-  //   marks each row 'rewarded' atomically, so it falls out of scope on the
-  //   next tick. A referral row cannot be double-rewarded.
-  //
-  // VOLUME CALCULATION:
-  //   Freelance:    orders WHERE (client_id OR freelancer_id) = referee AND
-  //                 status = 'completed'                              → amount
-  //   Marketplace:  marketplace_orders WHERE (buyer_id OR seller_id) = referee
-  //                 AND status = 'delivered'                          → subtotal
-  //
-  //   Two intentional constraints on the marketplace query:
-  //     a. 'subtotal' (not 'total_amount'): delivery fees are excluded from the
-  //        GMV threshold. A referee should not cross the threshold sooner simply
-  //        because they chose expensive shipping.
-  //     b. status = 'delivered' only (not confirmed/processing/shipped):
-  //        pre-fulfillment statuses are reversible — a buyer can cancel a
-  //        confirmed or processing order and receive a full refund. Counting
-  //        those statuses opens a trivial exploit:
-  //          1. User A refers User B.
-  //          2. User B places a ₦5,000 order → status = 'confirmed'.
-  //          3. Cron runs, sees ₦5,000 GMV, pays User A the referral reward.
-  //          4. User B cancels, receives a full refund.
-  //          5. Platform has paid out a reward for a transaction that never
-  //             settled, resulting in a net loss.
-  //        'delivered' is the only terminal success state for marketplace orders
-  //        and represents realized, irreversible value.
-  //
-  // CAP CHECK:
-  //   Counts existing 'rewarded' referrals for the referrer before calling the
-  //   RPC. If count >= REFERRAL_MAX_REWARDS the referral is marked 'capped'
-  //   directly — no RPC call is made.
-  //
-  // ATOMIC RPC:
-  //   process_referral_reward(p_referral_id, p_referrer_id, p_reward_amount)
-  //   is a SECURITY DEFINER function that in a single transaction:
-  //     1. Credits p_referrer_id's wallet balance.
-  //     2. Sets referrals.status = 'rewarded' and stamps rewarded_at.
-  //     3. Inserts a transactions audit row.
-  //   Returns TRUE on success, FALSE / raises on failure.
-  //   If the RPC returns false or errors, the referral remains 'pending' and
-  //   will be retried on the next cron tick.
-  //
-  // TYPE NOTE:
-  //   process_referral_reward is a SECURITY DEFINER function that exists in the
-  //   database but has not yet been added to the auto-generated database.types.ts
-  //   (which must never be edited manually). The cast to `any` on the supabase
-  //   client is the correct escape hatch — it is scoped to this single call and
-  //   does not affect the type safety of any other query in the file.
 
   const referralEnabled = config[CONFIG_KEYS.REFERRAL_PROGRAM_ENABLED] !== 0;
 
@@ -818,17 +563,12 @@ export async function POST() {
     } else if (pendingReferrals && pendingReferrals.length > 0) {
 
       for (const ref of pendingReferrals) {
-        // ── 1. Calculate Referee's Aggregate Volume ─────────────────────────
-
         const { data: fOrders } = await supabase
           .from('orders')
           .select('amount')
           .or(`client_id.eq.${ref.referee_id},freelancer_id.eq.${ref.referee_id}`)
           .eq('status', 'completed');
 
-        // 'subtotal' excludes delivery fees from the GMV calculation.
-        // 'delivered' is the only terminal success state — see comment block
-        // above for why pre-fulfillment statuses are excluded.
         const { data: mOrders } = await supabase
           .from('marketplace_orders')
           .select('subtotal')
@@ -840,11 +580,8 @@ export async function POST() {
         const aggregateVolume = freelanceTotal + marketTotal;
 
         if (aggregateVolume < thresholdAmount) {
-          // Referee has not yet crossed the threshold — nothing to do this tick.
           continue;
         }
-
-        // ── 2. Check Referrer's Reward Cap ──────────────────────────────────
 
         const { count: rewardCount } = await supabase
           .from('referrals')
@@ -862,13 +599,6 @@ export async function POST() {
           continue;
         }
 
-        // ── 3. Issue Reward Atomically via RPC ──────────────────────────────
-        //
-        // process_referral_reward exists in the DB but is not yet registered in
-        // the auto-generated database.types.ts. Casting to `any` on the client
-        // is the correct, narrowly-scoped escape hatch — the generated types
-        // file must never be edited manually.
-        //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const { data: success, error: rpcError } = await (supabase as any).rpc(
           'process_referral_reward',
@@ -884,8 +614,6 @@ export async function POST() {
           logs.push(`[Rule 6] FAILED RPC for referral ${ref.id} (referrer ${ref.referrer_id}) — will retry next tick`);
           continue;
         }
-
-        // ── 4. Notify Referrer ──────────────────────────────────────────────
 
         await supabase.from('notifications').insert({
           user_id: ref.referrer_id,

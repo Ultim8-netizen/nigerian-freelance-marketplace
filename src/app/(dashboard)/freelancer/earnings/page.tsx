@@ -45,6 +45,7 @@ import { evaluateTrustGate }    from '@/lib/trust/feature-gates';
 import { ContestButton }        from '@/components/admin/ContestButton';
 import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
 import { sendF9SystemMessage }  from '@/lib/messaging/system-message';
+import { getNigerianBankList }  from '@/lib/flutterwave/bank-list';
 import {
   DollarSign,
   TrendingUp,
@@ -71,11 +72,20 @@ async function initiateWithdrawal(formData: FormData) {
   if (!user) redirect('/login');
 
   const amount         = parseFloat(formData.get('amount') as string);
-  const bank_name      = (formData.get('bank_name') as string)?.trim();
+  // FIX: the bank <select> is now populated dynamically from Flutterwave's
+  // live bank list (see the page component below) rather than a hardcoded
+  // 14-entry list. Its <option value> carries "CODE|Name" so both pieces
+  // are captured at the moment the user picks their actual bank, instead
+  // of being re-resolved later via fragile name-matching against a static
+  // map that — as already proven twice — silently drifts out of date.
+  const bankFieldRaw   = (formData.get('bank_name') as string)?.trim();
+  const [bank_code, bank_name] = bankFieldRaw
+    ? bankFieldRaw.split('|')
+    : [undefined, undefined];
   const account_number = (formData.get('account_number') as string)?.trim();
   const account_name   = (formData.get('account_name') as string)?.trim();
 
-  if (!amount || !bank_name || !account_number || !account_name)
+  if (!amount || !bank_name || !bank_code || !account_number || !account_name)
     redirect('/freelancer/earnings?error=missing_fields');
 
   if (account_number.length !== 10 || !/^\d+$/.test(account_number))
@@ -223,12 +233,13 @@ async function initiateWithdrawal(formData: FormData) {
     wallet_id:       wallet?.id ?? null,
     amount,
     bank_name,
+    bank_code,
     account_number,
     account_name,
     status:          withdrawalStatus,
     failure_reason:  holdReason,
     hold_release_at: holdReleaseAt,
-  });
+  } as Record<string, unknown>); // bank_code cast until database.types.ts is regenerated — see bank_code_migration.sql
 
   if (insertError) {
     console.error('Withdrawal insert error:', insertError);
@@ -286,6 +297,11 @@ export default async function EarningsPage({
     .select('*')
     .eq('user_id', user.id)
     .single();
+
+  // FIX: replaces the 14-entry hardcoded <option> list below. Cached for
+  // 6 hours inside getNigerianBankList() — this call is cheap on every
+  // page load except the first per cold start.
+  const banks = await getNigerianBankList();
 
   const { data: completedOrders } = await supabase
     .from('orders')
@@ -491,20 +507,16 @@ export default async function EarningsPage({
                   className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 >
                   <option value="">Select bank...</option>
-                  <option>Access Bank</option>
-                  <option>GTBank</option>
-                  <option>First Bank</option>
-                  <option>UBA</option>
-                  <option>Zenith Bank</option>
-                  <option>Fidelity Bank</option>
-                  <option>FCMB</option>
-                  <option>Polaris Bank</option>
-                  <option>Sterling Bank</option>
-                  <option>Wema Bank</option>
-                  <option>Opay</option>
-                  <option>Kuda Bank</option>
-                  <option>PalmPay</option>
-                  <option>Moniepoint</option>
+                  {/* FIX: was a hardcoded 14-entry list — replaced with the
+                      live Flutterwave bank list (banks, microfinance banks,
+                      and payment service banks alike), fetched once above
+                      and cached. value carries "CODE|Name" together so the
+                      server action has both without re-resolving anything. */}
+                  {banks.map((b) => (
+                    <option key={b.code} value={`${b.code}|${b.name}`}>
+                      {b.name}
+                    </option>
+                  ))}
                 </select>
               </div>
 

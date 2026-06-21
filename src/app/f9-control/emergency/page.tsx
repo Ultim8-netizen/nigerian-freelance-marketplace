@@ -1,11 +1,26 @@
-import { createClient } from '@/lib/supabase/server';
-import { revalidatePath } from 'next/cache';
-import { EmergencyClient } from './EmergencyClient';
-
-// ─── Emergency control keys — all map to platform_config.key ─────────────────
+// src/app/f9-control/emergency/page.tsx
 //
-// Each key is upserted: if the row doesn't exist yet it's created.
-// middleware.ts should read `maintenance_mode` to block user access.
+// FIX: Page had no authentication check at all. The most sensitive page in
+//   the entire admin panel (can enable maintenance mode, pause all withdrawals,
+//   kill the marketplace) was reachable by any request that could navigate to
+//   it. While the AdminSessionGuard wraps the layout and the middleware
+//   checks for the f9_admin_activity cookie, neither is a substitute for an
+//   explicit data-layer auth check in the page itself — that's defence in
+//   depth, and it's the pattern every other privileged page in this domain
+//   follows (analytics, finance, flags). Added the same auth + requireStaffRole
+//   gate used on those pages.
+//
+// NOTE: platform_config has an admin ALL policy (user_type='admin'), so the
+//   existing createClient() calls in the server actions continue to work
+//   correctly for authenticated admin sessions. No client swap needed there.
+
+import { createClient }      from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { requireStaffRole }  from '@/lib/auth/require-staff-role';
+import { revalidatePath }    from 'next/cache';
+import { EmergencyClient }   from './EmergencyClient';
+
+// ─── Emergency control keys ────────────────────────────────────────────────────
 
 const EMERGENCY_KEYS = [
   'maintenance_mode',
@@ -17,6 +32,8 @@ const EMERGENCY_KEYS = [
 ] as const;
 
 type EmergencyKey = (typeof EMERGENCY_KEYS)[number];
+
+const EMERGENCY_ROLES = ['admin'];
 
 // ─── Server Actions ───────────────────────────────────────────────────────────
 
@@ -32,7 +49,8 @@ async function toggleEmergencyControl(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) throw new Error('Unauthenticated');
 
-  // ── Upsert the boolean flag ──────────────────────────────────────────────
+  // platform_config has admin ALL policy — createClient() is sufficient
+  // for an authenticated admin session (verified above).
   await supabase
     .from('platform_config')
     .upsert(
@@ -41,11 +59,6 @@ async function toggleEmergencyControl(fd: FormData) {
         enabled:      newEnabled,
         description:  controlMeta[key]?.description ?? key,
         value:        null,
-        // For maintenance_mode: persist the custom message in string_value on
-        // the same row. Empty string → null so the maintenance page falls
-        // through to its hardcoded default correctly.
-        // For all other keys: null (leaves any existing string_value untouched
-        // via upsert — only the enabled column is meaningful for those rows).
         string_value: key === 'maintenance_mode'
           ? ((fd.get('maintenance_message') as string | null)?.trim() || null)
           : null,
@@ -109,10 +122,17 @@ const controlMeta: Record<
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function EmergencyControlsPage() {
+  // FIX: Added auth guard — was completely missing before.
+  // createClient() is used only to confirm the session and identify the user.
+  // All data reads below use the same session client since platform_config
+  // has an admin ALL policy that covers authenticated admin reads.
   const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Unauthenticated');
 
-  // Fetch enabled + string_value in one query — string_value is only meaningful
-  // for the maintenance_mode row but costs nothing to select for all rows.
+  const adminClient = createAdminClient();
+  await requireStaffRole(adminClient, user.id, EMERGENCY_ROLES);
+
   const { data: configs } = await supabase
     .from('platform_config')
     .select('key, enabled, string_value')
@@ -132,7 +152,6 @@ export default async function EmergencyControlsPage() {
     ...controlMeta[key],
   }));
 
-  // Current maintenance message — stored on the maintenance_mode row itself
   const currentMaintenanceMsg: string =
     configMap['maintenance_mode']?.string_value ?? '';
 

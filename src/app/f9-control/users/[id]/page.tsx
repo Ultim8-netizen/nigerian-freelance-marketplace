@@ -1,31 +1,46 @@
-import { notFound } from 'next/navigation';
-import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
-import { createAdminClient } from '@/lib/supabase/admin';
-import { UserProfileTabs } from './UserProfileTabs';
-import Link from 'next/link';
-import { ChevronLeft } from 'lucide-react';
+// src/app/f9-control/users/[id]/page.tsx
+//
+// FIX (RLS — confirmed against live schema):
+//   notifications table has NO INSERT policy for any role. Only SELECT and
+//   UPDATE for own user (user_id = auth.uid()). Every server action that
+//   inserts a notification for a target user via createClient() (session-
+//   scoped, bound by RLS) was silently discarding the row — the insert
+//   returned no error (Postgres returns success even when RLS blocks a write
+//   on a permissive policy table with no matching policy) but wrote nothing.
+//   This meant: warn notifications, suspension notifications, ban
+//   notifications, and freeze notifications were all never delivered.
+//
+//   FIX: use createAdminClient() (service role, bypasses RLS) for every
+//   cross-user notification insert and for security_logs inserts.
+//   admin_action_logs retains createClient() because it has its own admin
+//   ALL policy (user_type='admin') — the session client works there.
+//   profiles.update retains createClient() for the same reason.
+//
+// FIX: await createAdminClient() in banUser was incorrect — createAdminClient
+//   is synchronous. Removed the erroneous await.
+//
+// security_logs also has no INSERT policy (SELECT only for own user). The
+//   freezeWallet action's security_log write (event_type='wallet_frozen_by_admin')
+//   was silently failing — meaning the NotificationBell, which polls for that
+//   specific event_type, would never light up after a manual wallet freeze.
+//   Fixed: security_logs.insert in freezeWallet now uses adminClient.
+
+import { notFound }           from 'next/navigation';
+import { revalidatePath }     from 'next/cache';
+import { createClient }       from '@/lib/supabase/server';
+import { createAdminClient }  from '@/lib/supabase/admin';
+import { UserProfileTabs }    from './UserProfileTabs';
+import Link                   from 'next/link';
+import { ChevronLeft }        from 'lucide-react';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MODERATOR_MAX_SUSPENSION_DAYS = 30;
 
-/**
- * Order statuses that are considered "active" and must be cancelled on ban.
- * Sources:
- *  - get_user_stats function: active_orders uses 'awaiting_delivery' | 'delivered'
- *  - process_successful_payment sets 'awaiting_delivery' (post-payment active state)
- *  - 'pending' is the pre-payment state, also cancellable
- * Terminal statuses ('completed', 'cancelled') are intentionally excluded.
- */
 const ACTIVE_ORDER_STATUSES = ['pending', 'awaiting_delivery', 'delivered'] as const;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Returns true if the acting user is a full admin.
- * Moderators (staff_roles entries) are NOT admins.
- */
 async function isActingUserAdmin(
   supabase: Awaited<ReturnType<typeof createClient>>,
   actorId: string,
@@ -38,11 +53,6 @@ async function isActingUserAdmin(
   return data?.user_type === 'admin';
 }
 
-/**
- * Returns true if the target user is an admin.
- * Admin accounts are "unblockable" — no suspension, ban, freeze, or
- * trust-score manipulation may be applied to them.
- */
 async function isTargetAdmin(
   supabase: Awaited<ReturnType<typeof createClient>>,
   targetId: string,
@@ -55,30 +65,17 @@ async function isTargetAdmin(
   return data?.user_type === 'admin';
 }
 
-/**
- * Computes the suspended_until timestamp.
- *
- * Rules:
- *  - Admin, durationDays === 0  → null (indefinite)
- *  - Admin, durationDays > 0   → now + durationDays (uncapped)
- *  - Moderator, any value       → now + min(durationDays || MAX, MAX)
- *
- * Returns { suspendedUntil, effectiveDays } so callers can log what was applied.
- */
 function computeSuspension(
   durationDays: number,
   isAdmin: boolean,
 ): { suspendedUntil: string | null; effectiveDays: number | null } {
   if (isAdmin && durationDays === 0) {
-    // Explicit indefinite — admin privilege only
     return { suspendedUntil: null, effectiveDays: null };
   }
-
   const raw = durationDays > 0 ? durationDays : MODERATOR_MAX_SUSPENSION_DAYS;
   const effectiveDays = isAdmin ? raw : Math.min(raw, MODERATOR_MAX_SUSPENSION_DAYS);
   const until = new Date();
   until.setDate(until.getDate() + effectiveDays);
-
   return { suspendedUntil: until.toISOString(), effectiveDays };
 }
 
@@ -88,17 +85,19 @@ async function warnUser(fd: FormData) {
   'use server';
   const userId = fd.get('user_id') as string;
   const reason = fd.get('reason') as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
   if (await isTargetAdmin(supabase, userId)) return;
 
-  await supabase.from('notifications').insert({
+  // FIX: adminClient required — notifications has no INSERT policy for session client
+  const adminClient = createAdminClient();
+
+  await adminClient.from('notifications').insert({
     user_id: userId,
-    type: 'admin_warning',
-    title: 'Official Warning',
+    type:    'admin_warning',
+    title:   'Official Warning',
     message: reason,
   });
 
@@ -114,15 +113,13 @@ async function warnUser(fd: FormData) {
 
 async function suspendUser(fd: FormData) {
   'use server';
-  const userId      = fd.get('user_id') as string;
-  const reason      = fd.get('reason') as string;
+  const userId      = fd.get('user_id')       as string;
+  const reason      = fd.get('reason')        as string;
   const durationDays = Number(fd.get('duration_days') ?? 7);
 
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
   if (await isTargetAdmin(supabase, userId)) return;
 
   const isAdmin = await isActingUserAdmin(supabase, admin.id);
@@ -131,18 +128,24 @@ async function suspendUser(fd: FormData) {
   const wasCapApplied = !isAdmin && durationDays !== effectiveDays;
   const durationNote = effectiveDays === null
     ? 'indefinite'
-    : `${effectiveDays} day${effectiveDays !== 1 ? 's' : ''}${wasCapApplied ? ` (capped from ${durationDays}d — moderator limit)` : ''}`;
+    : `${effectiveDays} day${effectiveDays !== 1 ? 's' : ''}${
+        wasCapApplied ? ` (capped from ${durationDays}d — moderator limit)` : ''
+      }`;
 
+  // profiles has admin UPDATE policy — session client is fine
   await supabase.from('profiles').update({
     account_status:    'suspended',
     suspension_reason: reason,
     suspended_until:   suspendedUntil,
   }).eq('id', userId);
 
-  await supabase.from('notifications').insert({
+  // FIX: adminClient required — notifications has no INSERT policy for session client
+  const adminClient = createAdminClient();
+
+  await adminClient.from('notifications').insert({
     user_id: userId,
-    type: 'account_suspended',
-    title: 'Account Suspended',
+    type:    'account_suspended',
+    title:   'Account Suspended',
     message: effectiveDays === null
       ? `Your account has been suspended indefinitely. Reason: ${reason}`
       : `Your account has been suspended for ${effectiveDays} day${effectiveDays !== 1 ? 's' : ''}. Reason: ${reason}`,
@@ -158,42 +161,40 @@ async function suspendUser(fd: FormData) {
   revalidatePath(`/f9-control/users/${userId}`);
 }
 
-/**
- * Permanently bans a user.
- *
- * Spec compliance — all four steps are now enforced:
- *  1. Account disabled  → profiles.account_status = 'banned'
- *  2. Wallet frozen     → profiles already banned; wallet inaccessible
- *  3. Active orders cancelled → queries orders via service-role client
- *                               (orders has no admin UPDATE RLS policy,
- *                               so the anon client cannot write it cross-user)
- *  4. User notified     → notifications insert for ban + one per cancelled order
- */
 async function banUser(fd: FormData) {
   'use server';
   const userId = fd.get('user_id') as string;
   const reason = fd.get('reason') as string;
 
-  const supabase      = await createClient();
-  const adminClient   = await createAdminClient(); // service role — bypasses RLS
+  const supabase    = await createClient();
+  // FIX: createAdminClient is synchronous — removed incorrect await
+  const adminClient = createAdminClient();
 
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
   if (await isTargetAdmin(supabase, userId)) return;
 
-  // ── Step 1: Disable account ──────────────────────────────────────────────
+  // Step 1: Disable account (profiles has admin UPDATE policy — session client ok)
   await supabase.from('profiles').update({
     account_status:    'banned',
     suspension_reason: reason,
     suspended_until:   null,
   }).eq('id', userId);
 
-  // ── Step 3: Cancel all active orders ────────────────────────────────────
-  // Must use adminClient — orders has no admin UPDATE RLS policy.
-  // We fetch first to know which orders were cancelled so we can notify
-  // each order's counterparty.
+  // Step 2: Freeze wallet (wallets has no UPDATE policy — adminClient required)
+  const { error: walletFreezeError } = await adminClient
+    .from('wallets')
+    .update({
+      is_frozen: true,
+      frozen_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId);
+
+  if (walletFreezeError) {
+    console.error('[banUser] wallet freeze error:', walletFreezeError);
+  }
+
+  // Step 3: Cancel active orders (orders has no admin UPDATE policy — adminClient required)
   const { data: activeOrders } = await adminClient
     .from('orders')
     .select('id, client_id, freelancer_id')
@@ -208,9 +209,8 @@ async function banUser(fd: FormData) {
       .update({ status: 'cancelled' })
       .in('id', orderIds);
 
-    // ── Step 4 (partial): Notify each order's counterparty ───────────────
-    // The banned user receives a single consolidated notification below.
-    // Each counterparty gets one notification per affected order.
+    // Step 4 (partial): Notify counterparties
+    // FIX: adminClient required — notifications has no INSERT policy for session client
     const counterpartyNotifications = activeOrders.map((order) => {
       const counterpartyId =
         order.client_id === userId ? order.freelancer_id : order.client_id;
@@ -222,24 +222,33 @@ async function banUser(fd: FormData) {
       };
     });
 
-    await supabase.from('notifications').insert(counterpartyNotifications);
+    await adminClient.from('notifications').insert(counterpartyNotifications);
   }
 
-  // ── Step 4 (primary): Notify the banned user ─────────────────────────────
-  await supabase.from('notifications').insert({
+  // Step 4 (primary): Notify the banned user
+  // FIX: adminClient required — notifications has no INSERT policy for session client
+  await adminClient.from('notifications').insert({
     user_id: userId,
     type:    'account_banned',
     title:   'Account Banned',
     message: reason,
   });
 
-  // ── Audit log ────────────────────────────────────────────────────────────
+  // Audit log — admin_action_logs has admin ALL policy, session client is fine
   const cancelledCount = activeOrders?.length ?? 0;
+  const walletNote     = walletFreezeError
+    ? ' [wallet freeze FAILED — check server logs]'
+    : ' [wallet frozen]';
+
   await supabase.from('admin_action_logs').insert({
     admin_id:       admin.id,
     target_user_id: userId,
     action_type:    'ban',
-    reason:         `${reason}${cancelledCount > 0 ? ` [${cancelledCount} active order${cancelledCount !== 1 ? 's' : ''} cancelled]` : ''}`,
+    reason:         `${reason}${walletNote}${
+      cancelledCount > 0
+        ? ` [${cancelledCount} active order${cancelledCount !== 1 ? 's' : ''} cancelled]`
+        : ''
+    }`,
   });
 
   revalidatePath(`/f9-control/users/${userId}`);
@@ -249,33 +258,41 @@ async function freezeWallet(fd: FormData) {
   'use server';
   const userId = fd.get('user_id') as string;
   const reason = fd.get('reason') as string;
+
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
   if (await isTargetAdmin(supabase, userId)) return;
 
+  // FIX: createAdminClient required for security_logs (no INSERT policy) and
+  //      notifications (no INSERT policy for cross-user rows)
+  const adminClient = createAdminClient();
+
+  // profiles has admin UPDATE policy — session client is fine
   await supabase.from('profiles').update({
     account_status:    'suspended',
     suspension_reason: `Wallet frozen: ${reason}`,
     suspended_until:   null,
   }).eq('id', userId);
 
-  await supabase.from('security_logs').insert({
+  // FIX: security_logs has no INSERT policy — was silently dropping this row,
+  //      meaning NotificationBell never saw wallet_frozen_by_admin events
+  await adminClient.from('security_logs').insert({
     user_id:     userId,
     event_type:  'wallet_frozen_by_admin',
     severity:    'critical',
     description: reason,
   });
 
-  await supabase.from('notifications').insert({
+  // FIX: notifications has no INSERT policy for session client
+  await adminClient.from('notifications').insert({
     user_id: userId,
-    type: 'account_frozen',
-    title: 'Wallet Frozen',
+    type:    'account_frozen',
+    title:   'Wallet Frozen',
     message: `Your wallet has been frozen by the F9 team. Reason: ${reason}`,
   });
 
+  // admin_action_logs has admin ALL policy — session client is fine
   await supabase.from('admin_action_logs').insert({
     admin_id:       admin.id,
     target_user_id: userId,
@@ -288,18 +305,17 @@ async function freezeWallet(fd: FormData) {
 
 async function overrideTrustScore(fd: FormData) {
   'use server';
-  const userId      = fd.get('user_id') as string;
+  const userId      = fd.get('user_id')      as string;
   const scoreChange = Number(fd.get('score_change'));
-  const reason      = fd.get('reason') as string;
+  const reason      = fd.get('reason')       as string;
   if (isNaN(scoreChange)) return;
 
   const supabase = await createClient();
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
-
-  // ── Unblockable guard ────────────────────────────────────────────────────
   if (await isTargetAdmin(supabase, userId)) return;
 
+  // add_trust_score_event is SECURITY DEFINER — bypasses RLS, session client fine
   await supabase.rpc('add_trust_score_event', {
     p_user_id:      userId,
     p_event_type:   'admin_override',
@@ -317,17 +333,6 @@ async function overrideTrustScore(fd: FormData) {
   revalidatePath(`/f9-control/users/${userId}`);
 }
 
-/**
- * Appends a freeform private note to admin_action_logs.
- *
- * Notes are stored with action_type = 'private_note' and are:
- *  - Never surfaced to the target user (admin_action_logs RLS is admin-only)
- *  - Never sent as a notification (no notification insert)
- *  - Visible only in the Admin Notes tab of this profile view
- *
- * There is no unblockable guard here — admins may annotate any profile,
- * including other admin accounts, for internal record-keeping purposes.
- */
 async function addPrivateNote(fd: FormData) {
   'use server';
   const userId = fd.get('user_id') as string;
@@ -338,13 +343,12 @@ async function addPrivateNote(fd: FormData) {
   const { data: { user: admin } } = await supabase.auth.getUser();
   if (!admin) return;
 
+  // admin_action_logs has admin ALL policy — session client fine
   await supabase.from('admin_action_logs').insert({
-    admin_id:       admin.id,
-    target_user_id: userId,
-    action_type:    'private_note',
-    reason:         note,
-    // Private notes are informational — mark non-reversible so the
-    // "Reversed" badge never appears on them in the Admin Notes tab.
+    admin_id:         admin.id,
+    target_user_id:   userId,
+    action_type:      'private_note',
+    reason:           note,
     reversible_until: null,
   });
 
@@ -361,7 +365,6 @@ export default async function AdminUserProfilePage({
   const { id } = await params;
   const supabase = await createClient();
 
-  // ── Profile ────────────────────────────────────────────────────────────────
   const { data: profile } = await supabase
     .from('profiles')
     .select('*')
@@ -370,7 +373,6 @@ export default async function AdminUserProfilePage({
 
   if (!profile) notFound();
 
-  // ── Activity ───────────────────────────────────────────────────────────────
   const { data: orders } = await supabase
     .from('orders')
     .select('*')
@@ -385,7 +387,6 @@ export default async function AdminUserProfilePage({
     .order('created_at', { ascending: false })
     .limit(20);
 
-  // ── Financials ─────────────────────────────────────────────────────────────
   const { data: wallet } = await supabase
     .from('wallets')
     .select('*')
@@ -399,27 +400,9 @@ export default async function AdminUserProfilePage({
     .order('created_at', { ascending: false })
     .limit(20);
 
-  // ── Transactions ───────────────────────────────────────────────────────────
-  // The transactions table links a user in two ways:
-  //
-  //   1. recipient_user_id = id  — the user received money (escrow release,
-  //                                 wallet top-up, refund, etc.)
-  //   2. order_id ∈ user's orders — the user was the paying client on a
-  //                                 service/job order payment. The transactions
-  //                                 table has no direct payer FK; the client
-  //                                 relationship lives on orders.client_id.
-  //
-  // We resolve both legs independently then deduplicate by id so a transaction
-  // that matches both conditions (e.g. freelancer paid into their own order) is
-  // only shown once.
-  //
-  // Limit 30 per leg → at most 60 rows before dedup; after dedup ≤ 60 but
-  // typically far fewer. Sorted descending so newest rows survive dedup.
-
   const orderIds = (orders ?? []).map((o) => o.id);
 
   const [{ data: txByRecipient }, { data: txByOrder }] = await Promise.all([
-    // Leg 1: transactions where this user is the named recipient
     supabase
       .from('transactions')
       .select('*')
@@ -427,9 +410,6 @@ export default async function AdminUserProfilePage({
       .order('created_at', { ascending: false })
       .limit(30),
 
-    // Leg 2: transactions linked to orders the user participated in as client
-    // Skip the query entirely when the user has no orders — avoids an empty .in()
-    // which Supabase would reject or return all rows on some driver versions.
     orderIds.length > 0
       ? supabase
           .from('transactions')
@@ -440,18 +420,15 @@ export default async function AdminUserProfilePage({
       : Promise.resolve({ data: [] as import('@/types').Tables<'transactions'>[] }),
   ]);
 
-  // Deduplicate: build a Map keyed by id; leg 1 wins on collision (recipient
-  // rows are the most directly relevant to the user).
   const txMap = new Map<string, import('@/types').Tables<'transactions'>>();
   for (const tx of [...(txByOrder ?? []), ...(txByRecipient ?? [])]) {
     txMap.set(tx.id, tx);
   }
-  // Re-sort the merged set by created_at descending
   const transactions = Array.from(txMap.values()).sort(
-    (a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime(),
+    (a, b) =>
+      new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime(),
   );
 
-  // ── Flags & History ────────────────────────────────────────────────────────
   const { data: securityLogs } = await supabase
     .from('security_logs')
     .select('*')
@@ -466,8 +443,6 @@ export default async function AdminUserProfilePage({
     .order('created_at', { ascending: false })
     .limit(30);
 
-  // ── Security ───────────────────────────────────────────────────────────────
-  // Spec: show the last 5 login sessions (IP / device) only.
   const { data: devices } = await supabase
     .from('user_devices')
     .select('*')
@@ -482,7 +457,6 @@ export default async function AdminUserProfilePage({
     .order('created_at', { ascending: false })
     .limit(30);
 
-  // ── Admin Notes ────────────────────────────────────────────────────────────
   const { data: adminNotes } = await supabase
     .from('admin_action_logs')
     .select('*')
@@ -492,7 +466,6 @@ export default async function AdminUserProfilePage({
 
   return (
     <div className="space-y-6">
-      {/* Breadcrumb */}
       <Link
         href="/f9-control/users"
         className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline"

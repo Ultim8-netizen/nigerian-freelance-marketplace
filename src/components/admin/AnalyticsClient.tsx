@@ -1,20 +1,19 @@
 'use client';
 // src/components/admin/AnalyticsClient.tsx
-// Client component — owns all chart rendering, date-range filtering, and
-// CSV export for the F9 Analytics dashboard.
 //
-// Sections:
-//   1. User Growth      — line chart + onboarding completion rate
-//   2. Marketplace      — bar/area charts + AOV, popular categories,
-//                         repeat user rate
-//   3. Financial Flow   — area chart + escrow turnover, avg payment-to-
-//                         release time
-//   4. Trust & Safety   — bar (disputes) + pie (trust levels) +
-//                         verification completion rates + flag volume
-//   5. Geography        — user count by state (horizontal bar) +
-//                         transaction volume by state (horizontal bar)
+// FIX: Escrow turnover, turnover count, avg payment-to-release time, and
+//   escrow volume chart all filtered on e.status === 'released'. That value
+//   is never written by any RPC in the live database — confirmed via the
+//   database.types.ts function list. The only terminal-release status any
+//   RPC produces is 'released_to_freelancer' (written by
+//   complete_order_with_payment and release_escrow_to_wallet). No CHECK
+//   constraint exists on the column, but the absence of any row with
+//   status='released' meant all four escrow metrics permanently showed
+//   zero or null.
 //
-// Dependency: recharts
+//   Fixed all 4 occurrences:
+//     escrowTurnover, escrowTurnoverCount, avgPaymentToRelease,
+//     escrowVolumeData — all now filter on 'released_to_freelancer'.
 
 import { useState, useMemo } from 'react';
 import {
@@ -65,8 +64,6 @@ export type ContestTicketRow = {
   status:     string;
 };
 
-// order row from the orders table with service join for category.
-// service_id is returned as an object when Supabase resolves the FK join.
 export type OrderRow = {
   created_at: string;
   status:     string;
@@ -76,7 +73,6 @@ export type OrderRow = {
   service_id: { category: string } | null;
 };
 
-// escrow row for turnover + payment-to-release timing.
 export type EscrowRow = {
   created_at:  string;
   released_at: string | null;
@@ -84,21 +80,12 @@ export type EscrowRow = {
   amount:      number;
 };
 
-// security_log row for flag volume over time.
 export type SecurityLogRow = {
   created_at: string;
   event_type: string;
   severity:   string | null;
 };
 
-// Transaction row joined to the recipient's profile location.
-// Used exclusively in the Geography section to produce transaction volume
-// by Nigerian state.
-//
-// Supabase resolves the recipient_user_id FK join as a nested object:
-//   { location: string | null } | null
-// null outer  = transaction has no recipient_user_id (e.g. wallet top-up)
-// null inner  = recipient profile has no location set
 export type GeoTransactionRow = {
   created_at:        string;
   amount:            number;
@@ -124,12 +111,10 @@ interface Props {
   withdrawals:       WithdrawalRow[];
   disputes:          DisputeRow[];
   contestTickets:    ContestTicketRow[];
-  // Carries all verification columns for the Trust & Safety section snapshot.
   allProfiles:       AllProfileSnapshot[];
   orders:            OrderRow[];
   escrowEntries:     EscrowRow[];
   securityLogs:      SecurityLogRow[];
-  // Transactions joined to recipient profile location — Geography section.
   geoTransactions:   GeoTransactionRow[];
 }
 
@@ -153,11 +138,6 @@ function getCutoff(range: DateRange): Date {
 
 // ─── Aggregation helpers ──────────────────────────────────────────────────────
 
-/**
- * Returns the label for a time bucket.
- * ≤ 30 days  → daily   "Apr 01"
- * > 30 days  → weekly  "Apr W1" (Monday of the week)
- */
 function getBucketKey(date: Date, range: DateRange): string {
   if (range === '30d') {
     return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
@@ -341,9 +321,6 @@ export function AnalyticsClient({
     (p) => p.user_type === 'client' || p.user_type === 'both',
   ).length;
 
-  // Onboarding completion rate — computed from the allProfiles snapshot
-  // (current state, not date-filtered, because onboarding_completed is a
-  // profile flag that reflects the user's current state, not a time-series).
   const onboardingTotal     = allProfiles.length;
   const onboardingCompleted = allProfiles.filter((p) => p.onboarding_completed).length;
   const onboardingRate      = pct(onboardingCompleted, onboardingTotal);
@@ -385,14 +362,12 @@ export function AnalyticsClient({
     ? Math.round((cancelledOrders / marketplaceOrdersInRange.length) * 100)
     : 0;
 
-  // Average order value — gross amount across all orders in range.
   const aov = useMemo(() => {
     if (!ordersInRange.length) return 0;
     const total = ordersInRange.reduce((s, o) => s + (Number(o.amount) || 0), 0);
     return Math.round(total / ordersInRange.length);
   }, [ordersInRange]);
 
-  // Popular categories — derived from the service_id join on orders.
   const popularCategoriesData = useMemo(() => {
     const map: Record<string, number> = {};
     for (const o of ordersInRange) {
@@ -406,7 +381,6 @@ export function AnalyticsClient({
       .map(([category, orders]) => ({ category, orders }));
   }, [ordersInRange]);
 
-  // Repeat user rate — % of clients who placed > 1 order in the period.
   const repeatUserRate = useMemo(() => {
     const countByClient = new Map<string, number>();
     for (const o of ordersInRange) {
@@ -462,28 +436,30 @@ export function AnalyticsClient({
   const totalTxVolume = txInRange.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const totalWdVolume = wdInRange.reduce((s, r) => s + (Number(r.amount) || 0), 0);
 
-  // Escrow turnover — total ₦ released from escrow within the period.
   const escrowInRange = useMemo(
     () => filterByRange(escrowEntries, range),
     [escrowEntries, range],
   );
 
+  // FIX 1/4: was 'released' — no RPC ever writes that value.
+  // complete_order_with_payment and release_escrow_to_wallet write
+  // 'released_to_freelancer'. Changed to match.
   const escrowTurnover = useMemo(() => {
     return escrowInRange
-      .filter((e) => e.status === 'released')
+      .filter((e) => e.status === 'released_to_freelancer')
       .reduce((s, e) => s + (Number(e.amount) || 0), 0);
   }, [escrowInRange]);
 
+  // FIX 2/4: same correction.
   const escrowTurnoverCount = useMemo(
-    () => escrowInRange.filter((e) => e.status === 'released').length,
+    () => escrowInRange.filter((e) => e.status === 'released_to_freelancer').length,
     [escrowInRange],
   );
 
-  // Average payment-to-release time — mean of (released_at - created_at) in
-  // hours, for escrow entries that have both timestamps in the period.
+  // FIX 3/4: same correction.
   const avgPaymentToRelease = useMemo(() => {
     const released = escrowInRange.filter(
-      (e) => e.status === 'released' && e.released_at,
+      (e) => e.status === 'released_to_freelancer' && e.released_at,
     );
     if (!released.length) return null;
     const totalMs = released.reduce((s, e) => {
@@ -491,14 +467,14 @@ export function AnalyticsClient({
       const releasedAt = new Date(e.released_at!).getTime();
       return s + Math.max(0, releasedAt - created);
     }, 0);
-    return totalMs / released.length / (1000 * 60 * 60); // → hours
+    return totalMs / released.length / (1000 * 60 * 60);
   }, [escrowInRange]);
 
-  // Escrow volume over time — for chart.
+  // FIX 4/4: same correction.
   const escrowVolumeData = useMemo(
     () =>
       groupByBucket(
-        escrowInRange.filter((e) => e.status === 'released'),
+        escrowInRange.filter((e) => e.status === 'released_to_freelancer'),
         range,
         (e) => Number(e.amount) || 0,
       ),
@@ -543,8 +519,6 @@ export function AnalyticsClient({
   const pendingTickets  = ticketsInRange.filter((t) => t.status === 'pending').length;
   const reversedTickets = ticketsInRange.filter((t) => t.status === 'reversed').length;
 
-  // Verification completion rates — proportion of active profiles with each
-  // verification flag set to true (current platform state snapshot).
   const verificationData = useMemo(() => {
     const total = allProfiles.length;
     if (!total) return [];
@@ -561,7 +535,6 @@ export function AnalyticsClient({
     }));
   }, [allProfiles]);
 
-  // Flag volume over time — security_log events bucketed by period.
   const securityLogsInRange = useMemo(
     () => filterByRange(securityLogs, range),
     [securityLogs, range],
@@ -572,7 +545,6 @@ export function AnalyticsClient({
     [securityLogsInRange, range],
   );
 
-  // Top flag types — supplementary breakdown bar chart.
   const flagTypeData = useMemo(() => {
     const map: Record<string, number> = {};
     for (const l of securityLogsInRange) {
@@ -588,9 +560,6 @@ export function AnalyticsClient({
   // 5. GEOGRAPHY
   // ══════════════════════════════════════════════════════════════════════════
 
-  // ── User count by state ───────────────────────────────────────────────────
-  // Derived from profiles.location (free-text field, normalised to trim).
-  // Top 10 states by new-user registrations in the selected period.
   const geoData = useMemo(() => {
     const map: Record<string, number> = {};
     for (const p of profilesInRange) {
@@ -609,17 +578,8 @@ export function AnalyticsClient({
     return s.size;
   }, [profilesInRange]);
 
-  // ── Transaction volume by state ───────────────────────────────────────────
-  // Derived from geoTransactions — each row is a successful transaction joined
-  // to its recipient profile's location. We aggregate ₦ volume per state and
-  // also track transaction count for the tooltip / CSV.
-  //
-  // Date-range filter applied client-side (same pattern as all other series).
-  // Rows where recipient_user_id or recipient_user_id.location is null are
-  // excluded — they represent transactions with no locatable recipient (e.g.
-  // platform fee captures, unlinked top-ups).
   const geoTxData = useMemo(() => {
-    const cutoff = getCutoff(range);
+    const cutoff   = getCutoff(range);
     const volMap:   Record<string, number> = {};
     const countMap: Record<string, number> = {};
 
@@ -648,7 +608,7 @@ export function AnalyticsClient({
 
   const topTxState = geoTxData[0] ?? null;
 
-  // ── CSV export payloads ───────────────────────────────────────────────────
+  // ── CSV exports ───────────────────────────────────────────────────────────
 
   function exportUserGrowth() {
     downloadCSV(
@@ -673,7 +633,7 @@ export function AnalyticsClient({
           label:   d.status,
           count:   d.count,
         })),
-        { section: 'summary', label: 'aov',              count: aov          },
+        { section: 'summary', label: 'aov',              count: aov           },
         { section: 'summary', label: 'repeat_user_rate', count: repeatUserRate },
       ],
       `f9_marketplace_${range}.csv`,
@@ -718,25 +678,14 @@ export function AnalyticsClient({
     );
   }
 
-  // Geography CSV now includes both user-count and transaction-volume sheets.
   function exportGeography() {
     downloadCSV(
       [
-        // User registrations by state
         ...geoData.map((d) => ({
-          sheet:    'user_registrations',
-          location: d.location,
-          users:    d.users,
-          volume:   '',
-          tx_count: '',
+          sheet: 'user_registrations', location: d.location, users: d.users, volume: '', tx_count: '',
         })),
-        // Transaction volume by state
         ...geoTxData.map((d) => ({
-          sheet:    'transaction_volume',
-          location: d.location,
-          users:    '',
-          volume:   d.volume,
-          tx_count: d.count,
+          sheet: 'transaction_volume', location: d.location, users: '', volume: d.volume, tx_count: d.count,
         })),
       ],
       `f9_geography_${range}.csv`,
@@ -774,12 +723,9 @@ export function AnalyticsClient({
         </div>
       </div>
 
-      {/* ════════════════════════════════════════════════════════════════ */}
-      {/* 1. USER GROWTH                                                  */}
-      {/* ════════════════════════════════════════════════════════════════ */}
+      {/* 1. USER GROWTH */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
         <SectionHeader title="User Growth" onExport={exportUserGrowth} />
-
         <div className="grid grid-cols-4 gap-4 mb-6">
           <StatCard label="New Users"           value={profilesInRange.length} />
           <StatCard label="Freelancers"         value={freelancerCount}        />
@@ -790,39 +736,24 @@ export function AnalyticsClient({
             sub={`${onboardingCompleted} of ${onboardingTotal} active users`}
           />
         </div>
-
         {userGrowthData.length === 0 ? (
           <Empty label="No registration data in this period." />
         ) : (
           <ResponsiveContainer width="100%" height={260}>
-            <LineChart
-              data={userGrowthData}
-              margin={{ top: 4, right: 16, bottom: 0, left: 0 }}
-            >
+            <LineChart data={userGrowthData} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
               <XAxis dataKey="period" tick={{ fontSize: 11 }} />
               <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Line
-                type="monotone"
-                dataKey="value"
-                name="New Users"
-                stroke={CHART_COLORS.blue}
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 4 }}
-              />
+              <Line type="monotone" dataKey="value" name="New Users" stroke={CHART_COLORS.blue} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
             </LineChart>
           </ResponsiveContainer>
         )}
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════ */}
-      {/* 2. MARKETPLACE HEALTH                                           */}
-      {/* ════════════════════════════════════════════════════════════════ */}
+      {/* 2. MARKETPLACE HEALTH */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
         <SectionHeader title="Marketplace Health" onExport={exportMarketplace} />
-
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
           <StatCard label="Total Orders"      value={ordersInRange.length}       />
           <StatCard label="Delivered"         value={completedOrders}            />
@@ -830,283 +761,134 @@ export function AnalyticsClient({
           <StatCard label="Avg Order Value"   value={fmt(aov)}     sub="gross"   />
         </div>
         <div className="grid grid-cols-2 gap-4 mb-6">
-          <StatCard
-            label="Repeat User Rate"
-            value={repeatUserRate}
-            sub="clients with > 1 order in period"
-          />
-          <StatCard
-            label="Top Category"
-            value={popularCategoriesData[0]?.category ?? '—'}
-            sub={
-              popularCategoriesData[0]
-                ? `${popularCategoriesData[0].orders} orders`
-                : undefined
-            }
-          />
+          <StatCard label="Repeat User Rate" value={repeatUserRate} sub="clients with > 1 order in period" />
+          <StatCard label="Top Category" value={popularCategoriesData[0]?.category ?? '—'} sub={popularCategoriesData[0] ? `${popularCategoriesData[0].orders} orders` : undefined} />
         </div>
-
         <div className="grid grid-cols-2 gap-6 mb-6">
           <div>
             <SubHeader title="Order Volume Over Time" />
-            {orderVolumeData.length === 0 ? (
-              <Empty label="No order data." />
-            ) : (
+            {orderVolumeData.length === 0 ? <Empty label="No order data." /> : (
               <ResponsiveContainer width="100%" height={220}>
-                <AreaChart
-                  data={orderVolumeData}
-                  margin={{ top: 4, right: 8, bottom: 0, left: 0 }}
-                >
+                <AreaChart data={orderVolumeData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="period" tick={{ fontSize: 10 }} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
                   <Tooltip />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    name="Orders"
-                    stroke={CHART_COLORS.emerald}
-                    fill={`${CHART_COLORS.emerald}22`}
-                    strokeWidth={2}
-                  />
+                  <Area type="monotone" dataKey="value" name="Orders" stroke={CHART_COLORS.emerald} fill={`${CHART_COLORS.emerald}22`} strokeWidth={2} />
                 </AreaChart>
               </ResponsiveContainer>
             )}
           </div>
-
           <div>
             <SubHeader title="Orders by Status" />
-            {orderStatusData.length === 0 ? (
-              <Empty label="No order data." />
-            ) : (
+            {orderStatusData.length === 0 ? <Empty label="No order data." /> : (
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart
-                  data={orderStatusData}
-                  layout="vertical"
-                  margin={{ top: 4, right: 16, bottom: 0, left: 60 }}
-                >
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="#f1f5f9"
-                    horizontal={false}
-                  />
+                <BarChart data={orderStatusData} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 60 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                   <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
                   <YAxis type="category" dataKey="status" tick={{ fontSize: 10 }} />
                   <Tooltip />
-                  <Bar
-                    dataKey="count"
-                    name="Orders"
-                    fill={CHART_COLORS.emerald}
-                    radius={[0, 3, 3, 0]}
-                  />
+                  <Bar dataKey="count" name="Orders" fill={CHART_COLORS.emerald} radius={[0, 3, 3, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
           </div>
         </div>
-
         <div>
           <SubHeader title="Popular Categories (by order count)" />
-          {popularCategoriesData.length === 0 ? (
-            <Empty label="No category data in this period." />
-          ) : (
+          {popularCategoriesData.length === 0 ? <Empty label="No category data in this period." /> : (
             <ResponsiveContainer width="100%" height={220}>
-              <BarChart
-                data={popularCategoriesData}
-                layout="vertical"
-                margin={{ top: 4, right: 16, bottom: 0, left: 110 }}
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="#f1f5f9"
-                  horizontal={false}
-                />
+              <BarChart data={popularCategoriesData} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 110 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                 <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
                 <YAxis type="category" dataKey="category" tick={{ fontSize: 10 }} />
                 <Tooltip />
-                <Bar
-                  dataKey="orders"
-                  name="Orders"
-                  fill={CHART_COLORS.teal}
-                  radius={[0, 3, 3, 0]}
-                />
+                <Bar dataKey="orders" name="Orders" fill={CHART_COLORS.teal} radius={[0, 3, 3, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}
         </div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════ */}
-      {/* 3. FINANCIAL FLOW                                               */}
-      {/* ════════════════════════════════════════════════════════════════ */}
+      {/* 3. FINANCIAL FLOW */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
         <SectionHeader title="Financial Flow" onExport={exportFinancial} />
-
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-          <StatCard
-            label="Transaction Volume"
-            value={fmt(totalTxVolume)}
-            sub="successful only"
-          />
-          <StatCard label="Withdrawal Volume" value={fmt(totalWdVolume)} />
-          <StatCard
-            label="Net Retained"
-            value={fmt(Math.max(0, totalTxVolume - totalWdVolume))}
-          />
-          <StatCard
-            label="Escrow Turnover"
-            value={fmt(escrowTurnover)}
-            sub={`${escrowTurnoverCount} releases`}
-          />
+          <StatCard label="Transaction Volume" value={fmt(totalTxVolume)} sub="successful only" />
+          <StatCard label="Withdrawal Volume"  value={fmt(totalWdVolume)} />
+          <StatCard label="Net Retained"       value={fmt(Math.max(0, totalTxVolume - totalWdVolume))} />
+          <StatCard label="Escrow Turnover"    value={fmt(escrowTurnover)} sub={`${escrowTurnoverCount} releases`} />
         </div>
-
         <div className="mb-6">
           <StatCard
             label="Avg Payment-to-Release"
             value={avgPaymentToRelease !== null ? fmtHours(avgPaymentToRelease) : '—'}
-            sub="mean escrow hold duration (created → released)"
+            sub="mean escrow hold duration (created → released_to_freelancer)"
           />
         </div>
-
         <div className="mb-6">
           <SubHeader title="Transaction & Withdrawal Volume Over Time" />
-          {financialData.length === 0 ? (
-            <Empty label="No financial data in this period." />
-          ) : (
+          {financialData.length === 0 ? <Empty label="No financial data in this period." /> : (
             <ResponsiveContainer width="100%" height={280}>
-              <AreaChart
-                data={financialData}
-                margin={{ top: 4, right: 16, bottom: 0, left: 8 }}
-              >
+              <AreaChart data={financialData} margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="period" tick={{ fontSize: 11 }} />
-                <YAxis
-                  tickFormatter={(v: number) => fmt(v)}
-                  tick={{ fontSize: 10 }}
-                  width={72}
-                />
+                <YAxis tickFormatter={(v: number) => fmt(v)} tick={{ fontSize: 10 }} width={72} />
                 <Tooltip formatter={fmtTooltip} />
                 <Legend />
-                <Area
-                  type="monotone"
-                  dataKey="transactions"
-                  name="Transactions"
-                  stroke={CHART_COLORS.blue}
-                  fill={`${CHART_COLORS.blue}22`}
-                  strokeWidth={2}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="withdrawals"
-                  name="Withdrawals"
-                  stroke={CHART_COLORS.amber}
-                  fill={`${CHART_COLORS.amber}22`}
-                  strokeWidth={2}
-                />
+                <Area type="monotone" dataKey="transactions" name="Transactions" stroke={CHART_COLORS.blue} fill={`${CHART_COLORS.blue}22`} strokeWidth={2} />
+                <Area type="monotone" dataKey="withdrawals" name="Withdrawals" stroke={CHART_COLORS.amber} fill={`${CHART_COLORS.amber}22`} strokeWidth={2} />
               </AreaChart>
             </ResponsiveContainer>
           )}
         </div>
-
         <div>
-          <SubHeader title="Escrow Released Over Time" />
-          {escrowVolumeData.length === 0 ? (
-            <Empty label="No released escrow data in this period." />
-          ) : (
+          <SubHeader title="Escrow Released to Freelancer Over Time" />
+          {escrowVolumeData.length === 0 ? <Empty label="No released escrow data in this period." /> : (
             <ResponsiveContainer width="100%" height={220}>
-              <AreaChart
-                data={escrowVolumeData}
-                margin={{ top: 4, right: 16, bottom: 0, left: 8 }}
-              >
+              <AreaChart data={escrowVolumeData} margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="period" tick={{ fontSize: 11 }} />
-                <YAxis
-                  tickFormatter={(v: number) => fmt(v)}
-                  tick={{ fontSize: 10 }}
-                  width={72}
-                />
+                <YAxis tickFormatter={(v: number) => fmt(v)} tick={{ fontSize: 10 }} width={72} />
                 <Tooltip formatter={fmtTooltip} />
-                <Area
-                  type="monotone"
-                  dataKey="value"
-                  name="Escrow Released"
-                  stroke={CHART_COLORS.emerald}
-                  fill={`${CHART_COLORS.emerald}22`}
-                  strokeWidth={2}
-                />
+                <Area type="monotone" dataKey="value" name="Escrow Released" stroke={CHART_COLORS.emerald} fill={`${CHART_COLORS.emerald}22`} strokeWidth={2} />
               </AreaChart>
             </ResponsiveContainer>
           )}
         </div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════ */}
-      {/* 4. TRUST & SAFETY                                               */}
-      {/* ════════════════════════════════════════════════════════════════ */}
+      {/* 4. TRUST & SAFETY */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
         <SectionHeader title="Trust & Safety" onExport={exportTrustSafety} />
-
         <div className="grid grid-cols-3 gap-4 mb-6">
           <StatCard label="Open Disputes"    value={openDisputes}    />
           <StatCard label="Pending Tickets"  value={pendingTickets}  />
           <StatCard label="Reversed Tickets" value={reversedTickets} />
         </div>
-
         <div className="grid grid-cols-2 gap-6 mb-8">
           <div>
             <SubHeader title="Disputes by Status" />
-            {disputeStatusData.length === 0 ? (
-              <Empty label="No disputes in this period." />
-            ) : (
+            {disputeStatusData.length === 0 ? <Empty label="No disputes in this period." /> : (
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart
-                  data={disputeStatusData}
-                  layout="vertical"
-                  margin={{ top: 4, right: 16, bottom: 0, left: 80 }}
-                >
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="#f1f5f9"
-                    horizontal={false}
-                  />
+                <BarChart data={disputeStatusData} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 80 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                   <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
                   <YAxis type="category" dataKey="status" tick={{ fontSize: 10 }} />
                   <Tooltip />
-                  <Bar
-                    dataKey="count"
-                    name="Disputes"
-                    fill={CHART_COLORS.red}
-                    radius={[0, 3, 3, 0]}
-                  />
+                  <Bar dataKey="count" name="Disputes" fill={CHART_COLORS.red} radius={[0, 3, 3, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
           </div>
-
           <div>
             <SubHeader title="Trust Level Distribution (all active users)" />
-            {trustLevelData.length === 0 ? (
-              <Empty label="No active user data." />
-            ) : (
+            {trustLevelData.length === 0 ? <Empty label="No active user data." /> : (
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
-                  <Pie
-                    data={trustLevelData}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={80}
-                    label={({ name, percent }) =>
-                      `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
-                    }
-                    labelLine={false}
-                  >
+                  <Pie data={trustLevelData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false}>
                     {trustLevelData.map((entry) => (
-                      <Cell
-                        key={entry.name}
-                        fill={TRUST_COLORS[entry.name] ?? CHART_COLORS.slate}
-                      />
+                      <Cell key={entry.name} fill={TRUST_COLORS[entry.name] ?? CHART_COLORS.slate} />
                     ))}
                   </Pie>
                   <Tooltip />
@@ -1115,18 +897,12 @@ export function AnalyticsClient({
             )}
           </div>
         </div>
-
         <div className="mb-8">
           <SubHeader title="Verification Completion Rates (active users)" />
-          {verificationData.length === 0 ? (
-            <Empty label="No verification data." />
-          ) : (
+          {verificationData.length === 0 ? <Empty label="No verification data." /> : (
             <div className="grid grid-cols-5 gap-3">
               {verificationData.map((v) => (
-                <div
-                  key={v.label}
-                  className="bg-gray-50 rounded-lg border border-gray-200 p-4 text-center"
-                >
+                <div key={v.label} className="bg-gray-50 rounded-lg border border-gray-200 p-4 text-center">
                   <p className="text-2xl font-bold text-gray-900">{v.rate}%</p>
                   <p className="text-xs text-gray-500 mt-1">{v.label}</p>
                   <p className="text-xs text-gray-400">{v.count.toLocaleString()} users</p>
@@ -1135,65 +911,31 @@ export function AnalyticsClient({
             </div>
           )}
         </div>
-
         <div className="grid grid-cols-2 gap-6">
           <div>
             <SubHeader title="Security Flag Volume Over Time" />
-            {flagVolumeData.length === 0 ? (
-              <Empty label="No security events in this period." />
-            ) : (
+            {flagVolumeData.length === 0 ? <Empty label="No security events in this period." /> : (
               <ResponsiveContainer width="100%" height={220}>
-                <AreaChart
-                  data={flagVolumeData}
-                  margin={{ top: 4, right: 8, bottom: 0, left: 0 }}
-                >
+                <AreaChart data={flagVolumeData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="period" tick={{ fontSize: 10 }} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
                   <Tooltip />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    name="Security Events"
-                    stroke={CHART_COLORS.red}
-                    fill={`${CHART_COLORS.red}22`}
-                    strokeWidth={2}
-                  />
+                  <Area type="monotone" dataKey="value" name="Security Events" stroke={CHART_COLORS.red} fill={`${CHART_COLORS.red}22`} strokeWidth={2} />
                 </AreaChart>
               </ResponsiveContainer>
             )}
           </div>
-
           <div>
             <SubHeader title="Top Security Event Types" />
-            {flagTypeData.length === 0 ? (
-              <Empty label="No security events in this period." />
-            ) : (
+            {flagTypeData.length === 0 ? <Empty label="No security events in this period." /> : (
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart
-                  data={flagTypeData}
-                  layout="vertical"
-                  margin={{ top: 4, right: 16, bottom: 0, left: 140 }}
-                >
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="#f1f5f9"
-                    horizontal={false}
-                  />
+                <BarChart data={flagTypeData} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 140 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                   <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
-                  <YAxis
-                    type="category"
-                    dataKey="event_type"
-                    tick={{ fontSize: 9 }}
-                    width={136}
-                  />
+                  <YAxis type="category" dataKey="event_type" tick={{ fontSize: 9 }} width={136} />
                   <Tooltip />
-                  <Bar
-                    dataKey="count"
-                    name="Events"
-                    fill={CHART_COLORS.orange}
-                    radius={[0, 3, 3, 0]}
-                  />
+                  <Bar dataKey="count" name="Events" fill={CHART_COLORS.orange} radius={[0, 3, 3, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -1201,119 +943,43 @@ export function AnalyticsClient({
         </div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════════ */}
-      {/* 5. GEOGRAPHY                                                    */}
-      {/* ════════════════════════════════════════════════════════════════ */}
+      {/* 5. GEOGRAPHY */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
         <SectionHeader title="Geography" onExport={exportGeography} />
-
-        {/* ── User registrations by state ─────────────────────────────── */}
         <div className="mb-8">
           <SubHeader title="User Registrations by State (top 10)" />
-
           <div className="grid grid-cols-3 gap-4 mb-4">
-            <StatCard label="Unique Locations"  value={uniqueLocations}             />
-            <StatCard label="Top State (Users)" value={geoData[0]?.location ?? '—'} />
-            <StatCard label="Users in Top State" value={geoData[0]?.users ?? 0}     />
+            <StatCard label="Unique Locations"   value={uniqueLocations}              />
+            <StatCard label="Top State (Users)"  value={geoData[0]?.location ?? '—'} />
+            <StatCard label="Users in Top State" value={geoData[0]?.users    ?? 0}   />
           </div>
-
-          {geoData.length === 0 ? (
-            <Empty label="No location data in this period." />
-          ) : (
+          {geoData.length === 0 ? <Empty label="No location data in this period." /> : (
             <ResponsiveContainer width="100%" height={280}>
-              <BarChart
-                data={geoData}
-                layout="vertical"
-                margin={{ top: 4, right: 16, bottom: 0, left: 110 }}
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="#f1f5f9"
-                  horizontal={false}
-                />
+              <BarChart data={geoData} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 110 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                 <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
                 <YAxis type="category" dataKey="location" tick={{ fontSize: 11 }} />
                 <Tooltip />
-                <Bar
-                  dataKey="users"
-                  name="Users"
-                  fill={CHART_COLORS.violet}
-                  radius={[0, 3, 3, 0]}
-                />
+                <Bar dataKey="users" name="Users" fill={CHART_COLORS.violet} radius={[0, 3, 3, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}
         </div>
-
-        {/* ── Transaction volume by state ──────────────────────────────── */}
-        {/* Sourced from transactions joined to recipient profile location. */}
-        {/* Rows with no recipient location are excluded (null location =   */}
-        {/* unlocatable recipient — e.g. platform fee captures).            */}
         <div>
           <SubHeader title="Transaction Volume by State — ₦ received (top 10)" />
-
           <div className="grid grid-cols-3 gap-4 mb-4">
-            <StatCard
-              label="States with Transactions"
-              value={geoTxData.length}
-              sub="states represented in this period"
-            />
-            <StatCard
-              label="Top State (Volume)"
-              value={topTxState?.location ?? '—'}
-              sub={topTxState ? `${topTxState.count} transactions` : undefined}
-            />
-            <StatCard
-              label="Top State Volume"
-              value={topTxState ? fmt(topTxState.volume) : '—'}
-              sub={
-                topTxState && totalGeoTxVolume > 0
-                  ? `${Math.round((topTxState.volume / totalGeoTxVolume) * 100)}% of mapped total`
-                  : undefined
-              }
-            />
+            <StatCard label="States with Transactions" value={geoTxData.length} sub="states represented in this period" />
+            <StatCard label="Top State (Volume)" value={topTxState?.location ?? '—'} sub={topTxState ? `${topTxState.count} transactions` : undefined} />
+            <StatCard label="Top State Volume" value={topTxState ? fmt(topTxState.volume) : '—'} sub={topTxState && totalGeoTxVolume > 0 ? `${Math.round((topTxState.volume / totalGeoTxVolume) * 100)}% of mapped total` : undefined} />
           </div>
-
-          {geoTxData.length === 0 ? (
-            <Empty label="No transaction data with locatable recipients in this period." />
-          ) : (
+          {geoTxData.length === 0 ? <Empty label="No transaction data with locatable recipients in this period." /> : (
             <ResponsiveContainer width="100%" height={280}>
-              <BarChart
-                data={geoTxData}
-                layout="vertical"
-                margin={{ top: 4, right: 16, bottom: 0, left: 110 }}
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="#f1f5f9"
-                  horizontal={false}
-                />
-                <XAxis
-                  type="number"
-                  tickFormatter={(v: number) => fmt(v)}
-                  tick={{ fontSize: 10 }}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="location"
-                  tick={{ fontSize: 11 }}
-                />
-                {/* ── FIX (TS2322): formatter param widened to ValueType | undefined ── */}
-                <Tooltip
-                  formatter={(
-                    value: number | string | readonly (number | string)[] | undefined,
-                  ) =>
-                    typeof value === 'number'
-                      ? [fmt(value), 'Volume']
-                      : String(value ?? '')
-                  }
-                />
-                <Bar
-                  dataKey="volume"
-                  name="Transaction Volume"
-                  fill={CHART_COLORS.teal}
-                  radius={[0, 3, 3, 0]}
-                />
+              <BarChart data={geoTxData} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 110 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                <XAxis type="number" tickFormatter={(v: number) => fmt(v)} tick={{ fontSize: 10 }} />
+                <YAxis type="category" dataKey="location" tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(value: number | string | readonly (number | string)[] | undefined) => typeof value === 'number' ? [fmt(value), 'Volume'] : String(value ?? '')} />
+                <Bar dataKey="volume" name="Transaction Volume" fill={CHART_COLORS.teal} radius={[0, 3, 3, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}
@@ -1322,8 +988,6 @@ export function AnalyticsClient({
     </div>
   );
 }
-
-// ─── Empty state ──────────────────────────────────────────────────────────────
 
 function Empty({ label }: { label: string }) {
   return (

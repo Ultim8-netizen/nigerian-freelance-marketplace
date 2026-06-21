@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/auto-complete-orders",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/notifications",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/process-pending-clearances",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/admin/automation/cron",
+      "schedule": "0 */6 * * *"
+    }
+  ]
+}

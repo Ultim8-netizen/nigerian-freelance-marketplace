@@ -51,33 +51,18 @@ import { createClient }      from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { FlutterwaveServerService } from '@/lib/flutterwave/server-service';
 import { requireStaffRole, UnauthorizedError } from '@/lib/auth/require-staff-role';
+import { resolveBankCode } from '@/lib/flutterwave/bank-list';
 
-// ── Nigerian bank code map ────────────────────────────────────────────────────
-// CBN codes are gateway-agnostic — identical for Flutterwave v3.
-// Must cover every bank in the earnings page dropdown exactly.
-// Missing bank = failed transfer at Flutterwave.
-//
-// NOTE: not independently verified against Flutterwave's live /v3/banks/NG
-// response (FlutterwaveServerService.getNigerianBanks() exists for exactly
-// this purpose but isn't called anywhere). Recommend a one-time diff before
-// relying on this in production, particularly the fintech entries.
-
-const BANK_CODES: Record<string, string> = {
-  'Access Bank':   '044',
-  'GTBank':        '058',
-  'First Bank':    '011',
-  'UBA':           '033',
-  'Zenith Bank':   '057',
-  'Fidelity Bank': '070',
-  'FCMB':          '214',
-  'Polaris Bank':  '076',
-  'Sterling Bank': '232',
-  'Wema Bank':     '035',
-  'Opay':          '305',
-  'Kuda Bank':     '090267',
-  'PalmPay':       '100033',
-  'Moniepoint':    '50515',
-};
+// ── Bank code resolution ──────────────────────────────────────────────────────
+// FIX: the hardcoded BANK_CODES map (14 entries) was both incomplete —
+// Nigeria's actual NIP-enabled institution list (commercial banks,
+// microfinance banks, payment service banks, fintechs) runs into the
+// hundreds — and prone to silent drift even within those 14: two entries
+// (Opay, Moniepoint) were already confirmed wrong against Flutterwave's
+// live list via scripts/verify-bank-codes.ts. Replaced entirely with
+// resolveBankCode() (src/lib/flutterwave/bank-list.ts), which resolves
+// against Flutterwave's actual live bank list rather than a finite,
+// hand-maintained snapshot. See that file for the full rationale.
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -130,11 +115,28 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 3. Fetch withdrawal row ─────────────────────────────────────────────
+    // Cast to add bank_code until database.types.ts is regenerated — same
+    // scoped-cast convention used elsewhere in this codebase for
+    // not-yet-generated columns (e.g. process_referral_reward in
+    // cron/automation/route.ts).
     const { data: withdrawal, error: fetchErr } = await adminClient
       .from('withdrawals')
-      .select('id, amount, bank_name, account_number, account_name, status, user_id, wallet_id')
+      .select('id, amount, bank_name, bank_code, account_number, account_name, status, user_id, wallet_id')
       .eq('id', withdrawalId)
-      .single();
+      .single() as {
+        data: {
+          id: string;
+          amount: number;
+          bank_name: string;
+          bank_code: string | null;
+          account_number: string;
+          account_name: string;
+          status: string | null;
+          user_id: string | null;
+          wallet_id: string | null;
+        } | null;
+        error: unknown;
+      };
 
     if (fetchErr || !withdrawal) {
       return NextResponse.json(
@@ -262,9 +264,20 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 7. Resolve bank code ────────────────────────────────────────────────
-    const bankCode = BANK_CODES[withdrawal.bank_name];
-    if (!bankCode) {
-      const reason = `Unsupported bank: '${withdrawal.bank_name}' has no mapped Flutterwave code`;
+    // FIX: previously a static BANK_CODES[withdrawal.bank_name] lookup —
+    // replaced with a live resolution against Flutterwave's actual bank
+    // list. withdrawal.bank_code is used directly when present (every
+    // withdrawal created after the bank_code column existed); older rows
+    // fall back to a name-based match against the live list inside
+    // resolveBankCode() itself. See src/lib/flutterwave/bank-list.ts.
+    let bankCode: string;
+    try {
+      bankCode = await resolveBankCode(withdrawal.bank_name, withdrawal.bank_code);
+    } catch (err) {
+      const reason = err instanceof Error
+        ? err.message
+        : `Unsupported bank: '${withdrawal.bank_name}' has no mapped Flutterwave code`;
+
       await adminClient
         .from('withdrawals')
         .update({ status: 'failed', failure_reason: reason })
