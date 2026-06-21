@@ -381,12 +381,12 @@ export class FlutterwaveServerService {
    * Normalised to { code, name }[] to match the shape consumers already expect.
    * Flutterwave: GET /v3/banks/NG
    *
-   * NOTE: this method is unused by the rest of the domain — execute/route.ts
-   * hardcodes a BANK_CODES map instead. Recommend hitting this once and
-   * diffing against that hardcoded map (especially the fintech entries —
-   * Opay/Kuda/PalmPay/Moniepoint) before going live; a wrong bank code
-   * produces a misdirected or failed payout, which is expensive to recover
-   * from. I can't verify those codes myself without live API access.
+   * Consumed by getNigerianBankList() in src/lib/flutterwave/bank-list.ts,
+   * which caches the result for 6 hours and is itself used by: the live
+   * bank dropdown in earnings/page.tsx (replacing the old hardcoded
+   * 14-entry list), and resolveBankCode() in execute/route.ts (replacing
+   * the old hardcoded BANK_CODES map, which scripts/verify-bank-codes.ts
+   * already confirmed was wrong for Opay and Moniepoint).
    */
   static async getNigerianBanks(): Promise<{ code: string; name: string }[]> {
     const raw = await flutterwaveFetch<{ code: string; name: string }[]>(

@@ -40,11 +40,9 @@
 // concurrent double-click can't fire two transfers — closes most of the
 // remaining window.
 //
-// FIX: flutterwave_transfer_id is now a real column (added via migration —
-// see the SQL provided alongside this fix). Until `database.types.ts` is
-// regenerated, the field is written via a narrowly-scoped cast (see below),
-// matching the pattern already used elsewhere in this codebase for
-// not-yet-generated columns/RPCs.
+// FIX: flutterwave_transfer_id and withdrawals.bank_code are real, typed
+// columns in database.types.ts — both are read/written below with no cast,
+// using plain Supabase client type inference.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient }      from '@/lib/supabase/server';
@@ -115,28 +113,13 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 3. Fetch withdrawal row ─────────────────────────────────────────────
-    // Cast to add bank_code until database.types.ts is regenerated — same
-    // scoped-cast convention used elsewhere in this codebase for
-    // not-yet-generated columns (e.g. process_referral_reward in
-    // cron/automation/route.ts).
+    // bank_code is a real typed column (database.types.ts) — no cast needed,
+    // the select string's inferred type already matches it exactly.
     const { data: withdrawal, error: fetchErr } = await adminClient
       .from('withdrawals')
       .select('id, amount, bank_name, bank_code, account_number, account_name, status, user_id, wallet_id')
       .eq('id', withdrawalId)
-      .single() as {
-        data: {
-          id: string;
-          amount: number;
-          bank_name: string;
-          bank_code: string | null;
-          account_number: string;
-          account_name: string;
-          status: string | null;
-          user_id: string | null;
-          wallet_id: string | null;
-        } | null;
-        error: unknown;
-      };
+      .single();
 
     if (fetchErr || !withdrawal) {
       return NextResponse.json(
@@ -343,19 +326,14 @@ export async function POST(request: NextRequest) {
 
     if (!transferFailed && acceptedStatuses.includes(flutterwaveResult.status)) {
       // Already 'processing' from step 9. Only the transfer_id (known only
-      // after the call resolves) needs writing now.
-      //
-      // flutterwave_transfer_id — Flutterwave's internal numeric transfer ID.
-      // Column added via migration; cast with `as Record<string, unknown>`
-      // until database.types.ts is regenerated to include it (do not hand-
-      // edit that file — see project convention already used for
-      // process_referral_reward in cron/automation/route.ts).
+      // after the call resolves) needs writing now. flutterwave_transfer_id
+      // is a real typed column — no cast needed.
       if (flutterwaveResult.transferId) {
         await adminClient
           .from('withdrawals')
           .update({
             flutterwave_transfer_id: flutterwaveResult.transferId,
-          } as Record<string, unknown>)
+          })
           .eq('id', withdrawalId);
       }
 

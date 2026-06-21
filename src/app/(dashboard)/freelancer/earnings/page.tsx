@@ -26,13 +26,32 @@
 // bank_details_updated_at), refunds, everything. Using `updated_at` as a
 // proxy for "this wallet was just funded" produces false positives any time
 // a wallet was touched for an unrelated reason. A dedicated
-// `last_credited_at` column (added via migration, stamped only when
-// balance increases — see SQL provided alongside this fix) replaces it.
+// `last_credited_at` column (stamped only when balance increases — see the
+// update_wallet_last_credited() trigger) replaces it.
 //
-// MIGRATION REQUIRED (run once in Supabase SQL editor before deploying):
-//   ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS hold_release_at TIMESTAMPTZ;
-//   ALTER TABLE wallets ADD COLUMN IF NOT EXISTS last_credited_at TIMESTAMPTZ;
-//   (+ the update_wallet_last_credited() trigger — see migration SQL.)
+// SCHEMA: hold_release_at (withdrawals), last_credited_at and
+// bank_details_updated_at (wallets), and bank_code (withdrawals) are all
+// confirmed real, typed columns in database.types.ts — every read/write
+// below uses plain Supabase client type inference, no manual casts.
+//
+// FIX: bank <select> is populated dynamically from Flutterwave's live bank
+// list (getNigerianBankList(), src/lib/flutterwave/bank-list.ts) rather
+// than a hardcoded 14-entry list. Its <option value> carries "CODE|Name" so
+// both pieces are captured at the moment the user picks their actual bank,
+// instead of being re-resolved later via fragile name-matching against a
+// static map that — as already proven via scripts/verify-bank-codes.ts —
+// silently drifts out of date.
+//
+// FIX (page resilience): getNigerianBankList() hits Flutterwave's live API
+// on a cache-cold request (cold start, rate limit, transient 5xx). It was
+// previously awaited with no try/catch, so any throw there crashed the
+// ENTIRE earnings page — balance, pending clearance, and earnings history
+// included — none of which actually depend on the bank list. The call is
+// now isolated in its own try/catch; on failure, `banks` is set to an empty
+// array, a fetch error is logged, and the withdrawal form is replaced with
+// a "temporarily unavailable" notice while the rest of the page renders
+// normally. execute/route.ts already had equivalent isolation via
+// resolveBankCode()'s own try/catch — this brings the page in line with it.
 
 import { createClient }         from '@/lib/supabase/server';
 import { createAdminClient }    from '@/lib/supabase/admin';
@@ -45,7 +64,7 @@ import { evaluateTrustGate }    from '@/lib/trust/feature-gates';
 import { ContestButton }        from '@/components/admin/ContestButton';
 import { getPlatformConfigs, CONFIG_KEYS } from '@/lib/platform-config';
 import { sendF9SystemMessage }  from '@/lib/messaging/system-message';
-import { getNigerianBankList }  from '@/lib/flutterwave/bank-list';
+import { getNigerianBankList, type NigerianBank } from '@/lib/flutterwave/bank-list';
 import {
   DollarSign,
   TrendingUp,
@@ -116,26 +135,17 @@ async function initiateWithdrawal(formData: FormData) {
   const WITHDRAWAL_GATE_THRESHOLD = config[CONFIG_KEYS.WITHDRAWAL_GATE_THRESHOLD];
 
   // ── Fetch wallet ──────────────────────────────────────────────────────────
-  // FIX: select last_credited_at instead of updated_at for the "was this
-  // wallet just funded" signal (see file header). Cast to a manual type
-  // until database.types.ts is regenerated to include the new column —
-  // same scoped-cast convention already used elsewhere in this codebase
-  // (e.g. cron/automation/route.ts's process_referral_reward call).
-  const { data: wallet } = await supabase
+  // last_credited_at and bank_details_updated_at are real typed columns —
+  // no manual cast needed, Supabase client inference matches exactly.
+  const { data: wallet, error: walletFetchError } = await supabase
     .from('wallets')
     .select('id, balance, last_credited_at, account_name, account_number, bank_name, bank_details_updated_at')
     .eq('user_id', user.id)
-    .single() as {
-      data: {
-        id: string;
-        balance: number | null;
-        last_credited_at: string | null;
-        account_name: string | null;
-        account_number: string | null;
-        bank_name: string | null;
-        bank_details_updated_at: string | null;
-      } | null;
-    };
+    .single();
+
+  if (walletFetchError) {
+    console.error('Wallet fetch error:', walletFetchError);
+  }
 
   // ── Fetch trust score ─────────────────────────────────────────────────────
   const { data: profile } = await supabase
@@ -228,6 +238,7 @@ async function initiateWithdrawal(formData: FormData) {
   }
 
   // ── Insert withdrawal record ───────────────────────────────────────────────
+  // bank_code and hold_release_at are real typed columns — no cast needed.
   const { error: insertError } = await supabase.from('withdrawals').insert({
     user_id:         user.id,
     wallet_id:       wallet?.id ?? null,
@@ -239,7 +250,7 @@ async function initiateWithdrawal(formData: FormData) {
     status:          withdrawalStatus,
     failure_reason:  holdReason,
     hold_release_at: holdReleaseAt,
-  } as Record<string, unknown>); // bank_code cast until database.types.ts is regenerated — see bank_code_migration.sql
+  });
 
   if (insertError) {
     console.error('Withdrawal insert error:', insertError);
@@ -301,7 +312,21 @@ export default async function EarningsPage({
   // FIX: replaces the 14-entry hardcoded <option> list below. Cached for
   // 6 hours inside getNigerianBankList() — this call is cheap on every
   // page load except the first per cold start.
-  const banks = await getNigerianBankList();
+  //
+  // FIX (resilience): isolated in its own try/catch. getNigerianBankList()
+  // hits a live external API on a cache-cold request — an unhandled throw
+  // here previously took down the ENTIRE page (balance, pending clearance,
+  // earnings history), none of which depend on the bank list. On failure,
+  // banks falls back to an empty array and banksLoadFailed flags the
+  // withdrawal form to render a fallback notice instead of a dead dropdown.
+  let banks: NigerianBank[] = [];
+  let banksLoadFailed = false;
+  try {
+    banks = await getNigerianBankList();
+  } catch (err) {
+    console.error('Failed to fetch live bank list:', err);
+    banksLoadFailed = true;
+  }
 
   const { data: completedOrders } = await supabase
     .from('orders')
@@ -462,7 +487,23 @@ export default async function EarningsPage({
           </p>
         </div>
 
-        {canWithdraw ? (
+        {/* FIX (resilience): banksLoadFailed short-circuits the form entirely
+            before the canWithdraw branch — there's no point letting someone
+            fill in amount/account fields just to hit a bank <select> with
+            zero options. The rest of the page above (balance, history) still
+            rendered fine since none of it depends on `banks`. */}
+        {banksLoadFailed ? (
+          <div className="text-center py-6 px-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-700 rounded-lg">
+            <AlertCircle className="w-6 h-6 text-orange-600 dark:text-orange-400 mx-auto mb-2" />
+            <p className="text-orange-800 dark:text-orange-200 font-medium mb-1">
+              Bank list temporarily unavailable
+            </p>
+            <p className="text-sm text-orange-700 dark:text-orange-300">
+              We couldn&apos;t load the list of banks just now. Please refresh
+              this page in a moment to request a withdrawal.
+            </p>
+          </div>
+        ) : canWithdraw ? (
           <form action={initiateWithdrawal} className="space-y-4">
             <div>
               <label
